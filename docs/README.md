@@ -57,6 +57,7 @@ source alone does not explain. Most code changes do not need an internal documen
 - [Development and local builds](./operations/development.md)
 - [T3 Connect setup](./operations/connect-setup.md)
 - [Release](./operations/release.md)
+- [Fork server releases (atlitech)](./operations/fork-server.md)
 - [Observability](./operations/observability.md)
 - [Relay observability](./operations/relay-observability.md)
 - [Mobile app store screenshots](./operations/mobile-app-store-screenshots.md)
