@@ -152,6 +152,10 @@ function ThreadMarkdownImageRequest(props: {
 
   return (
     <>
+      {/* Deliberately no resizeMethod="resize": Fresco would then decode at the
+          placeholder frame's size and onLoad would report those downsampled
+          dimensions, which resolveMarkdownImageDisplaySize reads as the image's
+          intrinsic size. The frame it derives feeds the next decode. */}
       <Image
         source={{ uri: props.uri }}
         resizeMode="contain"

@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import { AsyncResult, Atom } from "effect/unstable/reactivity";
 import { useMemo } from "react";
 
+import { createBoundedAtomFamily } from "../../state/bounded-atom-family";
 import {
   highlightCodeSnippet,
   type ReviewDiffTheme,
@@ -11,6 +12,10 @@ import {
 } from "../review/shikiReviewHighlighter";
 
 const MARKDOWN_CODE_HIGHLIGHT_IDLE_TTL_MS = 5 * 60_000;
+
+// Well above the number of code blocks a windowed feed mounts at once, and far below
+// what an unbounded cache would hold after a long session of thread-hopping.
+const MARKDOWN_CODE_HIGHLIGHT_CAPACITY = 128;
 
 export type MarkdownHighlightedCode = ReadonlyArray<ReadonlyArray<ReviewHighlightedToken>>;
 
@@ -25,8 +30,6 @@ type MarkdownCodeHighlighter = (
   input: MarkdownCodeHighlightInput,
 ) => Promise<MarkdownHighlightedCode | null>;
 
-class MarkdownCodeHighlightCacheKey extends Data.Class<MarkdownCodeHighlightInput> {}
-
 class MarkdownCodeHighlightError extends Data.TaggedError("MarkdownCodeHighlightError")<{
   readonly cause: unknown;
 }> {}
@@ -34,6 +37,7 @@ class MarkdownCodeHighlightError extends Data.TaggedError("MarkdownCodeHighlight
 export function createMarkdownCodeHighlightAtomFamily(options?: {
   readonly highlight?: MarkdownCodeHighlighter;
   readonly idleTtlMs?: number;
+  readonly capacity?: number;
 }) {
   const highlight =
     options?.highlight ??
@@ -46,19 +50,24 @@ export function createMarkdownCodeHighlightAtomFamily(options?: {
           })
         : Promise.resolve(null));
   const idleTtlMs = options?.idleTtlMs ?? MARKDOWN_CODE_HIGHLIGHT_IDLE_TTL_MS;
-  const family = Atom.family((request: MarkdownCodeHighlightCacheKey) =>
-    Atom.make(
-      Effect.tryPromise({
-        try: () => highlight(request),
-        catch: (cause) => new MarkdownCodeHighlightError({ cause }),
-      }),
-    ).pipe(
-      Atom.setIdleTTL(idleTtlMs),
-      Atom.withLabel(`mobile:thread-markdown-code-highlight:${request.theme}:${request.language}`),
-    ),
-  );
 
-  return (input: MarkdownCodeHighlightInput) => family(new MarkdownCodeHighlightCacheKey(input));
+  return createBoundedAtomFamily({
+    capacity: options?.capacity ?? MARKDOWN_CODE_HIGHLIGHT_CAPACITY,
+    key: (request: MarkdownCodeHighlightInput) =>
+      `${request.theme}\u0000${request.language}\u0000${request.enabled ? "1" : "0"}\u0000${request.code}`,
+    make: (request) =>
+      Atom.make(
+        Effect.tryPromise({
+          try: () => highlight(request),
+          catch: (cause) => new MarkdownCodeHighlightError({ cause }),
+        }),
+      ).pipe(
+        Atom.setIdleTTL(idleTtlMs),
+        Atom.withLabel(
+          `mobile:thread-markdown-code-highlight:${request.theme}:${request.language}`,
+        ),
+      ),
+  });
 }
 
 export const markdownCodeHighlightAtom = createMarkdownCodeHighlightAtomFamily();

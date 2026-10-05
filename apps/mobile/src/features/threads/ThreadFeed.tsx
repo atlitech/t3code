@@ -434,10 +434,14 @@ function MessageAttachmentImage(props: {
           })
         }
       >
+        {/* resizeMethod="resize" decodes attachments straight to the display size.
+            Without it Fresco decodes at full source resolution, and a handful of
+            camera-sized attachments dominate the process's native heap. */}
         <Image
           source={{ uri }}
           className={props.className}
           resizeMode="cover"
+          resizeMethod="resize"
           onLoad={() => {
             retriedImage.current = false;
           }}

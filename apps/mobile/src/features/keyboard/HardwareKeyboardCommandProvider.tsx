@@ -15,9 +15,13 @@ import {
 
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { T3KeyboardCommands } from "../../native/T3KeyboardCommands";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { useThreadShell } from "../../state/entities";
+import { environmentProjects } from "../../state/projects";
+import { environmentThreadShells } from "../../state/threads";
 import type { GitActionProgress } from "../../state/use-vcs-action-state";
 import { GitActionProgressOverlay } from "../threads/GitActionProgressOverlay";
+import { resolveNewTaskNavigationDestination } from "../threads/new-task-navigation";
 import { CommandPalette } from "./CommandPalette";
 import {
   dispatchHardwareKeyboardCommand,
@@ -148,6 +152,27 @@ export function HardwareKeyboardCommandProvider({
       }
 
       if (command === "newTask") {
+        const activeThreadRef = parseActiveThreadPath(pathname);
+        const destination = resolveNewTaskNavigationDestination({
+          projects: appAtomRegistry.get(environmentProjects.projectsAtom),
+          hasActiveThreadRoute: activeThreadRef !== null,
+          activeThread:
+            activeThreadRef === null
+              ? null
+              : appAtomRegistry.get(environmentThreadShells.threadShellAtom(activeThreadRef)),
+        });
+        if (destination.kind === "draft") {
+          const project = destination.project;
+          navigation.navigate("NewTaskSheet", {
+            screen: "NewTaskDraft",
+            params: {
+              environmentId: String(project.environmentId),
+              projectId: String(project.id),
+              title: project.title,
+            },
+          });
+          return;
+        }
         navigation.navigate("NewTaskSheet", { screen: "NewTask" });
         return;
       }

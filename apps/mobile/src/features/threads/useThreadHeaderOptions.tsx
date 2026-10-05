@@ -8,6 +8,7 @@ import {
   useThreadGitCenterHeaderItems,
   useThreadGitRightHeaderItems,
 } from "./ThreadGitControls";
+import type { ThreadRouteActionId, ThreadRouteActionMenuItem } from "./thread-route-actions-menu";
 
 type NativeHeaderItems = ReadonlyArray<Record<string, unknown>>;
 
@@ -18,6 +19,9 @@ export function useThreadHeaderOptions(props: {
   readonly usesNativeHeaderGlass: boolean;
   readonly gitControls: Parameters<typeof ThreadGitControls>[0];
   readonly onReturnToThread?: () => void;
+  readonly onStartNewTask: () => void;
+  readonly threadActions: ReadonlyArray<ThreadRouteActionMenuItem>;
+  readonly onThreadAction: (action: ThreadRouteActionId) => void;
 }) {
   const navigation = useNavigation();
   const { layout, panes, togglePrimarySidebar } = useAdaptiveWorkspaceLayout();
@@ -58,11 +62,50 @@ export function useThreadHeaderOptions(props: {
         accessibilityLabel: "New task",
         icon: { name: "square.and.pencil", type: "sfSymbol" as const },
         identifier: "thread-left-new-task",
-        onPress: () => navigation.navigate("NewTaskSheet", { screen: "NewTask" }),
+        onPress: props.onStartNewTask,
         type: "button" as const,
       }),
     ],
-    [panes.primarySidebarVisible, props.onReturnToThread, navigation, togglePrimarySidebar],
+    [
+      panes.primarySidebarVisible,
+      props.onReturnToThread,
+      props.onStartNewTask,
+      togglePrimarySidebar,
+    ],
+  );
+  const { onThreadAction, threadActions } = props;
+  const threadActionsHeaderItem = useMemo(
+    () =>
+      withNativeGlassHeaderItem({
+        accessibilityLabel: "Thread actions",
+        icon: { name: "ellipsis", type: "sfSymbol" as const },
+        identifier: "thread-right-actions",
+        label: "Thread actions",
+        menu: {
+          items: threadActions.map((action) => ({
+            description: action.subtitle,
+            disabled: action.disabled,
+            destructive: action.destructive,
+            icon: { name: action.icon, type: "sfSymbol" as const },
+            label: action.title,
+            onPress: () => onThreadAction(action.id),
+            type: "action" as const,
+          })),
+          title: "Thread actions",
+        },
+        sharesBackground: true,
+        type: "menu" as const,
+        variant: "plain" as const,
+      }),
+    [onThreadAction, threadActions],
+  );
+  const splitRightHeaderItems = useMemo<NativeHeaderItems>(
+    () => [...threadCenterHeaderItems, threadActionsHeaderItem],
+    [threadActionsHeaderItem, threadCenterHeaderItems],
+  );
+  const compactThreadRightHeaderItems = useMemo<NativeHeaderItems>(
+    () => [...compactRightHeaderItems, threadActionsHeaderItem],
+    [compactRightHeaderItems, threadActionsHeaderItem],
   );
   // Deep links / cold starts land with Thread as the ONLY route, where the
   // native back button does not render. Provide an explicit Home escape for
@@ -104,7 +147,7 @@ export function useThreadHeaderOptions(props: {
     // the git controls on the RIGHT (no center items — center space is
     // reserved for future breadcrumbs/status).
     unstable_headerRightItems: () =>
-      layout.usesSplitView ? threadCenterHeaderItems : compactRightHeaderItems,
+      layout.usesSplitView ? splitRightHeaderItems : compactThreadRightHeaderItems,
     unstable_headerSubtitle: props.usesNativeHeaderGlass ? props.subtitle : undefined,
     contentStyle: undefined,
   };

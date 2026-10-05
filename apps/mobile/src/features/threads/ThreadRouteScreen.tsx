@@ -4,7 +4,7 @@ import { useWorktreeSetup } from "./use-worktree-setup";
 import { worktreeSetupAgentStarted } from "@t3tools/client-runtime/worktree-setup";
 import { ScreenHeader } from "../../components/ScreenHeader";
 import { ScreenHeaderButton } from "../../components/ScreenHeaderButton";
-import type { ScreenHeaderAction } from "../../components/ScreenHeader.types";
+import type { ScreenHeaderAction, ScreenHeaderMenu } from "../../components/ScreenHeader.types";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
 import {
   StackActions,
@@ -40,6 +40,7 @@ import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { connectionTone } from "../connection/connectionTone";
+import { useThreadListActions, type ThreadListAction } from "../home/useThreadListActions";
 import {
   useRemoteConnections,
   useRemoteConnectionStatus,
@@ -83,6 +84,7 @@ import {
   type ThreadInspectorMode,
 } from "./thread-inspector-content-stack";
 import { threadRouteIsHydrating } from "./thread-route-hydration";
+import { buildThreadRouteActionMenu, type ThreadRouteActionId } from "./thread-route-actions-menu";
 
 function ThreadHeader(
   props: Parameters<typeof useThreadHeaderOptions>[0] & {
@@ -99,6 +101,67 @@ function ThreadHeader(
   const { layout, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
+  // iOS renders the thread actions through the native header items above.
+  // Android gets one in-flow menu that also swallows terminal and git: the
+  // header only keeps a single action visible on phone widths, so leaving them
+  // as icon actions puts AndroidScreenHeader's own overflow ellipsis right
+  // beside this one.
+  const { threadActions, onThreadAction } = props;
+  const threadActionsMenus = useMemo<ReadonlyArray<ScreenHeaderMenu>>(
+    () => [
+      {
+        title: "Thread actions",
+        icon: "ellipsis",
+        items: [
+          ...(props.hasWorkspaceRoot
+            ? [
+                {
+                  id: "open-terminal",
+                  title: "Open terminal",
+                  icon: "terminal",
+                  onPress: () => onOpenTerminal(null),
+                },
+              ]
+            : []),
+          {
+            id: "open-git",
+            title: "Git controls",
+            icon: "point.topleft.down.curvedto.point.bottomright.up",
+            subtitle: "Commit, files, branches",
+            onPress: props.onOpenGitInspector,
+          },
+          ...(onMergeBack
+            ? [
+                {
+                  id: "merge-back",
+                  title: "Merge back to source",
+                  icon: "arrow.triangle.merge",
+                  subtitle: "Bring this thread's latest turn into its source",
+                  onPress: onMergeBack,
+                },
+              ]
+            : []),
+          ...threadActions.map((action) => ({
+            id: action.id,
+            title: action.title,
+            icon: action.icon,
+            ...(action.subtitle ? { subtitle: action.subtitle } : {}),
+            ...(action.disabled ? { disabled: true } : {}),
+            ...(action.destructive ? { destructive: true } : {}),
+            onPress: () => onThreadAction(action.id),
+          })),
+        ],
+      },
+    ],
+    [
+      onMergeBack,
+      onOpenTerminal,
+      onThreadAction,
+      props.hasWorkspaceRoot,
+      props.onOpenGitInspector,
+      threadActions,
+    ],
+  );
   const androidHeaderActions = useMemo<ReadonlyArray<ScreenHeaderAction>>(() => {
     const actions: ScreenHeaderAction[] = [];
     if (props.onReturnToThread) {
@@ -106,6 +169,13 @@ function ThreadHeader(
         accessibilityLabel: "Return to chat",
         icon: "chevron.left",
         onPress: props.onReturnToThread,
+      });
+    }
+    if (layout.usesSplitView && !panes.primarySidebarVisible) {
+      actions.push({
+        accessibilityLabel: "New task",
+        icon: "square.and.pencil",
+        onPress: props.onStartNewTask,
       });
     }
     if (props.hasThreadCwd) {
@@ -117,37 +187,17 @@ function ThreadHeader(
         onPress: filesVisible ? toggleAuxiliaryPane : props.onOpenFilesInspector,
       });
     }
-    if (props.hasWorkspaceRoot) {
-      actions.push({
-        accessibilityLabel: "Open terminal",
-        icon: "terminal",
-        onPress: () => onOpenTerminal(null),
-      });
-    }
-    actions.push({
-      accessibilityLabel: "Open git controls",
-      icon: "point.topleft.down.curvedto.point.bottomright.up",
-      onPress: props.onOpenGitInspector,
-    });
-    if (onMergeBack) {
-      actions.push({
-        accessibilityLabel: "Merge back to source",
-        icon: "arrow.triangle.merge",
-        onPress: onMergeBack,
-      });
-    }
     return actions;
   }, [
     props.inspectorMode,
     panes.auxiliaryPaneVisible,
     props.onOpenFilesInspector,
-    onOpenTerminal,
-    onMergeBack,
-    props.onOpenGitInspector,
     toggleAuxiliaryPane,
     props.onReturnToThread,
+    props.onStartNewTask,
     props.hasThreadCwd,
-    props.hasWorkspaceRoot,
+    layout.usesSplitView,
+    panes.primarySidebarVisible,
   ]);
 
   return (
@@ -183,6 +233,7 @@ function ThreadHeader(
               }
         }
         actions={androidHeaderActions}
+        menus={threadActionsMenus}
         hideBottomBorder
       />
       {native.fallback}
@@ -336,7 +387,7 @@ function ThreadRouteContent(
   } = useThreadSelection();
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
-  const { selectedThreadCwd } = useSelectedThreadWorktree();
+  const { selectedThreadCwd, selectedThreadWorktreePath } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
@@ -466,6 +517,7 @@ function ThreadRouteContent(
     }, [props.renderInspector]),
   );
   const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
+  const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
   const routeConnectionState =
     routeEnvironmentRuntime?.connectionState ?? (environmentId ? "available" : connectionState);
   const routeConnectionError = routeEnvironmentRuntime?.connectionError ?? null;
@@ -498,6 +550,79 @@ function ThreadRouteContent(
           input: { cwd: selectedThreadCwd },
         })
       : null,
+  );
+  const handleThreadActionCompleted = useCallback(
+    (action: ThreadListAction) => {
+      if (action === "delete") {
+        navigation.dispatch(StackActions.replace("Home"));
+      }
+    },
+    [navigation],
+  );
+  const { confirmDeleteThread, settleThread, unsettleThread } = useThreadListActions(
+    handleThreadActionCompleted,
+  );
+  const handleStartNewTask = useCallback(() => {
+    if (selectedThreadProject === null) {
+      navigation.navigate("NewTaskSheet", { screen: "NewTask" });
+      return;
+    }
+    navigation.navigate("NewTaskSheet", {
+      screen: "NewTaskDraft",
+      params: {
+        environmentId: String(selectedThreadProject.environmentId),
+        projectId: String(selectedThreadProject.id),
+        title: selectedThreadProject.title,
+      },
+    });
+  }, [navigation, selectedThreadProject]);
+  const handleStartNewTaskOnWorktree = useCallback(() => {
+    if (
+      selectedThread === null ||
+      selectedThreadProject === null ||
+      selectedThreadWorktreePath === null ||
+      selectedThread.branch === null
+    ) {
+      return;
+    }
+
+    navigation.navigate("NewTaskSheet", {
+      screen: "NewTaskDraft",
+      params: {
+        environmentId: String(selectedThreadProject.environmentId),
+        projectId: String(selectedThreadProject.id),
+        title: selectedThreadProject.title,
+        branch: selectedThread.branch,
+        worktreePath: selectedThreadWorktreePath,
+      },
+    });
+  }, [navigation, selectedThread, selectedThreadProject, selectedThreadWorktreePath]);
+  const threadRouteActions = useMemo(
+    () =>
+      buildThreadRouteActionMenu({
+        settlementSupported: serverConfig?.environment.capabilities.threadSettlement === true,
+        settled: selectedThread?.settledOverride === "settled",
+        settleable: selectedThread !== null,
+        worktreeBranch:
+          selectedThreadWorktreePath !== null ? (selectedThread?.branch ?? null) : null,
+      }),
+    [selectedThread, selectedThreadWorktreePath, serverConfig],
+  );
+  const handleThreadRouteAction = useCallback(
+    (action: ThreadRouteActionId) => {
+      if (selectedThread === null) return;
+      if (action === "new-thread-on-worktree") handleStartNewTaskOnWorktree();
+      if (action === "settle") void settleThread(selectedThread);
+      if (action === "unsettle") void unsettleThread(selectedThread);
+      if (action === "delete") confirmDeleteThread(selectedThread);
+    },
+    [
+      confirmDeleteThread,
+      handleStartNewTaskOnWorktree,
+      selectedThread,
+      settleThread,
+      unsettleThread,
+    ],
   );
   const knownTerminalSessions = useKnownTerminalSessions({
     environmentId: selectedThread?.environmentId ?? null,
@@ -982,7 +1107,6 @@ function ThreadRouteContent(
           detailDeleted: selectedThreadDetailState.status === "deleted",
           connectionState: routeConnectionState,
         });
-  const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
   const renderThreadRouteBody = () => (
     <>
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
@@ -1099,6 +1223,9 @@ function ThreadRouteContent(
         onOpenGitInspector={handleOpenGitInspector}
         onOpenFilesInspector={handleOpenFilesInspector}
         onReturnToThread={props.onReturnToThread}
+        onStartNewTask={handleStartNewTask}
+        threadActions={threadRouteActions}
+        onThreadAction={handleThreadRouteAction}
       />
 
       {renderThreadRouteBody()}

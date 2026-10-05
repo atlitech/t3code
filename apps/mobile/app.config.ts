@@ -3,12 +3,13 @@ import type { ExpoConfig } from "expo/config";
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
-type AppVariant = "development" | "preview" | "production";
+type AppVariant = "development" | "personal" | "preview" | "production";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
+const isPersonalBuild = APP_VARIANT === "personal";
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
 const runtimeVersionPolicy =
   process.env.MOBILE_VERSION_POLICY ??
@@ -80,6 +81,14 @@ const VARIANT_CONFIG = {
     relyingParty: "clerk.t3.codes",
     assets: DEVELOPMENT_ASSETS,
   },
+  personal: {
+    appName: "T3 Code Personal",
+    scheme: "t3code-personal",
+    iosBundleIdentifier: "com.elvis.t3code",
+    androidPackage: "com.elvis.t3code",
+    relyingParty: "clerk.t3.codes",
+    assets: DEVELOPMENT_ASSETS,
+  },
   preview: {
     appName: "T3 Code Preview",
     scheme: "t3code-preview",
@@ -101,6 +110,7 @@ const VARIANT_CONFIG = {
 function resolveAppVariant(value: string | undefined): AppVariant {
   switch (value) {
     case "development":
+    case "personal":
     case "preview":
     case "production":
       return value;
@@ -239,12 +249,18 @@ const config: ExpoConfig = {
   orientation: "portrait",
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
-  updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-    url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    checkAutomatically: "ON_LOAD",
-    fallbackToCacheTimeout: 0,
-  },
+  updates: isPersonalBuild
+    ? {
+        // Personal fork builds are self-contained. Never replace their
+        // embedded bundle with an update from the maintainers' EAS project.
+        enabled: false,
+      }
+    : {
+        enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
+        url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+        checkAutomatically: "ON_LOAD",
+        fallbackToCacheTimeout: 0,
+      },
   ios: {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
@@ -458,6 +474,9 @@ const config: ExpoConfig = {
     "./plugins/withAndroidModernAlertDialog.cjs",
     "./plugins/withAndroidPredictiveBackCompat.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
+    ...(isPersonalBuild
+      ? ["./plugins/withPersonalAndroidProfileable.cjs", "./plugins/withPersonalAndroidSigning.cjs"]
+      : []),
     ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
   ],
   extra: {
@@ -484,11 +503,15 @@ const config: ExpoConfig = {
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    eas: {
-      projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-    },
+    ...(!isPersonalBuild
+      ? {
+          eas: {
+            projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+          },
+        }
+      : {}),
   },
-  owner: "pingdotgg",
+  owner: isPersonalBuild ? undefined : "pingdotgg",
 };
 
 export default config;
