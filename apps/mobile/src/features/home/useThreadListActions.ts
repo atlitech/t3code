@@ -78,7 +78,7 @@ function environmentSupportsTitleRegeneration(
   );
 }
 
-type ThreadListAction = "archive" | "unarchive" | "delete" | "settle" | "unsettle";
+export type ThreadListAction = "archive" | "unarchive" | "delete" | "settle" | "unsettle";
 
 const ACTION_VERBS: Record<ThreadListAction, string> = {
   archive: "archived",
@@ -234,7 +234,9 @@ function useConfirmDeleteThread(
   );
 }
 
-export function useThreadListActions(): {
+export function useThreadListActions(
+  onCompleted?: (action: ThreadListAction, thread: EnvironmentThreadShell) => void,
+): {
   readonly archiveThread: (thread: EnvironmentThreadShell) => void;
   readonly confirmDeleteThread: (thread: EnvironmentThreadShell) => void;
   readonly settleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
@@ -255,7 +257,7 @@ export function useThreadListActions(): {
   readonly renameThread: (thread: EnvironmentThreadShell) => void;
   readonly regenerateThreadTitle: (thread: EnvironmentThreadShell) => Promise<boolean>;
 } {
-  const executeAction = useThreadActionExecutor();
+  const executeAction = useThreadActionExecutor(onCompleted);
   const snoozeMutation = useAtomCommand(threadEnvironment.snooze, { reportFailure: false });
   const unsnoozeMutation = useAtomCommand(threadEnvironment.unsnooze, { reportFailure: false });
   const pinMutation = useAtomCommand(threadEnvironment.pin, { reportFailure: false });

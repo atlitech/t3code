@@ -18,7 +18,10 @@ import { AudioFilePreview } from "../../components/AudioFilePreview";
 import { EmptyState } from "../../components/EmptyState";
 import { FilePreviewModal, type FilePreviewSource } from "../../components/FilePreviewModal";
 import { LoadingScreen } from "../../components/LoadingScreen";
-import { resolveFileSelectionNavigationAction } from "../../lib/adaptive-navigation";
+import {
+  createPopToThreadAction,
+  resolveFileSelectionNavigationAction,
+} from "../../lib/adaptive-navigation";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
 import { isPdfFile } from "../../lib/filePreview";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
@@ -432,7 +435,7 @@ export function ThreadFilesTreeScreen(props: ThreadFilesRouteScreenProps) {
     }
     if (environmentId !== null && threadId !== null) {
       navigation.dispatch(
-        StackActions.replace("Thread", {
+        createPopToThreadAction({
           environmentId: String(environmentId),
           threadId: String(threadId),
         }),

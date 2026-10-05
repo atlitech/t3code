@@ -29,6 +29,7 @@ import { LoadingScreen } from "../../components/LoadingScreen";
 import { MaterialScreenContent } from "../../components/MaterialScreenContent";
 import { MaterialButton } from "../../components/MaterialButton";
 import { MaterialIconButton } from "../../components/MaterialIconButton";
+import { createPopToThreadAction } from "../../lib/adaptive-navigation";
 import { environmentCatalog } from "../../connection/catalog";
 import { useEnvironmentPresentation } from "../../state/presentation";
 import { terminalEnvironment } from "../../state/terminal";
@@ -981,7 +982,7 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
     // instead of stranding the user on a dead terminal.
     if (selectedThread) {
       navigation.dispatch(
-        StackActions.replace("Thread", {
+        createPopToThreadAction({
           environmentId: String(selectedThread.environmentId),
           threadId: String(selectedThread.id),
         }),

@@ -2,6 +2,31 @@ import type { NavigationState } from "@react-navigation/native";
 
 export type AdaptiveNavigationAction = "push" | "replace" | "set-params";
 
+export interface ThreadRouteNavigationParams {
+  readonly environmentId: string;
+  readonly threadId: string;
+}
+
+/**
+ * Return to the existing thread workspace when one is already below the
+ * current route. Replacing a sheet, file, or review route with Thread leaves
+ * the previous Thread screen mounted underneath; repeated task creation then
+ * retains every feed and live subscription in the native stack.
+ *
+ * StackRouter's POP_TO also handles Home/deep-link entry: when no Thread route
+ * exists, it replaces the current route with one instead of dropping Home.
+ */
+export function createPopToThreadAction(params: ThreadRouteNavigationParams) {
+  return {
+    type: "POP_TO" as const,
+    payload: {
+      name: "Thread",
+      params,
+      merge: undefined,
+    },
+  };
+}
+
 const BASE_THREAD_ROUTE_PATTERN = /^\/threads\/[^/]+\/[^/]+\/?$/;
 
 export function isBaseThreadRoute(pathname: string): boolean {

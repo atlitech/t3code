@@ -283,6 +283,8 @@ patchedDependencies:
   react-native-keyboard-controller@1.22.6: patches/react-native-keyboard-controller@1.22.6.patch
   react-native-nitro-modules@0.35.9: patches/react-native-nitro-modules@0.35.9.patch
   react-native-screens@4.28.0: patches/react-native-screens@4.28.0.patch
+  # Drop the dynamic fbjni:+ so it follows React Native's fbjni. fbjni 0.8.1 needs a newer libc++ than React Native ships and crashes at launch.
+  react-native-shiki-engine@0.3.12: patches/react-native-shiki-engine@0.3.12.patch
 
 peerDependencyRules:
   allowAny:

@@ -19,6 +19,7 @@ export type ScreenHeaderMenuItem =
       readonly icon?: string;
       readonly subtitle?: string;
       readonly disabled?: boolean;
+      readonly destructive?: boolean;
       readonly selected?: boolean;
       readonly onPress: () => void;
     }
