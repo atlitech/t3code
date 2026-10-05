@@ -368,6 +368,30 @@ export const layerWithOptions = (
           );
         },
       );
+      /**
+       * Pull request watching is prompt text, not a credential scope, so it is
+       * read from the live setting before every turn rather than at credential
+       * issue: a flip reaches long-lived sessions on their next turn. Adapters
+       * read it through `McpProviderSession.pullRequestWatchAvailable`. An
+       * unreadable setting leaves the guidance out, matching the tool refusing.
+       */
+      const refreshPullRequestWatch = (threadId: ThreadId) =>
+        (Option.isNone(serverSettings)
+          ? Effect.succeed(true)
+          : serverSettings.value.getSettings.pipe(
+              Effect.map((settings) => settings.enablePullRequestWatch),
+              Effect.catch((cause) =>
+                Effect.logWarning(
+                  "Could not read the pull request watch setting; leaving watch guidance out.",
+                  { threadId, cause },
+                ).pipe(Effect.as(false)),
+              ),
+            )
+        ).pipe(
+          Effect.map((available) =>
+            McpProviderSession.setPullRequestWatchAvailable(threadId, available),
+          ),
+        );
       const layerScope = yield* Effect.scope;
       // Ctrl+C, or a stop that signals the whole process group, reaches the
       // provider CLIs with the server. They report their own background work
@@ -1536,6 +1560,7 @@ export const layerWithOptions = (
                 providerInstanceId: runtime.instanceId,
               }),
             ).pipe(
+              Effect.andThen(refreshPullRequestWatch(input.threadId)),
               Effect.andThen(observeActivity(providerSessionId, markBusy(providerSessionId))),
               Effect.andThen(
                 runtime.startTurn(input).pipe(turnMetrics("send", input.modelSelection.model)),

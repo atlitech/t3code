@@ -14,6 +14,7 @@ import {
 import { useCallback, useMemo } from "react";
 
 import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { cn } from "~/lib/utils";
 import { useServerConfigs, useThreadShell } from "~/state/entities";
@@ -281,6 +282,11 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
   const supportsWatch =
     useServerConfigs().get(threadRef.environmentId)?.environment.capabilities
       .threadPullRequestWatch === true;
+  // Off means the user runs their own watcher; a watch from before stays stoppable.
+  const watchEnabled = useEnvironmentSettings(
+    threadRef.environmentId,
+    (settings) => settings.enablePullRequestWatch,
+  );
   const links = useMemo(() => visibleThreadPullRequests(thread?.pullRequests ?? []), [thread]);
   const lines = useMemo(() => pullRequestListLines(resolveThreadPullRequestChains(links)), [links]);
   const handleUnlink = useCallback(
@@ -352,7 +358,11 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
               line={line}
               threadRef={threadRef}
               onUnlink={handleUnlink}
-              onSetWatching={supportsWatch ? handleSetWatching : null}
+              onSetWatching={
+                supportsWatch && (watchEnabled || line.link.watch !== undefined)
+                  ? handleSetWatching
+                  : null
+              }
             />
           ))}
         </div>
