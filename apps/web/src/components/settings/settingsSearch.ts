@@ -708,6 +708,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["pull request merge squash rebase last selected"],
   },
   {
+    id: "pull-request-watch",
+    title: "Wake agents on pull request changes",
+    to: "/settings/source-control",
+    scope: "environment-defaults",
+    searchTerms: [
+      "pull request watch watcher monitor babysit checks comments reviews conflicts wake agent",
+    ],
+  },
+  {
     id: "source-control",
     title: "Source control",
     to: "/settings/source-control",

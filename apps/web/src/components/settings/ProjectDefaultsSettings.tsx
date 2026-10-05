@@ -80,6 +80,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedBrowser = useScopedSettingsMixed(["enableAgentBrowserAccess"]);
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
   const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
+  const mixedPullRequestWatch = useScopedSettingsMixed(["enablePullRequestWatch"]);
   const modelSource = useScopedSettingSource(["defaultModelSelection"]);
   const isProjectScope = scope.kind === "project" || scope.kind === "checkout";
   const unavailable = connectedEnvironments.length === 0;
@@ -460,6 +461,37 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
               </Select>
             }
           />
+          {/* Environment-wide: the watcher runs per server, not per project. */}
+          {isProjectScope ? null : (
+            <SettingsRow
+              serverScoped
+              settingKeys={["enablePullRequestWatch"]}
+              mixed={mixedPullRequestWatch}
+              {...searchableSetting("pull-request-watch")}
+              description="Agents can ask T3 Code to watch a pull request and wake them when checks finish, someone comments, or the branch conflicts. Turn off if you run your own watcher."
+              resetAction={
+                settings.enablePullRequestWatch !==
+                DEFAULT_SERVER_SETTINGS.enablePullRequestWatch ? (
+                  <SettingResetButton
+                    label="pull request watching"
+                    onClick={() =>
+                      updateSettings({
+                        enablePullRequestWatch: DEFAULT_SERVER_SETTINGS.enablePullRequestWatch,
+                      })
+                    }
+                  />
+                ) : null
+              }
+              control={
+                <Switch
+                  aria-label="Wake agents on pull request changes"
+                  mixed={mixedPullRequestWatch}
+                  checked={mixedPullRequestWatch ? false : settings.enablePullRequestWatch}
+                  onCheckedChange={(enabled) => updateSettings({ enablePullRequestWatch: enabled })}
+                />
+              }
+            />
+          )}
         </>
       ) : (
         <>

@@ -294,6 +294,8 @@ function makeProviderAdapter(
     readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
     readonly hangSessionScopeClose?: boolean;
     readonly beforeUnload?: Effect.Effect<void>;
+    /** Receives the watch flag adapters read when building each turn's instructions. */
+    readonly turnWatchFlags?: Ref.Ref<ReadonlyArray<boolean>>;
   } = {},
 ): ProviderAdapterV2Shape {
   return {
@@ -364,7 +366,13 @@ function makeProviderAdapter(
               ...current,
               resumeCount: current.resumeCount + 1,
             })).pipe(Effect.as(threadInput.providerThread)),
-          startTurn: () => Effect.void,
+          startTurn: (turnInput) =>
+            options.turnWatchFlags === undefined
+              ? Effect.void
+              : Ref.update(options.turnWatchFlags, (flags) => [
+                  ...flags,
+                  McpProviderSession.pullRequestWatchAvailable(turnInput.threadId),
+                ]),
           steerTurn: () => Effect.void,
           interruptTurn: () =>
             Ref.update(state, (current) => ({
@@ -410,6 +418,7 @@ function makeTestLayer(input: {
   readonly hasPendingBackgroundWork?: Effect.Effect<boolean>;
   readonly hangSessionScopeClose?: boolean;
   readonly beforeUnload?: Effect.Effect<void>;
+  readonly turnWatchFlags?: Ref.Ref<ReadonlyArray<boolean>>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
 }) {
@@ -432,6 +441,7 @@ function makeTestLayer(input: {
         ? {}
         : { hangSessionScopeClose: input.hangSessionScopeClose }),
       ...(input.beforeUnload === undefined ? {} : { beforeUnload: input.beforeUnload }),
+      ...(input.turnWatchFlags === undefined ? {} : { turnWatchFlags: input.turnWatchFlags }),
     }),
   );
   const providerEventIngestorTestLayer = ProviderEventIngestor.layer.pipe(
@@ -1159,6 +1169,89 @@ it.effect(
             serverSettingsLayer: ServerSettings.layerTest({
               enableAgentBrowserAccess: false,
             }).pipe(Layer.orDie),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 applies a pull request watch flip to the next turn of an open session",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const turnWatchFlags = yield* Ref.make<ReadonlyArray<boolean>>([]);
+      const settings = yield* ServerSettings.ServerSettingsService.pipe(
+        Effect.provide(ServerSettings.layerTest()),
+      );
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("thread-provider-session-manager-watch-flip");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const providerThread = makeProviderThread({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          now,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const runtime = yield* manager.open({
+          threadId,
+          providerSessionId,
+          modelSelection,
+          runtimePolicy,
+        });
+        const appThread = (yield* projectionStore.getThreadProjection(threadId)).thread;
+        const startTurn = (ordinal: number) =>
+          Effect.gen(function* () {
+            const runId = idAllocator.derive.run({ threadId, ordinal });
+            yield* runtime.startTurn({
+              appThread,
+              threadId,
+              runId,
+              runOrdinal: ordinal,
+              providerTurnOrdinal: ordinal,
+              attemptId: idAllocator.derive.runAttempt({ runId, attemptOrdinal: 1 }),
+              rootNodeId: idAllocator.derive.rootNode({ runId }),
+              providerThread,
+              message: {
+                createdBy: "user",
+                creationSource: "web",
+                messageId: yield* idAllocator.allocate.message({ threadId, ordinal }),
+                text: "hello",
+                attachments: [],
+              },
+              modelSelection,
+              runtimePolicy,
+            });
+          });
+
+        yield* startTurn(1);
+        yield* settings.updateSettings({ enablePullRequestWatch: false });
+        yield* startTurn(2);
+        yield* settings.updateSettings({ enablePullRequestWatch: true });
+        yield* startTurn(3);
+        assert.deepEqual(yield* Ref.get(turnWatchFlags), [true, false, true]);
+
+        yield* manager.close(providerSessionId);
+      });
+
+      yield* effect.pipe(
+        Effect.provide(
+          makeTestLayer({
+            state,
+            idleTimeoutMs: 60_000,
+            turnWatchFlags,
+            serverSettingsLayer: Layer.succeed(ServerSettings.ServerSettingsService, settings),
           }),
         ),
       );

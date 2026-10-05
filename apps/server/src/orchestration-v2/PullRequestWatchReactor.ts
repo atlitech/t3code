@@ -24,6 +24,7 @@ import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -65,7 +66,8 @@ function watchesEqual(left: ThreadPullRequestWatch, right: ThreadPullRequestWatc
  * Wakes a thread's agent when a pull request it watches (`watch_pull_request`) needs a look:
  * checks finished on the head commit, someone else commented, or the branch started to
  * conflict. One pass a minute reads each watched pull request; settled threads wait until
- * they are active again, and a merged or closed pull request ends its watch.
+ * they are active again, and a merged or closed pull request ends its watch. While the user has
+ * turned watching off, each pass ends every watch quietly instead, without reading the host.
  */
 export class PullRequestWatchReactor extends Context.Service<
   PullRequestWatchReactor,
@@ -81,6 +83,7 @@ export const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const pullRequests = yield* PullRequestService.PullRequestService;
+  const settings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
 
   // Passes in a row that failed, per watch. Kept in memory: a restart only delays the stop.
@@ -244,6 +247,8 @@ export const make = Effect.gen(function* () {
   });
 
   const sweep = Effect.gen(function* () {
+    // Read every pass so turning watching off or on applies without a restart.
+    const { enablePullRequestWatch } = yield* settings.getSettings;
     const threads = yield* projections.getThreadsWithPullRequests();
     const targets = threads.flatMap((thread) =>
       visibleThreadPullRequests(thread.pullRequests ?? []).flatMap((link) =>
@@ -256,7 +261,8 @@ export const make = Effect.gen(function* () {
     yield* Effect.forEach(
       targets,
       (target) =>
-        check(target).pipe(
+        // No wake: the user turned watching off, so the agent has nothing to act on.
+        (enablePullRequestWatch ? check(target) : record(target, null)).pipe(
           Effect.catchCause(
             logFailure("pull request watch check failed", {
               threadId: target.thread.id,

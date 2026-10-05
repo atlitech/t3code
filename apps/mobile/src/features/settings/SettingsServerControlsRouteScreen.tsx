@@ -354,6 +354,20 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       onValueChange={(value) => write({ newWorktreesStartFromOrigin: value })}
                     />
                   </SettingsSection>
+                  <SettingsSection title="Pull requests">
+                    <SettingsSwitchRow
+                      icon="eye"
+                      label="Wake agents on pull request changes"
+                      subtitle={
+                        projectSelected
+                          ? "Environment-wide setting. Select All projects to change it."
+                          : "Wake agents watching a pull request when checks finish, someone comments, or it conflicts. Turn off if you run your own watcher."
+                      }
+                      value={uniform("enablePullRequestWatch")}
+                      disabled={disabledFor("enablePullRequestWatch")}
+                      onValueChange={(value) => write({ enablePullRequestWatch: value })}
+                    />
+                  </SettingsSection>
                 </>
               ) : null}
 
