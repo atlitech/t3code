@@ -1,0 +1,166 @@
+name: Fork server release
+
+# Fork-only (atlitech/t3code). Builds the self-contained Linux x64 server
+# archive the official release ships and publishes it with SHA256SUMS as a
+# prerelease, in the layout scripts/install.sh and `t3 update` download from.
+# Runbook: docs/operations/fork-server.md.
+
+on:
+  push:
+    tags:
+      - "v*-atli.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Fork version, <next upstream patch>-atli.<n> (for example 0.0.46-atli.1)"
+        required: true
+        type: string
+
+concurrency:
+  group: fork-server-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish Linux x64 server
+    if: github.repository == 'atlitech/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # Public T3 Connect identifiers baked into the server and web bundles.
+      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
+      T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.T3CODE_CLERK_JWT_TEMPLATE }}
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID }}
+      T3CODE_RELAY_URL: ${{ vars.T3CODE_RELAY_URL }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Resolve version
+        shell: bash
+        env:
+          RAW_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${RAW_VERSION#v}"
+          n='(0|[1-9][0-9]*)'
+          if [[ ! "$version" =~ ^$n\.$n\.$n-atli\.$n$ ]]; then
+            echo "::error::Fork versions look like 0.0.46-atli.1; got '$RAW_VERSION'."
+            exit 1
+          fi
+          missing=()
+          for name in T3CODE_CLERK_PUBLISHABLE_KEY T3CODE_CLERK_JWT_TEMPLATE T3CODE_CLERK_CLI_OAUTH_CLIENT_ID T3CODE_RELAY_URL; do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error::Missing repository variables: ${missing[*]}"
+            exit 1
+          fi
+          # Installed runtimes are keyed by version and never re-downloaded,
+          # so a dispatch must not reuse a version (or attach to a tag that
+          # names another commit). Re-run the tag's own workflow instead.
+          # `--exit-code` exits 2 only when the tag is missing; anything else
+          # (128 for network or auth failures) must not read as "missing".
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            status=0
+            git ls-remote --exit-code --tags "$GITHUB_SERVER_URL/$GH_REPO.git" "refs/tags/v$version" >/dev/null || status=$?
+            case "$status" in
+              0)
+                echo "::error::Tag v$version already exists. Bump the atli number."
+                exit 1
+                ;;
+              2) ;;
+              *)
+                echo "::error::Could not check whether tag v$version exists (git ls-remote exited $status)."
+                exit 1
+                ;;
+            esac
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --filter=t3... --filter=@t3tools/web... --filter=@t3tools/scripts...
+
+      - name: Align package versions to release version
+        run: node scripts/update-release-package-versions.ts "$VERSION"
+
+      - name: Cache resource monitor
+        id: resource_monitor_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor
+          key: resource-monitor-x86_64-unknown-linux-gnu-${{ hashFiles('native/resource-monitor/Cargo.lock', 'native/resource-monitor/Cargo.toml', 'native/resource-monitor/src/**') }}
+
+      - name: Setup Rust
+        if: steps.resource_monitor_cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Build resource monitor
+        if: steps.resource_monitor_cache.outputs.cache-hit != 'true'
+        run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu
+
+      # t3#build builds @t3tools/web first and copies it into apps/server/dist/client.
+      - name: Build server and web client
+        run: vp run --filter t3 build
+
+      - name: Build CLI single-executable
+        env:
+          # Keep in step with SEA_NODE_VERSION in apps/server/vite.config.ts.
+          VP_NODE_VERSION: "26.8.2"
+        run: node apps/server/scripts/cli.ts build-exe --verbose
+
+      - name: Build and smoke-test CLI archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          monitor_dir="$RUNNER_TEMP/cli-resource-monitor"
+          mkdir -p "$monitor_dir/linux-x64"
+          cp native/resource-monitor/target/x86_64-unknown-linux-gnu/release/t3-resource-monitor "$monitor_dir/linux-x64/"
+          node scripts/build-cli-archive.ts \
+            --platform linux \
+            --arch x64 \
+            --version "$VERSION" \
+            --resource-monitor-dir "$monitor_dir" \
+            --output-dir release-cli
+          node scripts/smoke-cli-archive.ts --archive "release-cli/t3-$VERSION-linux-x64.tar.gz" --expect-version "$VERSION"
+          cd release-cli
+          sha256sum t3-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+
+      # A dispatch creates the tag here; tags pushed with GITHUB_TOKEN start no
+      # other workflows. A re-run of a tag build replaces both assets together.
+      - name: Publish GitHub release
+        shell: bash
+        run: |
+          set -euo pipefail
+          assets=("release-cli/t3-$VERSION-linux-x64.tar.gz" release-cli/SHA256SUMS)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "T3 Code $VERSION (atli fork, Linux x64 server)" \
+              --notes "Linux x64 server build of $GH_REPO@$GITHUB_SHA. Install and switch the background service with docs/operations/fork-server.md."
+          fi
