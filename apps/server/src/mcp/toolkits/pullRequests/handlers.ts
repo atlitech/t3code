@@ -25,6 +25,7 @@ import * as Option from "effect/Option";
 
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import {
@@ -37,6 +38,7 @@ import {
   PullRequestListFailedError,
   PullRequestNotOpenError,
   type PullRequestTargetInput,
+  PullRequestWatchDisabledError,
   PullRequestWatchFailedError,
   PullRequestWatchFromSubagentError,
   PullRequestThreadNotFoundError,
@@ -157,6 +159,7 @@ const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
 
   const projects = yield* ProjectService.ProjectService;
+  const settings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
 
   const commandId = (tag: string, threadId: ThreadId) =>
@@ -226,6 +229,14 @@ const make = Effect.gen(function* () {
     watching: boolean,
   ) {
     const thread = yield* requireThread(PullRequestWatchFailedError, input.threadId);
+    // Read per call so the setting applies without restarting provider sessions. Stopping a
+    // watch stays allowed: it is the way out of one started before watching was turned off.
+    if (watching) {
+      const { enablePullRequestWatch } = yield* settings.getSettings.pipe(
+        Effect.mapError((cause) => new PullRequestWatchFailedError({ cause })),
+      );
+      if (!enablePullRequestWatch) return yield* new PullRequestWatchDisabledError();
+    }
     const project = yield* projectOf(thread, PullRequestWatchFailedError);
     const target = yield* resolveTarget(input, project);
     const watchedLink = (shell: OrchestrationV2ThreadShell) =>

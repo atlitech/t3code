@@ -3265,6 +3265,9 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 buildRuntimeInstructions({
                   harness: "OpenCode",
                   model: turnInput.modelSelection.model,
+                  pullRequestWatch: McpProviderSession.pullRequestWatchAvailable(
+                    turnInput.threadId,
+                  ),
                 }),
               ]
                 .filter(Boolean)

@@ -218,6 +218,11 @@ A watched thread counts as working between wakes, so it stays in the **Working**
 not auto-settle. Agents stop watching when they hand the work back to you, and the thread then
 returns to your inbox.
 
+If you run your own pull request watcher, turn off **Settings → Source control → Wake agents on pull
+request changes**: `watch_pull_request` refuses, existing watches end, and agents stop being told to use
+it from their next message. A Claude session that is already running keeps its earlier instructions
+until it restarts.
+
 Cross-repository links use a project on the same host. Azure DevOps reviews require a project checked
 out from the matching organization and repository.
 

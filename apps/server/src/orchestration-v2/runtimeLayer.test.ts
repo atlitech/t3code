@@ -2501,6 +2501,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         Effect.provide(
           Layer.mergeAll(
             NodeServices.layer,
+            ServerSettings.layerTest(),
             Layer.mock(PullRequestService.PullRequestService)({
               detail: () => Effect.die("host unreachable"),
               activity: () => Effect.die("host unreachable"),
@@ -2580,6 +2581,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           Effect.provide(
             Layer.mergeAll(
               NodeServices.layer,
+              ServerSettings.layerTest(),
               Layer.mock(PullRequestService.PullRequestService)({
                 detail: () =>
                   Effect.suspend(() => {
@@ -2668,6 +2670,90 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       }),
   );
 
+  it.effect("ends watches quietly without host reads while watching is off", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-pull-request-watch-disabled");
+      const projectId = ProjectId.make("pr-watch-disabled-project");
+      yield* seedProject({
+        projectId,
+        title: "Watch disabled",
+        workspaceRoot: "/workspace/watch-disabled",
+        defaultModelSelection: null,
+        createdAt: "2026-10-01T00:00:00.000Z",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("pr-watch-disabled-create"),
+        threadId,
+        projectId,
+        title: "Watch disabled",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      const setWatch = (watching: boolean, attempt: string) =>
+        orchestrator.dispatch({
+          type: "thread.pull-request.watch",
+          commandId: CommandId.make(`pr-watch-disabled-${attempt}`),
+          threadId,
+          host: "github.com",
+          repository: "pingdotgg/t3code",
+          number: 9,
+          watching,
+          link: { url: "https://github.com/pingdotgg/t3code/pull/9", source: "agent" },
+        });
+      const watchOf = orchestrator
+        .getThreadShell(threadId)
+        .pipe(Effect.map((thread) => thread?.pullRequests?.[0]?.watch));
+      yield* setWatch(true, "start-first");
+
+      const settings = yield* ServerSettings.ServerSettingsService.pipe(
+        Effect.provide(ServerSettings.layerTest({ enablePullRequestWatch: false })),
+      );
+      let hostReads = 0;
+      const reactor = yield* PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.succeed(ServerSettings.ServerSettingsService, settings),
+            Layer.mock(PullRequestService.PullRequestService)({
+              detail: () => {
+                hostReads += 1;
+                return Effect.die("host unreachable");
+              },
+              activity: () => {
+                hostReads += 1;
+                return Effect.die("host unreachable");
+              },
+            }),
+          ),
+        ),
+      );
+      yield* reactor.sweep;
+
+      assert.isUndefined(yield* watchOf);
+      assert.equal(hostReads, 0);
+      const { messages } = yield* orchestrator.getThreadRecords(threadId, ["messages"]);
+      assert.deepEqual(messages, []);
+      // The link itself stays: only the watch ends.
+      assert.equal((yield* orchestrator.getThreadShell(threadId))?.pullRequests?.length, 1);
+
+      // Turning watching back on keeps the next watch and reads the host for it again.
+      yield* settings.updateSettings({ enablePullRequestWatch: true });
+      yield* setWatch(true, "start-second");
+      yield* reactor.sweep;
+      assert.isDefined(yield* watchOf);
+      assert.isAbove(hostReads, 0);
+      // The test layer is shared, so a watch left on would be swept by later tests.
+      yield* setWatch(false, "stop");
+    }),
+  );
+
   it.effect("reports how long an ended watch was quiet", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -2716,6 +2802,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         Effect.provide(
           Layer.mergeAll(
             NodeServices.layer,
+            ServerSettings.layerTest(),
             Layer.mock(PullRequestService.PullRequestService)({
               detail: () =>
                 Effect.sync(() => ({
@@ -2818,6 +2905,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         Effect.provide(
           Layer.mergeAll(
             NodeServices.layer,
+            ServerSettings.layerTest(),
             Layer.mock(PullRequestService.PullRequestService)({
               watchFingerprint: () =>
                 Effect.suspend(() =>
@@ -3027,6 +3115,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         Effect.provide(
           Layer.mergeAll(
             NodeServices.layer,
+            ServerSettings.layerTest(),
             Layer.mock(PullRequestService.PullRequestService)({
               detail: () => Effect.succeed(detail),
               activity: () =>

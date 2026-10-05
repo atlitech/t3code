@@ -185,6 +185,7 @@ export interface CodexRuntimeInfo {
   readonly model: string;
   readonly modelName?: string | undefined;
   readonly reasoningEffort: string;
+  readonly pullRequestWatch?: boolean;
 }
 
 /** Mode prompt for `turn/start.collaborationMode.settings.developer_instructions`. */
