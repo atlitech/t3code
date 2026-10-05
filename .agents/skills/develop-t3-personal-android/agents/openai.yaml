@@ -1,0 +1,4 @@
+interface:
+  display_name: "Develop T3 Personal Android"
+  short_description: "Build and maintain a standalone personal Android app"
+  default_prompt: "Use $develop-t3-personal-android to test changes, build a standalone personal APK, and install it safely on my Android phone."

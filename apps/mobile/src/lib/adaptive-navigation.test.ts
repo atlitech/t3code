@@ -1,11 +1,22 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  createPopToThreadAction,
   isBaseThreadRoute,
   resolveFileSelectionNavigationAction,
   resolveThreadSelectionNavigationAction,
   resolveThreadSelectionOverlayState,
 } from "./adaptive-navigation";
+
+describe("createPopToThreadAction", () => {
+  it("pops back to the existing thread route instead of retaining another screen", () => {
+    const params = { environmentId: "environment", threadId: "thread" };
+    const action = createPopToThreadAction(params);
+
+    expect(action.type).toBe("POP_TO");
+    expect(action.payload).toEqual({ name: "Thread", params, merge: undefined });
+  });
+});
 
 describe("isBaseThreadRoute", () => {
   it("recognizes only the thread detail route", () => {

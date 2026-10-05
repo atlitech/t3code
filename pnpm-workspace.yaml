@@ -299,6 +299,8 @@ patchedDependencies:
   react-native-nitro-modules@0.35.9: patches/react-native-nitro-modules@0.35.9.patch
   # Android: a nested WebView hands a vertical drag to its scrolling parent at the page's edge.
   react-native-webview@14.0.1: patches/react-native-webview@14.0.1.patch
+  # Drop the dynamic fbjni:+ so it follows React Native's fbjni. fbjni 0.8.1 needs a newer libc++ than React Native ships and crashes at launch.
+  react-native-shiki-engine@0.3.12: patches/react-native-shiki-engine@0.3.12.patch
 
 peerDependencyRules:
   allowAny:

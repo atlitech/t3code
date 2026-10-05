@@ -2,7 +2,7 @@ import { StackActions, useNavigation } from "@react-navigation/native";
 import { useMemo } from "react";
 import { ScreenHeader } from "../../components/ScreenHeader";
 import { ScreenHeaderButton } from "../../components/ScreenHeaderButton";
-import type { ScreenHeaderAction } from "../../components/ScreenHeader.types";
+import type { ScreenHeaderAction, ScreenHeaderMenu } from "../../components/ScreenHeader.types";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import type { ThreadInspectorMode } from "./thread-inspector-content-stack";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
@@ -22,6 +22,68 @@ export function ThreadHeader(
   const { layout, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
+  // iOS renders the thread actions through the native header items above.
+  // Android gets one in-flow menu that also swallows terminal and git: the
+  // header only keeps a single action visible on phone widths, so leaving them
+  // as icon actions puts AndroidScreenHeader's own overflow ellipsis right
+  // beside this one.
+  const { threadActions, onThreadAction } = props;
+  const threadActionsMenus = useMemo<ReadonlyArray<ScreenHeaderMenu>>(
+    () => [
+      {
+        title: "Thread actions",
+        icon: "ellipsis",
+        items: [
+          ...(props.hasWorkspaceRoot && props.gitControls.canOpenTerminal
+            ? [
+                {
+                  id: "open-terminal",
+                  title: "Open terminal",
+                  icon: "terminal",
+                  onPress: () => onOpenTerminal(null),
+                },
+              ]
+            : []),
+          {
+            id: "open-git",
+            title: "Git controls",
+            icon: "point.topleft.down.curvedto.point.bottomright.up",
+            subtitle: "Commit, files, branches",
+            onPress: props.onOpenGitInspector,
+          },
+          ...(onMergeBack
+            ? [
+                {
+                  id: "merge-back",
+                  title: "Merge back to source",
+                  icon: "arrow.triangle.merge",
+                  subtitle: "Bring this thread's latest turn into its source",
+                  onPress: onMergeBack,
+                },
+              ]
+            : []),
+          ...threadActions.map((action) => ({
+            id: action.id,
+            title: action.title,
+            icon: action.icon,
+            ...(action.subtitle ? { subtitle: action.subtitle } : {}),
+            ...(action.disabled ? { disabled: true } : {}),
+            ...(action.destructive ? { destructive: true } : {}),
+            onPress: () => onThreadAction(action.id),
+          })),
+        ],
+      },
+    ],
+    [
+      onMergeBack,
+      onOpenTerminal,
+      onThreadAction,
+      props.hasWorkspaceRoot,
+      props.gitControls.canOpenTerminal,
+      props.onOpenGitInspector,
+      threadActions,
+    ],
+  );
   const androidHeaderActions = useMemo<ReadonlyArray<ScreenHeaderAction>>(() => {
     const actions: ScreenHeaderAction[] = [];
     if (props.onReturnToThread) {
@@ -29,6 +91,13 @@ export function ThreadHeader(
         accessibilityLabel: "Return to chat",
         icon: "chevron.left",
         onPress: props.onReturnToThread,
+      });
+    }
+    if (layout.usesSplitView && !panes.primarySidebarVisible) {
+      actions.push({
+        accessibilityLabel: "New task",
+        icon: "square.and.pencil",
+        onPress: props.onStartNewTask,
       });
     }
     if (props.hasThreadCwd) {
@@ -40,38 +109,17 @@ export function ThreadHeader(
         onPress: filesVisible ? toggleAuxiliaryPane : props.onOpenFilesInspector,
       });
     }
-    if (props.hasWorkspaceRoot && props.gitControls.canOpenTerminal) {
-      actions.push({
-        accessibilityLabel: "Open terminal",
-        icon: "terminal",
-        onPress: () => onOpenTerminal(null),
-      });
-    }
-    actions.push({
-      accessibilityLabel: "Open git controls",
-      icon: "point.topleft.down.curvedto.point.bottomright.up",
-      onPress: props.onOpenGitInspector,
-    });
-    if (onMergeBack) {
-      actions.push({
-        accessibilityLabel: "Merge back to source",
-        icon: "arrow.triangle.merge",
-        onPress: onMergeBack,
-      });
-    }
     return actions;
   }, [
     props.inspectorMode,
     panes.auxiliaryPaneVisible,
     props.onOpenFilesInspector,
-    onOpenTerminal,
-    onMergeBack,
-    props.onOpenGitInspector,
     toggleAuxiliaryPane,
     props.onReturnToThread,
+    props.onStartNewTask,
     props.hasThreadCwd,
-    props.hasWorkspaceRoot,
-    props.gitControls.canOpenTerminal,
+    layout.usesSplitView,
+    panes.primarySidebarVisible,
   ]);
 
   return (
@@ -107,6 +155,7 @@ export function ThreadHeader(
               }
         }
         actions={androidHeaderActions}
+        menus={threadActionsMenus}
         hideBottomBorder
       />
       {native.fallback}

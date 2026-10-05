@@ -42,6 +42,7 @@ import Animated, {
 import { AppText as Text } from "../../components/AppText";
 import { SwipeRowActivationContext, type SwipeRowActivation } from "./swipe-row-activation";
 import { registerThreadDismissal } from "./thread-dismissal";
+import { shouldCommitThreadFullSwipe } from "./thread-swipe-commit";
 
 // Wide enough for the longest action label ("Unarchive").
 const ACTION_ITEM_WIDTH = 58;
@@ -296,6 +297,10 @@ export function ThreadSwipeable(props: ThreadSwipeableProps) {
 function ThreadSwipeableRow(props: ThreadSwipeableProps) {
   const swipeableRef = useRef<SwipeableMethods | null>(null);
   const fullSwipeArmedRef = useRef(false);
+  const fullSwipeGestureRef = useRef<{
+    readonly resetKey: string | undefined;
+    readonly startedAtMs: number;
+  } | null>(null);
   const hasSecondaryAction = props.secondaryAction !== null;
   const actionsWidth = swipeActionsWidth(hasSecondaryAction);
   const fullSwipeThreshold = Math.max(actionsWidth + 44, props.fullSwipeWidth * 0.58);
@@ -303,6 +308,7 @@ function ThreadSwipeableRow(props: ThreadSwipeableProps) {
     props.fullSwipeAction ?? (props.secondaryAction === undefined ? "delete" : "primary");
   const close = useCallback(() => swipeableRef.current?.close(), []);
   const gateEnabled = use(SwipeableScrollGateContext);
+  const resetKey = props.resetKey;
   const mountedRef = useRef(true);
   const dismissalRef = useRef<{ finished: Promise<void>; restore: () => void } | null>(null);
   const pendingDismissRef = useRef<(() => void) | null>(null);
@@ -320,6 +326,8 @@ function ThreadSwipeableRow(props: ThreadSwipeableProps) {
   const restoreRow = useCallback(() => {
     if (!mountedRef.current) return;
     dismissalRef.current = null;
+    fullSwipeArmedRef.current = false;
+    fullSwipeGestureRef.current = null;
     swipeableRef.current?.reset();
     fallbackTranslation.set(0);
     collapse.set(0);
@@ -442,12 +450,16 @@ function ThreadSwipeableRow(props: ThreadSwipeableProps) {
           friction={1}
           onSwipeableClose={() => {
             fullSwipeArmedRef.current = false;
+            fullSwipeGestureRef.current = null;
             if (swipeableRef.current) {
               props.onSwipeableClose?.(swipeableRef.current);
             }
           }}
           onSwipeableRelease={handleRelease}
           onSwipeableOpenStartDrag={() => {
+            // A full swipe may only be committed by this fresh gesture.
+            fullSwipeArmedRef.current = false;
+            fullSwipeGestureRef.current = { resetKey, startedAtMs: Date.now() };
             if (swipeableRef.current) {
               props.onSwipeableWillOpen?.(swipeableRef.current);
             }
@@ -459,7 +471,16 @@ function ThreadSwipeableRow(props: ThreadSwipeableProps) {
             }
 
             props.onSwipeableWillOpen?.(methods);
-            if (fullSwipeArmedRef.current && fullSwipeAction !== "primary") {
+            const gesture = fullSwipeGestureRef.current;
+            const shouldCommit = shouldCommitThreadFullSwipe({
+              armed: fullSwipeArmedRef.current,
+              currentResetKey: resetKey,
+              gestureResetKey: gesture?.resetKey,
+              gestureStartedAtMs: gesture?.startedAtMs ?? null,
+              nowMs: Date.now(),
+            });
+            fullSwipeGestureRef.current = null;
+            if (shouldCommit && fullSwipeAction !== "primary") {
               fullSwipeArmedRef.current = false;
               methods.close();
               props.onDelete();

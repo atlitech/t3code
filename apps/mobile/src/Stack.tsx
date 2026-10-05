@@ -590,6 +590,7 @@ function RootStackLayout(props: {
 }) {
   const navigation = useNavigation();
   const { pendingShare } = useIncomingShare();
+  const topRouteName = props.state.routes[props.state.index]?.name;
   const sharePresentationRef = useRef(EMPTY_INCOMING_SHARE_PRESENTATION_STATE);
   // Keyboard commands follow the top route; notification suppression follows
   // the thread beneath overlay sheets.
@@ -602,7 +603,6 @@ function RootStackLayout(props: {
   // Launcher app shortcuts: routes shortcut taps and tracks opened threads.
   useAppShortcuts(props.state);
   useEffect(() => {
-    const topRouteName = props.state.routes[props.state.index]?.name;
     const transition = transitionIncomingSharePresentation(sharePresentationRef.current, {
       isShareSheetPresented: topRouteName === "NewTaskSheet",
       pendingShareId: pendingShare?.id ?? null,
@@ -615,7 +615,7 @@ function RootStackLayout(props: {
       screen: "NewTask",
       params: { incomingShareId: transition.shareIdToPresent },
     });
-  }, [navigation, pendingShare, props.state]);
+  }, [navigation, pendingShare, topRouteName]);
 
   return (
     <HardwareKeyboardCommandProvider pathname={pathname}>
@@ -623,6 +623,7 @@ function RootStackLayout(props: {
       <ShowcaseCaptureCoordinator pathname={pathname} />
       <ExistingThreadSettingsRouteProvider>
         <AdaptiveWorkspaceLayout
+          newTaskFlowPresented={topRouteName === "NewTaskSheet"}
           pathname={workspaceLocation.pathname}
           workspaceRouteKey={workspaceLocation.routeKey}
         >
