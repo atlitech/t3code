@@ -10,6 +10,16 @@ describe("buildRuntimeInstructions", () => {
     expect(instructions).toContain("call list_thread_pull_requests and link any PR");
   });
 
+  it("drops only the watch guidance when pull request watching is off", () => {
+    const on = buildRuntimeInstructions({ harness: "Codex" });
+    const off = buildRuntimeInstructions({ harness: "Codex", pullRequestWatch: false });
+    expect(on).toContain("watch_pull_request");
+    expect(off).not.toContain("watch_pull_request");
+    expect(off).not.toContain("own watcher");
+    expect(off).toContain("call list_thread_pull_requests and link any PR");
+    expect(off).toContain("</pull_request_linking>");
+  });
+
   it("keeps known model and effort metadata on one line", () => {
     expect(
       buildRuntimeInstructions({

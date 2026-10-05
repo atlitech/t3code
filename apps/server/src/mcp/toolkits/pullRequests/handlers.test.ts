@@ -22,6 +22,7 @@ import {
   v2PullRequestThread,
 } from "../../../orchestration-v2/testkit/pullRequestFixtures.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
+import * as ServerSettings from "../../../serverSettings.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
@@ -135,6 +136,7 @@ interface HarnessOptions {
   readonly project?: OrchestrationProjectShell | null;
   /** A rejection the orchestrator reports as the dispatch error's cause. */
   readonly reject?: (command: OrchestrationCommand) => string | null;
+  readonly enablePullRequestWatch?: boolean;
 }
 
 const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
@@ -166,6 +168,7 @@ const makeHarness = Effect.fn("makePullRequestsToolkitHarness")(function* (
     }),
     Layer.succeed(Crypto.Crypto, testCrypto),
     McpToolAccessTestkit.liveThreadsLayer,
+    ServerSettings.layerTest({ enablePullRequestWatch: options.enablePullRequestWatch ?? true }),
   );
   const toolkit = yield* PullRequestsToolkit.pipe(
     Effect.provide(
@@ -278,6 +281,39 @@ describe("pull request toolkit handlers", () => {
         .call("watch_pull_request", { repository: "t3tools/t3code", number: 1 })
         .pipe(Effect.flip);
       expect(error).toMatchObject({ _tag: "PullRequestNotOpenError", state: "merged" });
+      expect(
+        yield* harness.call("unwatch_pull_request", { repository: "t3tools/t3code", number: 3 }),
+      ).toMatchObject({ wasWatching: true });
+      expect(yield* Ref.get(harness.commands)).toMatchObject([
+        { type: "thread.pull-request.watch", number: 3, watching: false },
+      ]);
+    }),
+  );
+
+  it.effect("refuses to start a watch while watching is off, but still stops one", () =>
+    Effect.gen(function* () {
+      const watch = {
+        startedAt: "2026-08-20T00:00:00.000Z",
+        headSha: null,
+        failedChecks: [],
+        passed: false,
+        passedChecks: [],
+        remarksThrough: "2026-08-20T00:00:00.000Z",
+        remarkIds: [],
+        conflicting: false,
+        wakes: 0,
+      };
+      const harness = yield* makeHarness({
+        enablePullRequestWatch: false,
+        thread: makeThread([
+          makeLink(2, { headBranch: "idle" }),
+          makeLink(3, { headBranch: "watched", watch }),
+        ]),
+      });
+      const error = yield* harness
+        .call("watch_pull_request", { repository: "t3tools/t3code", number: 2 })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "PullRequestWatchDisabledError" });
       expect(
         yield* harness.call("unwatch_pull_request", { repository: "t3tools/t3code", number: 3 }),
       ).toMatchObject({ wasWatching: true });

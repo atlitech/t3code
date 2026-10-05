@@ -31,6 +31,7 @@ import {
   PullRequestProviderError,
 } from "../pullRequest/PullRequestProvider.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -124,6 +125,7 @@ type WatchEndReason =
   | "comment-limit"
   | "settled"
   | "subagent"
+  | "disabled"
   | "stopped";
 
 /**
@@ -219,7 +221,8 @@ function watchesEqual(left: ThreadPullRequestWatch, right: ThreadPullRequestWatc
  * unless its sync snapshot has not moved while nothing is in flight.
  * Settling or archiving a thread ends its watches, and a merged or closed pull request ends
  * its watch. Each ended watch is logged once with why it ended and how long it went without
- * a push, for debugging watches that live too long.
+ * a push, for debugging watches that live too long. While the user has turned watching off,
+ * each pass ends every watch quietly instead, without reading the host.
  */
 export class PullRequestWatchReactor extends Context.Service<
   PullRequestWatchReactor,
@@ -235,6 +238,7 @@ export const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const pullRequests = yield* PullRequestService.PullRequestService;
+  const settings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
   const bootedAt = yield* Clock.currentTimeMillis;
   const lives = new Map<string, WatchLife>();
@@ -570,6 +574,8 @@ export const make = Effect.gen(function* () {
   });
 
   const sweep = Effect.gen(function* () {
+    // Read every pass so turning watching off or on applies without a restart.
+    const { enablePullRequestWatch } = yield* settings.getSettings;
     const threads = yield* projections.getThreadsWithPullRequests();
     const targets = threads.flatMap((thread) =>
       visibleThreadPullRequests(thread.pullRequests ?? []).flatMap((link) =>
@@ -587,7 +593,8 @@ export const make = Effect.gen(function* () {
     const byPullRequest = new Map<string, Array<WatchTarget>>();
     const ending: Array<readonly [WatchTarget, WatchEndReason]> = [];
     for (const target of targets) {
-      const reason = endsWithoutRead(target);
+      // No read and no wake while the user has turned watching off: they run their own watcher.
+      const reason = enablePullRequestWatch ? endsWithoutRead(target) : "disabled";
       if (reason !== undefined) {
         ending.push([target, reason]);
         continue;

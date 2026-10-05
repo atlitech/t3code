@@ -729,6 +729,7 @@ export function buildCodexTurnStartParams(input: {
   readonly hasT3Mcp?: boolean;
   readonly browserToolsAvailable?: boolean;
   readonly deviceToolsAvailable?: boolean;
+  readonly pullRequestWatchAvailable?: boolean;
   /** ChatGPT token sharing does not accept service tiers. */
   readonly omitServiceTier?: boolean;
   /** What the thread's MCP Apps want the agent to know (`ui/update-model-context`). */
@@ -770,7 +771,11 @@ export function buildCodexTurnStartParams(input: {
     const t3Context =
       input.hasT3Mcp === true
         ? buildCodexAdditionalContext(
-            { model: input.modelSelection.model, reasoningEffort: effort ?? "medium" },
+            {
+              model: input.modelSelection.model,
+              reasoningEffort: effort ?? "medium",
+              pullRequestWatch: input.pullRequestWatchAvailable ?? true,
+            },
             {
               browser: input.browserToolsAvailable ?? true,
               device: input.deviceToolsAvailable ?? false,
@@ -6185,6 +6190,7 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               hasT3Mcp: mcpSession !== undefined,
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
+              pullRequestWatchAvailable: mcpSession?.pullRequestWatchAvailable ?? true,
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
             });

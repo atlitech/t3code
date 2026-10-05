@@ -1351,6 +1351,14 @@ export const ServerSettings = Schema.Struct({
    */
   enableAgentDeviceAccess: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /**
+   * Whether T3 Code watches pull requests for agents (`watch_pull_request`)
+   * and wakes them on changes. Off is for users who run their own watcher:
+   * agents stop being told to use the native one, the tool refuses, and the
+   * watch reactor ends existing watches without reading the host. Linking
+   * and tracking pull requests are unaffected.
+   */
+  enablePullRequestWatch: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /**
    * Whether this server may install and run T3's device helper processes.
    * Kept separate from agent access so enabling the user's Device panel does
    * not also grant providers control of simulators and emulators.
@@ -1729,6 +1737,7 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Record(ProjectId, Schema.NullOr(ProjectSettingsOverrides)),
   ),
   enableAgentDeviceAccess: Schema.optionalKey(Schema.Boolean),
+  enablePullRequestWatch: Schema.optionalKey(Schema.Boolean),
   enableDeviceSupport: Schema.optionalKey(Schema.Boolean),
   deviceOnboardingCompleted: Schema.optionalKey(Schema.Boolean),
   deviceHosts: Schema.optionalKey(SshDeviceHostConfigs),

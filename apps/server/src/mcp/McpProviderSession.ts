@@ -14,6 +14,13 @@ export interface McpProviderSessionConfig {
    * call would reject.
    */
   readonly browserToolsAvailable: boolean;
+  /**
+   * False when the environment turned pull request watching off. Refreshed
+   * from the live setting before each turn; adapters read it through
+   * `pullRequestWatchAvailable` so the prompt does not tell agents to use a
+   * watcher every call would refuse. Absent means available.
+   */
+  readonly pullRequestWatchAvailable?: boolean;
   /** Capabilities the credential grants ("preview", "device"). */
   readonly capabilities?: ReadonlySet<string>;
   /**
@@ -49,6 +56,19 @@ export function setMcpProviderSession(config: McpProviderSessionConfig): void {
 
 export function readMcpProviderSession(threadId: ThreadId): McpProviderSessionConfig | undefined {
   return sessionsByThread.get(threadId);
+}
+
+/** Records the live watch setting on the thread's MCP config; a no-op without one. */
+export function setPullRequestWatchAvailable(threadId: ThreadId, available: boolean): void {
+  const existing = sessionsByThread.get(threadId);
+  if (existing === undefined || existing.pullRequestWatchAvailable === available) return;
+  sessionsByThread.set(threadId, { ...existing, pullRequestWatchAvailable: available });
+}
+
+/** Whether the thread's agent may be told to use `watch_pull_request`. */
+export function pullRequestWatchAvailable(threadId: ThreadId | null): boolean {
+  if (threadId === null) return true;
+  return sessionsByThread.get(threadId)?.pullRequestWatchAvailable !== false;
 }
 
 export function clearMcpProviderSession(threadId: ThreadId): void {

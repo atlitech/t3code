@@ -15,6 +15,7 @@ import {
 import { useCallback, useMemo, useState } from "react";
 
 import { writeTextToClipboard } from "~/hooks/useCopyToClipboard";
+import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { findProjectForChangeRequest, useOpenPrLink } from "~/lib/openPullRequestLink";
 import { cn } from "~/lib/utils";
 import { useShortcutModifierState } from "~/shortcutModifierState";
@@ -347,6 +348,11 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
   const watch = useAtomCommand(threadEnvironment.watchPullRequest, { reportFailure: true });
   const capabilities = useServerConfigs().get(threadRef.environmentId)?.environment.capabilities;
   const supportsWatch = capabilities?.threadPullRequestWatch === true;
+  // Off means the user runs their own watcher; a watch from before stays stoppable.
+  const watchEnabled = useEnvironmentSettings(
+    threadRef.environmentId,
+    (settings) => settings.enablePullRequestWatch,
+  );
   const links = useMemo(() => visibleThreadPullRequests(thread?.pullRequests ?? []), [thread]);
   const lines = useMemo(() => pullRequestListLines(resolveThreadPullRequestChains(links)), [links]);
   const handleUnlink = useCallback(
@@ -426,7 +432,11 @@ function EnabledThreadPullRequestsPanel({ threadRef }: { threadRef: ScopedThread
               }
               speedMode={speedMode}
               onUnlink={handleUnlink}
-              onSetWatching={supportsWatch ? handleSetWatching : null}
+              onSetWatching={
+                supportsWatch && (watchEnabled || line.link.watch !== undefined)
+                  ? handleSetWatching
+                  : null
+              }
             />
           ))}
         </div>
