@@ -66,6 +66,40 @@ index 42fba673de3b6bdc089c305f2e87ad56c3bfc374..2b4981b8a88606fb93d62a29f21f9556
    }
    get remoteAddress() {
      return Option.none();
+diff --git a/dist/reactivity/Atom.js b/dist/reactivity/Atom.js
+--- a/dist/reactivity/Atom.js
++++ b/dist/reactivity/Atom.js
+@@ -656,7 +656,19 @@ const makeStreamPull = (pullSignal, pullAtom) => writable(pullAtom.read, functio
+  * @since 4.0.0
+  */
+ export const family = typeof WeakRef === "undefined" || typeof FinalizationRegistry === "undefined" ? f => {
++  // PATCH: bound the fallback cache.
++  //
++  // This branch runs wherever FinalizationRegistry is missing — notably Hermes,
++  // so every React Native build. Upstream keeps a strong reference to every atom
++  // it ever creates here, and since nothing evicts them the map grows for the
++  // lifetime of the process. Keyed by thread/project id that is an unbounded leak.
++  //
++  // Capacity is set far above any realistic live working set and eviction is
++  // insertion-ordered, so only cold keys are dropped. Evicting a key that is still
++  // mounted would hand out a second atom for it, so do not lower this without
++  // checking the largest number of simultaneously-live keys in a family.
+   const atoms = MutableHashMap.empty();
++  const insertionOrder = [];
+   return function (arg) {
+     const atomEntry = MutableHashMap.get(atoms, arg);
+     if (atomEntry._tag === "Some") {
+@@ -664,6 +676,10 @@ export const family = typeof WeakRef === "undefined" || typeof FinalizationRegis
+     }
+     const newAtom = f(arg);
+     MutableHashMap.set(atoms, arg, newAtom);
++    insertionOrder.push(arg);
++    if (insertionOrder.length > 1024) {
++      MutableHashMap.remove(atoms, insertionOrder.shift());
++    }
+     return newAtom;
+   };
+ } : f => {
 diff --git a/dist/rpc/RpcClient.d.ts b/dist/rpc/RpcClient.d.ts
 index c498ff74510b784dcba791dbf6b8f23dac40a71d..8be9c910a8112a5289159251846128cd27cf32aa 100644
 --- a/dist/rpc/RpcClient.d.ts

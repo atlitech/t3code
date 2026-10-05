@@ -2,14 +2,18 @@ import type {
   EnvironmentProject,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { EnvironmentId, ThreadId, type SidebarProjectGroupingMode } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  type ScopedThreadRef,
+  type SidebarProjectGroupingMode,
+} from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { useFocusEffect } from "@react-navigation/native";
 import {
   CommonActions,
   NavigationContext,
   NavigationRouteContext,
-  StackActions,
   useNavigation,
 } from "@react-navigation/native";
 import {
@@ -41,15 +45,19 @@ import {
   type WorkspacePaneLayout,
 } from "../../lib/layout";
 import {
+  createPopToThreadAction,
   resolveThreadSelectionNavigationAction,
   resolveThreadSelectionOverlayState,
 } from "../../lib/adaptive-navigation";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { appAtomRegistry } from "../../state/atom-registry";
 import { mobilePreferencesAtom } from "../../state/preferences";
+import { environmentProjects } from "../../state/projects";
 import {
   DEFAULT_MOBILE_PROJECT_GROUPING_SETTINGS,
   resolveMobileProjectGroupingSettings,
 } from "../../state/project-grouping";
+import { environmentThreadShells } from "../../state/threads";
 import {
   parseActiveThreadPath,
   useHardwareKeyboardCommand,
@@ -58,6 +66,10 @@ import { AndroidHomeFabLayout } from "../home/AndroidHomeFab";
 import { HomeListOptionsProvider } from "../home/home-list-options";
 import { ThreadNavigationSidebar } from "../threads/ThreadNavigationSidebar";
 import { RenderErrorBoundary, RenderFailureView } from "../../components/RenderErrorBoundary";
+import {
+  resolveNewTaskNavigationDestination,
+  resolveSidebarSelectedThreadKey,
+} from "../threads/new-task-navigation";
 import { WORKSPACE_PANE_TIMING } from "./workspace-pane-animation";
 import { WorkspaceInspectorPane } from "./workspace-inspector-pane";
 import { WorkspaceContentWidthContext } from "./workspace-content-width";
@@ -207,6 +219,7 @@ export function useRegisterWorkspaceInspector(render: (() => ReactNode) | undefi
 
 export function AdaptiveWorkspaceLayout(props: {
   readonly children: ReactNode;
+  readonly newTaskFlowPresented: boolean;
   readonly pathname: string;
   readonly workspaceRouteKey: string | undefined;
 }) {
@@ -231,6 +244,7 @@ export function AdaptiveWorkspaceLayout(props: {
 function AdaptiveWorkspaceLayoutContent(
   props: {
     readonly children: ReactNode;
+    readonly newTaskFlowPresented: boolean;
     readonly pathname: string;
     readonly workspaceRouteKey: string | undefined;
   } & {
@@ -305,16 +319,32 @@ function AdaptiveWorkspaceLayoutContent(
   const activeThread = parseActiveThreadPath(pathname);
   const environmentId = activeThread?.environmentId ?? null;
   const threadId = activeThread?.threadId ?? null;
-  const selectedThreadKey = useMemo(() => {
+  const activeThreadRef = useMemo<ScopedThreadRef | null>(() => {
     if (environmentId === null || threadId === null) {
       return null;
     }
     try {
-      return scopedThreadKey(EnvironmentId.make(environmentId), ThreadId.make(threadId));
+      return {
+        environmentId: EnvironmentId.make(environmentId),
+        threadId: ThreadId.make(threadId),
+      };
     } catch {
       return null;
     }
   }, [environmentId, threadId]);
+  const selectedThreadKey = useMemo(
+    () =>
+      activeThreadRef === null
+        ? null
+        : scopedThreadKey(activeThreadRef.environmentId, activeThreadRef.threadId),
+    [activeThreadRef],
+  );
+  const sidebarSelectedThreadKey = resolveSidebarSelectedThreadKey({
+    selectedThreadKey,
+    newTaskFlowPresented: props.newTaskFlowPresented,
+    usesSplitView: layout.usesSplitView,
+    isAndroid: Platform.OS === "android",
+  });
   // Wrapped in an object: bare functions in useState would be treated as
   // lazy initializers/updaters. `active: false` keeps the outgoing route's
   // content mounted so the pane can animate closed (or be replaced
@@ -427,10 +457,6 @@ function AdaptiveWorkspaceLayoutContent(
     });
   }, [navigation]);
 
-  const handleStartNewTask = useCallback(() => {
-    navigation.navigate("NewTaskSheet", { screen: "NewTask" });
-  }, [navigation]);
-
   // Minted here (root stack navigation) so the sidebar pane stays free of
   // navigation hooks — on iOS it renders inside an independent nav tree.
   const handleOpenEnvironmentSettings = useCallback(() => {
@@ -454,6 +480,36 @@ function AdaptiveWorkspaceLayoutContent(
     },
     [navigation],
   );
+
+  const handleStartNewTask = useCallback(() => {
+    if (Platform.OS !== "android" || !layout.usesSplitView) {
+      navigation.navigate("NewTaskSheet", { screen: "NewTask" });
+      return;
+    }
+    const projects = appAtomRegistry.get(environmentProjects.projectsAtom);
+    const activeThreadShell =
+      activeThreadRef === null
+        ? null
+        : appAtomRegistry.get(environmentThreadShells.threadShellAtom(activeThreadRef));
+    const destination = resolveNewTaskNavigationDestination({
+      projects,
+      hasActiveThreadRoute: activeThreadRef !== null,
+      activeThread: activeThreadShell,
+    });
+    if (destination.kind === "draft") {
+      const project = destination.project;
+      navigation.navigate("NewTaskSheet", {
+        screen: "NewTaskDraft",
+        params: {
+          environmentId: String(project.environmentId),
+          projectId: String(project.id),
+          title: project.title,
+        },
+      });
+      return;
+    }
+    navigation.navigate("NewTaskSheet", { screen: "NewTask" });
+  }, [activeThreadRef, layout.usesSplitView, navigation]);
 
   const handleNewThreadInProject = useCallback(
     (project: EnvironmentProject) => {
@@ -532,7 +588,7 @@ function AdaptiveWorkspaceLayoutContent(
       }
       if (navigationAction === "replace") {
         setFileInspectorPreferredVisible(false);
-        navigation.dispatch(StackActions.replace("Thread", params));
+        navigation.dispatch(createPopToThreadAction(params));
         return;
       }
       navigation.navigate("Thread", params);
@@ -614,7 +670,7 @@ function AdaptiveWorkspaceLayoutContent(
                       width={layout.listPaneWidth}
                       visible={panes.primarySidebarVisible}
                       onRequestVisibility={revealPrimarySidebar}
-                      selectedThreadKey={selectedThreadKey}
+                      selectedThreadKey={sidebarSelectedThreadKey}
                       onOpenSettings={handleOpenSettings}
                       onOpenEnvironmentSettings={handleOpenEnvironmentSettings}
                       onNewThreadInProject={handleNewThreadInProject}

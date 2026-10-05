@@ -27,6 +27,8 @@ import Animated from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useFontFamily } from "../../lib/useFontFamily";
+import { createPopToThreadAction } from "../../lib/adaptive-navigation";
+
 import {
   AuthOrchestrationOperateScope,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
@@ -1358,10 +1360,12 @@ export function NewTaskDraftScreen(props: {
         deferAttachmentCleanup: true,
       });
     }
+    // Defer through submitNavigationAction so the sheet's remove guard clears
+    // first; POP_TO keeps the adaptive split-view back stack intact.
     setSubmitNavigationAction(
       queuesInsteadOfStarting
         ? CommonActions.goBack()
-        : StackActions.replace("Thread", {
+        : createPopToThreadAction({
             environmentId: String(message.environmentId),
             threadId: String(message.threadId),
           }),

@@ -39,6 +39,7 @@ import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { connectionTone } from "../connection/connectionTone";
+import { useThreadListActions, type ThreadListAction } from "../home/useThreadListActions";
 import {
   useRemoteConnections,
   useRemoteConnectionStatus,
@@ -85,6 +86,7 @@ import {
 } from "./thread-inspector-content-stack";
 import { threadRouteIsHydrating } from "./thread-route-hydration";
 import { ThreadHeader } from "./ThreadHeader";
+import { buildThreadRouteActionMenu, type ThreadRouteActionId } from "./thread-route-actions-menu";
 
 interface ThreadInspectorSelection {
   readonly routeThreadIdentity: string | null;
@@ -243,7 +245,7 @@ function ThreadRouteContent(
   );
   const selectedThreadDetailState = props.selectedThreadDetailState;
   const selectedThreadDetail = Option.getOrNull(selectedThreadDetailState.data);
-  const { selectedThreadCwd } = useSelectedThreadWorktree();
+  const { selectedThreadCwd, selectedThreadWorktreePath } = useSelectedThreadWorktree();
   const composer = useThreadComposerState();
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
@@ -373,6 +375,7 @@ function ThreadRouteContent(
     }, [props.renderInspector]),
   );
   const routeEnvironmentRuntime = useRemoteEnvironmentRuntime(environmentId);
+  const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
   const routeConnectionState =
     routeEnvironmentRuntime?.connectionState ?? (environmentId ? "available" : connectionState);
   const routeConnectionError = routeEnvironmentRuntime?.connectionError ?? null;
@@ -405,6 +408,79 @@ function ThreadRouteContent(
           input: { cwd: selectedThreadCwd },
         })
       : null,
+  );
+  const handleThreadActionCompleted = useCallback(
+    (action: ThreadListAction) => {
+      if (action === "delete") {
+        navigation.dispatch(StackActions.replace("Home"));
+      }
+    },
+    [navigation],
+  );
+  const { confirmDeleteThread, settleThread, unsettleThread } = useThreadListActions(
+    handleThreadActionCompleted,
+  );
+  const handleStartNewTask = useCallback(() => {
+    if (selectedThreadProject === null) {
+      navigation.navigate("NewTaskSheet", { screen: "NewTask" });
+      return;
+    }
+    navigation.navigate("NewTaskSheet", {
+      screen: "NewTaskDraft",
+      params: {
+        environmentId: String(selectedThreadProject.environmentId),
+        projectId: String(selectedThreadProject.id),
+        title: selectedThreadProject.title,
+      },
+    });
+  }, [navigation, selectedThreadProject]);
+  const handleStartNewTaskOnWorktree = useCallback(() => {
+    if (
+      selectedThread === null ||
+      selectedThreadProject === null ||
+      selectedThreadWorktreePath === null ||
+      selectedThread.branch === null
+    ) {
+      return;
+    }
+
+    navigation.navigate("NewTaskSheet", {
+      screen: "NewTaskDraft",
+      params: {
+        environmentId: String(selectedThreadProject.environmentId),
+        projectId: String(selectedThreadProject.id),
+        title: selectedThreadProject.title,
+        branch: selectedThread.branch,
+        worktreePath: selectedThreadWorktreePath,
+      },
+    });
+  }, [navigation, selectedThread, selectedThreadProject, selectedThreadWorktreePath]);
+  const threadRouteActions = useMemo(
+    () =>
+      buildThreadRouteActionMenu({
+        settlementSupported: serverConfig?.environment.capabilities.threadSettlement === true,
+        settled: selectedThread?.settledOverride === "settled",
+        settleable: selectedThread !== null,
+        worktreeBranch:
+          selectedThreadWorktreePath !== null ? (selectedThread?.branch ?? null) : null,
+      }),
+    [selectedThread, selectedThreadWorktreePath, serverConfig],
+  );
+  const handleThreadRouteAction = useCallback(
+    (action: ThreadRouteActionId) => {
+      if (selectedThread === null) return;
+      if (action === "new-thread-on-worktree") handleStartNewTaskOnWorktree();
+      if (action === "settle") void settleThread(selectedThread);
+      if (action === "unsettle") void unsettleThread(selectedThread);
+      if (action === "delete") confirmDeleteThread(selectedThread);
+    },
+    [
+      confirmDeleteThread,
+      handleStartNewTaskOnWorktree,
+      selectedThread,
+      settleThread,
+      unsettleThread,
+    ],
   );
   const { sessions: knownTerminalSessions } = useKnownTerminalSessions({
     environmentId: selectedThread?.environmentId ?? null,
@@ -923,7 +999,6 @@ function ThreadRouteContent(
           detailDeleted: selectedThreadDetailState.status === "deleted",
           connectionState: routeConnectionState,
         });
-  const serverConfig = routeEnvironmentRuntime?.serverConfig ?? null;
   const renderThreadRouteBody = () => (
     <>
       <GitActionProgressOverlay progress={gitActionProgress} onDismiss={dismissGitActionResult} />
@@ -1041,6 +1116,9 @@ function ThreadRouteContent(
         onOpenGitInspector={handleOpenGitInspector}
         onOpenFilesInspector={handleOpenFilesInspector}
         onReturnToThread={props.onReturnToThread}
+        onStartNewTask={handleStartNewTask}
+        threadActions={threadRouteActions}
+        onThreadAction={handleThreadRouteAction}
       />
 
       {renderThreadRouteBody()}

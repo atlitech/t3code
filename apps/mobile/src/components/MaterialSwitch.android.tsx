@@ -4,6 +4,14 @@ import type { ThemedSwitchProps } from "./MaterialSwitch.types";
 
 import { useAppearancePreferences } from "../features/settings/appearance/AppearancePreferencesProvider";
 
+// Like RN's Switch, the host claims the touch so a parent Pressable never becomes
+// the JS responder. That responder's view intercepts the gesture on Android,
+// cancelling the Compose tap and firing the row's onPress instead.
+const claimTouch = {
+  onStartShouldSetResponder: () => true,
+  onResponderTerminationRequest: () => false,
+};
+
 /** Material's native switch, with the same palette and accessibility contract as our RN controls. */
 export function MaterialSwitch(props: ThemedSwitchProps) {
   const { themeAppearance, themeVariables: colors } = useAppearancePreferences();
@@ -25,6 +33,7 @@ export function MaterialSwitch(props: ThemedSwitchProps) {
     >
       <View importantForAccessibility="no-hide-descendants">
         <Host
+          {...claimTouch}
           colorScheme={themeAppearance}
           ignoreSafeAreaKeyboardInsets
           style={{ width: 52, height: 48 }}

@@ -50,8 +50,18 @@ vi.mock("../settings/appearance/AppearancePreferencesProvider", () => ({
 }));
 
 import { ThreadHeader } from "./ThreadHeader";
+import {
+  buildThreadRouteActionMenu,
+  type ThreadRouteActionMenuItem,
+} from "./thread-route-actions-menu";
 
 const projectScripts: never[] = [];
+const defaultThreadActions = buildThreadRouteActionMenu({
+  settlementSupported: true,
+  settled: false,
+  settleable: true,
+  worktreeBranch: null,
+});
 
 function status(
   files: ReadonlyArray<string>,
@@ -77,7 +87,11 @@ function status(
 }
 
 // Mirrors the route screen: every render passes fresh gitControls callbacks.
-function Header(props: { readonly gitStatus: VcsStatusResult | null; readonly title?: string }) {
+function Header(props: {
+  readonly gitStatus: VcsStatusResult | null;
+  readonly title?: string;
+  readonly threadActions?: ReadonlyArray<ThreadRouteActionMenuItem>;
+}) {
   return (
     <ThreadHeader
       title={props.title ?? "Thread"}
@@ -108,6 +122,9 @@ function Header(props: { readonly gitStatus: VcsStatusResult | null; readonly ti
       onToggleInspector={() => {}}
       onOpenGitInspector={() => {}}
       onOpenFilesInspector={() => {}}
+      onStartNewTask={() => {}}
+      threadActions={props.threadActions ?? defaultThreadActions}
+      onThreadAction={() => {}}
     />
   );
 }
@@ -145,6 +162,32 @@ afterEach(() => {
 });
 
 describe("ThreadHeader", () => {
+  it("refreshes the thread actions menu when the thread settles", () => {
+    render(<Header gitStatus={status([])} />);
+    const threadActionLabels = () => {
+      const menu = harness.renderedRightItems
+        .at(-1)
+        ?.find((item) => item.identifier === "thread-right-actions") as
+        | { menu: { items: Array<{ label: string }> } }
+        | undefined;
+      return menu?.menu.items.map((item) => item.label);
+    };
+    expect(threadActionLabels()).toEqual(["Settle", "Delete"]);
+
+    render(
+      <Header
+        gitStatus={status([])}
+        threadActions={buildThreadRouteActionMenu({
+          settlementSupported: true,
+          settled: true,
+          settleable: true,
+          worktreeBranch: null,
+        })}
+      />,
+    );
+    expect(threadActionLabels()).toEqual(["Un-settle", "Delete"]);
+  });
+
   it("re-applies native header items when Git status changes", () => {
     render(<Header gitStatus={status([])} />);
     expect(renderedGitStatusDescription()).toBe("Clean");

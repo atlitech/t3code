@@ -21,7 +21,13 @@ export function androidHeaderMenuActions(items: ReadonlyArray<ScreenHeaderMenuIt
             subtitle: item.subtitle,
             image: item.icon,
             state: item.selected ? "on" : undefined,
-            attributes: item.disabled ? { disabled: true } : undefined,
+            attributes:
+              item.disabled || item.destructive
+                ? {
+                    ...(item.disabled ? { disabled: true } : {}),
+                    ...(item.destructive ? { destructive: true } : {}),
+                  }
+                : undefined,
           },
         ],
   );
