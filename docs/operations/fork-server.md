@@ -113,19 +113,23 @@ your shell, because `t3 update` reads the shell's environment, not the unit's.
 T3CODE_RELEASE_BASE_URL=https://github.com/atlitech/t3code/releases/download t3 update 0.0.46-atli.2 --yes
 ```
 
-## Disabling the pull request watcher
+## Pull request watcher
 
-The setting is a top-level key in `~/.t3/userdata/settings.json`. The server
-watches the file and applies edits without a restart. Write to a temporary
-file, then rename it, so the server never reads a half-written file:
+Fork builds ship with the pull request watcher off (`enablePullRequestWatch`
+defaults to `false`). To turn it on for a server, set the top-level key in
+`~/.t3/userdata/settings.json`, or use **Settings → Source control** from any
+client. The server watches the file and applies edits without a restart. Write
+to a temporary file, then rename it, so the server never reads a half-written
+file:
 
 ```sh
 f=~/.t3/userdata/settings.json
 [ -f "$f" ] || echo '{}' > "$f"
-tmp="$(mktemp "$f.XXXXXX")" && jq '.enablePullRequestWatch = false' "$f" > "$tmp" && mv "$tmp" "$f"
+tmp="$(mktemp "$f.XXXXXX")" && jq '.enablePullRequestWatch = true' "$f" > "$tmp" && mv "$tmp" "$f"
 ```
 
-Only fork builds have this setting. Official builds do not read it.
+Only fork builds have this setting. Official builds do not read it and always
+watch.
 
 ## Updates offered by clients
 

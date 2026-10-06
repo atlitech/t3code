@@ -1933,12 +1933,13 @@ it.effect(
             });
           });
 
+        // Off by default in this fork.
         yield* startTurn(1);
-        yield* settings.updateSettings({ enablePullRequestWatch: false });
-        yield* startTurn(2);
         yield* settings.updateSettings({ enablePullRequestWatch: true });
+        yield* startTurn(2);
+        yield* settings.updateSettings({ enablePullRequestWatch: false });
         yield* startTurn(3);
-        assert.deepEqual(yield* Ref.get(turnWatchFlags), [true, false, true]);
+        assert.deepEqual(yield* Ref.get(turnWatchFlags), [false, true, false]);
 
         yield* manager.close(providerSessionId);
       });

@@ -495,7 +495,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
               settingKeys={["enablePullRequestWatch"]}
               mixed={mixedPullRequestWatch}
               {...searchableSetting("pull-request-watch")}
-              description="Agents can ask T3 Code to watch a pull request and wake them when checks finish, someone comments, or the branch conflicts. Turn off if you run your own watcher."
+              description="Agents can ask T3 Code to watch a pull request and wake them when checks finish, someone comments, or the branch conflicts. Off by default, for when you run your own watcher."
               resetAction={
                 settings.enablePullRequestWatch !==
                 DEFAULT_SERVER_SETTINGS.enablePullRequestWatch ? (
