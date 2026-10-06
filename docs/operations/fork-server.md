@@ -113,6 +113,59 @@ your shell, because `t3 update` reads the shell's environment, not the unit's.
 T3CODE_RELEASE_BASE_URL=https://github.com/atlitech/t3code/releases/download t3 update 0.0.46-atli.2 --yes
 ```
 
+## Building the macOS desktop app
+
+The fork's desktop app is built locally from `atli`. Use the same version as the
+server release. Builds read T3 Connect's public identifiers from the repository
+`.env`; without it the app builds with T3 Connect left out:
+
+```sh
+cp -n .env.example .env
+T3CODE_DESKTOP_VERSION=0.0.46-atli.2 vp run dist:desktop:dmg:arm64
+```
+
+The DMG lands in `release/`. The build compiles the bundled resource monitor,
+which needs Rust (`rustup target add aarch64-apple-darwin`). Without Rust, and
+only while `native/resource-monitor` is unchanged since the installed app was
+built, reuse the installed binary:
+
+```sh
+mkdir -p native/resource-monitor/target/aarch64-apple-darwin/release
+cp "/Applications/T3 Code (Alpha).app/Contents/Resources/resource-monitor/t3-resource-monitor" \
+  native/resource-monitor/target/aarch64-apple-darwin/release/
+T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR=1 T3CODE_DESKTOP_VERSION=0.0.46-atli.2 vp run dist:desktop:dmg:arm64
+```
+
+An unsigned local build keeps Electron's default signature, which does not
+verify. Copy the app out of the DMG and sign it ad hoc before installing:
+
+```sh
+codesign --force --deep --sign - "T3 Code (Alpha).app"
+codesign --verify --deep --strict "T3 Code (Alpha).app"
+```
+
+Then quit T3 Code and replace the app in `/Applications`. The bundle ID matches
+the official app, so `~/.t3/userdata` carries over. An agent running inside the
+app ends when it quits, so an agent doing the swap must hand it to a detached
+process. The build has no update feed and never replaces itself. macOS may ask
+once for Keychain access to "T3 Code Safe Storage" because every ad hoc build
+has a new signature.
+
+## Building the personal Android app
+
+Use the `develop-t3-personal-android` skill. Its script reads the signing
+passwords from the macOS Keychain and builds a standalone release APK:
+
+```sh
+.agents/skills/develop-t3-personal-android/scripts/build-personal-apk.sh
+adb devices -l
+adb -s <device-serial> install -r apps/mobile/android/app/build/outputs/apk/release/app-release.apk
+```
+
+After a rebase, run it without `--no-prebuild` when dependencies or native
+config changed. `install -r` keeps the app's data only when the APK is signed
+with the same key as the installed app; the skill describes how to check.
+
 ## Pull request watcher
 
 Fork builds ship with the pull request watcher off (`enablePullRequestWatch`
