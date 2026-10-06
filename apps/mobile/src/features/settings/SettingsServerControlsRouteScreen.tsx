@@ -395,7 +395,7 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                       subtitle={
                         projectSelected
                           ? "Environment-wide setting. Select All projects to change it."
-                          : "Wake agents watching a pull request when checks finish, someone comments, or it conflicts. Turn off if you run your own watcher."
+                          : "Wake agents watching a pull request when checks finish, someone comments, or it conflicts. Off by default, for when you run your own watcher."
                       }
                       value={uniform("enablePullRequestWatch")}
                       disabled={disabledFor("enablePullRequestWatch")}
