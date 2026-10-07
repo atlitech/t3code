@@ -5,9 +5,11 @@ import {
   formatSearchToolLabel,
 } from "@t3tools/shared/toolActivity";
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
+import { resolveClaudeElicitationAcceptance } from "../../provider/ClaudeMcpElicitation.ts";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
 import {
   type CanUseTool,
+  type OnElicitation,
   forkSession as forkClaudeSession,
   type ForkSessionOptions,
   type ForkSessionResult,
@@ -60,6 +62,7 @@ import {
   type OrchestrationV2TurnItem,
   type OrchestrationV2WebSearchResult,
   type ProviderApprovalDecision,
+  type ProviderApprovalOption,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ProviderRequestKind,
@@ -82,6 +85,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -829,6 +833,7 @@ export function makeClaudeQueryOptions(input: {
   readonly disallowedTools?: ReadonlyArray<string>;
   readonly permissionMode?: PermissionMode;
   readonly canUseTool?: CanUseTool;
+  readonly onElicitation?: OnElicitation;
   readonly onUserDialog?: ClaudeQueryOptions["onUserDialog"];
   readonly supportedDialogKinds?: ClaudeQueryOptions["supportedDialogKinds"];
   readonly allowDangerouslySkipPermissions?: boolean;
@@ -885,6 +890,7 @@ export function makeClaudeQueryOptions(input: {
     ...(input.allowedTools === undefined ? {} : { allowedTools: [...input.allowedTools] }),
     ...(input.disallowedTools === undefined ? {} : { disallowedTools: [...input.disallowedTools] }),
     ...(input.canUseTool === undefined ? {} : { canUseTool: input.canUseTool }),
+    ...(input.onElicitation === undefined ? {} : { onElicitation: input.onElicitation }),
     ...(input.allowDangerouslySkipPermissions === true
       ? { allowDangerouslySkipPermissions: true }
       : {}),
@@ -2899,6 +2905,14 @@ function rememberClaudeSubagentLaunch(
 
 type PendingClaudeRuntimeRequest =
   | {
+      readonly type: "elicitation";
+      readonly requestId: OrchestrationV2RuntimeRequest["id"];
+      readonly node: OrchestrationV2ExecutionNode;
+      readonly request: OrchestrationV2RuntimeRequest;
+      readonly turnItem: OrchestrationV2TurnItem;
+      readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
+    }
+  | {
       readonly type: "approval";
       readonly requestId: OrchestrationV2RuntimeRequest["id"];
       readonly requestKind: ProviderRequestKind;
@@ -3090,6 +3104,9 @@ export function makeClaudeAdapterV2(
         const providerRetries = yield* Ref.make(
           new Map<OrchestrationV2ProviderTurn["id"], ActiveClaudeProviderRetry>(),
         );
+        const elicitationPermit = yield* Semaphore.make(1);
+        const closedElicitationTurns = new WeakSet<ActiveClaudeTurnContext>();
+        let elicitationsClosed = false;
         const pendingRuntimeRequests = yield* Ref.make(
           new Map<string, PendingClaudeRuntimeRequest>(),
         );
@@ -4793,6 +4810,9 @@ export function makeClaudeAdapterV2(
           readonly requestKind: OrchestrationV2RuntimeRequest["kind"];
           readonly prompt?: string;
           readonly questions?: ReadonlyArray<OrchestrationV2UserInputQuestion>;
+          readonly parentNodeId?: OrchestrationV2ExecutionNode["id"];
+          readonly appName?: string;
+          readonly options?: ReadonlyArray<ProviderApprovalOption>;
         }) {
           const createdAt = yield* DateTime.now;
           const requestId = yield* idAllocator.allocate.runtimeRequest({
@@ -4821,10 +4841,12 @@ export function makeClaudeAdapterV2(
             id: nodeId,
             threadId: input.context.input.threadId,
             runId: input.context.input.runId,
-            parentNodeId: idAllocator.derive.nodeFromProviderItem({
-              driver: CLAUDE_PROVIDER,
-              nativeItemId: input.nativeItemId,
-            }),
+            parentNodeId:
+              input.parentNodeId ??
+              idAllocator.derive.nodeFromProviderItem({
+                driver: CLAUDE_PROVIDER,
+                nativeItemId: input.nativeItemId,
+              }),
             rootNodeId: input.context.input.rootNodeId,
             kind: input.questions === undefined ? "approval_request" : "user_input_request",
             status: "waiting",
@@ -4876,6 +4898,8 @@ export function makeClaudeAdapterV2(
                   requestId,
                   requestKind: input.requestKind as ProviderRequestKind,
                   ...(input.prompt === undefined ? {} : { prompt: input.prompt }),
+                  ...(input.appName === undefined ? {} : { appName: input.appName }),
+                  ...(input.options === undefined ? {} : { options: [...input.options] }),
                 }
               : {
                   type: "user_input_request" as const,
@@ -4884,6 +4908,73 @@ export function makeClaudeAdapterV2(
                 }),
           };
           return { node, request, turnItem };
+        });
+
+        const settleElicitation = Effect.fnUntraced(function* (
+          requestId: OrchestrationV2RuntimeRequest["id"],
+          decision: ProviderApprovalDecision,
+          publishCancellation = true,
+        ) {
+          const pending = yield* Ref.modify(pendingRuntimeRequests, (current) => {
+            const pending = current.get(String(requestId));
+            if (pending?.type !== "elicitation") return [undefined, current] as const;
+            const next = new Map(current);
+            next.delete(String(requestId));
+            return [pending, next] as const;
+          });
+          if (pending === undefined) return;
+          // User responses are projected by the orchestrator before the SDK is answered.
+          // Only adapter-initiated cancellation must publish terminal artifacts here.
+          if (publishCancellation) {
+            const completedAt = yield* DateTime.now;
+            const status = "cancelled";
+            yield* emitProviderEvent({
+              type: "node.updated",
+              driver: CLAUDE_PROVIDER,
+              node: { ...pending.node, status, completedAt },
+            });
+            yield* emitProviderEvent({
+              type: "runtime_request.updated",
+              driver: CLAUDE_PROVIDER,
+              threadId: pending.node.threadId,
+              runtimeRequest: {
+                ...pending.request,
+                status: "cancelled",
+                decision,
+                resolvedAt: completedAt,
+              },
+            });
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CLAUDE_PROVIDER,
+              turnItem: { ...pending.turnItem, status, completedAt, updatedAt: completedAt },
+            });
+          }
+          yield* Deferred.succeed(pending.decision, decision);
+        }, elicitationPermit.withPermit);
+
+        const cancelElicitations = Effect.fnUntraced(function* (
+          providerTurnId?: OrchestrationV2ProviderTurn["id"],
+        ) {
+          const context = yield* Ref.get(activeTurn);
+          if (providerTurnId === undefined) elicitationsClosed = true;
+          if (
+            context !== null &&
+            (providerTurnId === undefined || context.providerTurnId === providerTurnId)
+          ) {
+            closedElicitationTurns.add(context);
+          }
+          const requests = yield* Ref.get(pendingRuntimeRequests).pipe(
+            elicitationPermit.withPermit,
+          );
+          for (const pending of requests.values()) {
+            if (
+              pending.type === "elicitation" &&
+              (providerTurnId === undefined || pending.request.providerTurnId === providerTurnId)
+            ) {
+              yield* settleElicitation(pending.requestId, "cancel");
+            }
+          }
         });
 
         const ensureReasoningBlock = Effect.fnUntraced(function* (
@@ -5003,6 +5094,7 @@ export function makeClaudeAdapterV2(
           readonly threadDisposition?: "reusable" | "broken";
           readonly result?: SDKResultMessage;
         }) {
+          yield* cancelElicitations(input.context.providerTurnId);
           yield* reasoningDeltas.flushTurn(input.context.nativeTurnId);
           // A subagent still running in the background keeps its open calls:
           // their results arrive after this turn. One left by an earlier CLI
@@ -6926,6 +7018,90 @@ export function makeClaudeAdapterV2(
           yield* handleRoutedSdkMessage(input);
         });
 
+        const onElicitationEffect = Effect.fn("ClaudeAdapterV2.onElicitation")(function* (
+          request: Parameters<OnElicitation>[0],
+          callbackOptions: Parameters<OnElicitation>[1],
+        ) {
+          const acceptance = resolveClaudeElicitationAcceptance(request);
+          if (acceptance === null) return { action: "decline" as const };
+          const context = yield* Ref.get(activeTurn);
+          if (context === null) return { action: "decline" as const };
+          if (callbackOptions.signal.aborted) return { action: "cancel" as const };
+
+          // The SDK cannot deliver the prompt echo while waiting for our answer.
+          yield* releaseHeldRootFrames(context);
+          const pending = yield* Effect.gen(function* () {
+            if (
+              elicitationsClosed ||
+              closedElicitationTurns.has(context) ||
+              callbackOptions.signal.aborted ||
+              (yield* Ref.get(activeTurn)) !== context
+            )
+              return null;
+            const nativeRequestId = `mcp-elicitation:${callbackOptions.requestId}:${yield* crypto.randomUUIDv4}`;
+            const artifacts = yield* buildApprovalRequestArtifacts({
+              context,
+              nativeItemId: nativeRequestId,
+              nativeRequestId,
+              parentNodeId: context.input.rootNodeId,
+              requestKind: "mcp-elicitation",
+              prompt: request.message,
+              appName: request.displayName?.trim() || request.title?.trim() || request.serverName,
+              options: [
+                { decision: "accept", label: "Approve once" },
+                { decision: "decline", label: "Decline" },
+                { decision: "cancel", label: "Cancel" },
+              ],
+            });
+            const decision = yield* Deferred.make<ProviderApprovalDecision>();
+            if (
+              elicitationsClosed ||
+              closedElicitationTurns.has(context) ||
+              callbackOptions.signal.aborted ||
+              (yield* Ref.get(activeTurn)) !== context
+            )
+              return null;
+            yield* Ref.update(pendingRuntimeRequests, (current) => {
+              const next = new Map(current);
+              next.set(String(artifacts.request.id), {
+                type: "elicitation",
+                requestId: artifacts.request.id,
+                ...artifacts,
+                decision,
+              });
+              return next;
+            });
+            yield* emitProviderEvent({
+              type: "node.updated",
+              driver: CLAUDE_PROVIDER,
+              node: artifacts.node,
+            });
+            yield* emitProviderEvent({
+              type: "runtime_request.updated",
+              driver: CLAUDE_PROVIDER,
+              threadId: context.input.threadId,
+              runtimeRequest: artifacts.request,
+            });
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CLAUDE_PROVIDER,
+              turnItem: artifacts.turnItem,
+            });
+            return { artifacts, decision };
+          }).pipe(elicitationPermit.withPermit);
+          if (pending === null) return { action: "cancel" as const };
+          const { artifacts, decision } = pending;
+          return yield* Effect.gen(function* () {
+            const resolved = yield* awaitClaudeApprovalDecision(decision, callbackOptions.signal);
+            yield* settleElicitation(artifacts.request.id, resolved);
+            return resolved === "accept"
+              ? acceptance
+              : { action: resolved === "decline" ? ("decline" as const) : ("cancel" as const) };
+          }).pipe(Effect.ensuring(settleElicitation(artifacts.request.id, "cancel")));
+        });
+        const onElicitation: OnElicitation = (request, callbackOptions) =>
+          runPromise(onElicitationEffect(request, callbackOptions));
+
         const canUseToolEffect = Effect.fn("ClaudeAdapterV2.canUseTool")(function* (
           toolName: Parameters<CanUseTool>[0],
           toolInput: Parameters<CanUseTool>[1],
@@ -7373,6 +7549,7 @@ export function makeClaudeAdapterV2(
                   allowDangerouslySkipPermissions: queryPolicy.allowDangerouslySkipPermissions,
                 }),
             canUseTool,
+            onElicitation,
             onUserDialog,
             supportedDialogKinds: ["resume_return"],
           });
@@ -7728,6 +7905,7 @@ export function makeClaudeAdapterV2(
               next.add(turnInput.providerTurnId);
               return next;
             });
+            yield* cancelElicitations(turnInput.providerTurnId);
             yield* existing.query.interrupt;
             yield* existing.query.close.pipe(Effect.ignore);
             const closed = yield* Deferred.await(existing.closed).pipe(
@@ -7816,6 +7994,7 @@ export function makeClaudeAdapterV2(
         );
 
         const closeSession = Effect.fnUntraced(function* () {
+          yield* cancelElicitations();
           const existing = yield* Ref.get(queryContext);
           if (existing !== null) {
             yield* existing.query.close.pipe(Effect.ignore);
@@ -7985,6 +8164,21 @@ export function makeClaudeAdapterV2(
               }
               if (pending.type === "user_input") {
                 yield* Deferred.succeed(pending.answers, requestInput.answers ?? {});
+                return;
+              }
+              if (pending.type === "elicitation") {
+                const decision = requestInput.decision;
+                if (decision !== "accept" && decision !== "decline" && decision !== "cancel") {
+                  return yield* new ProviderAdapter.ProviderAdapterRuntimeRequestResponseError({
+                    driver: CLAUDE_PROVIDER,
+                    requestId: requestInput.requestId,
+                    cause: new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail: "Claude MCP elicitations require approve once, decline, or cancel.",
+                    }),
+                  });
+                }
+                yield* settleElicitation(pending.requestId, decision, false);
                 return;
               }
               if (requestInput.decision === undefined) {
