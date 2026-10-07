@@ -87,7 +87,9 @@ export const layer: Layer.Layer<
           }
           // Dispatch validates the request while it is pending, then persists the
           // resolved projection before this effect is executed.
-          if (request.status !== "resolved") {
+          const cancelledElicitation =
+            request.kind === "mcp-elicitation" && request.status === "cancelled";
+          if (request.status !== "resolved" && !cancelledElicitation) {
             return yield* new RuntimeRequestResponseExecutionError({
               reason: "request-not-ready",
               threadId: input.threadId,
@@ -106,6 +108,9 @@ export const layer: Layer.Layer<
               requestId: input.requestId,
             });
           }
+          // An SDK cancellation can overtake an already committed response outbox item.
+          // Its callback is gone; complete delivery so it cannot block later turn effects.
+          if (cancelledElicitation) return;
           const session = yield* sessions.get(input.providerSessionId);
           if (Option.isNone(session)) {
             return yield* new RuntimeRequestResponseExecutionError({

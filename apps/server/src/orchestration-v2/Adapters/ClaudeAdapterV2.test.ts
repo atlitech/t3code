@@ -2089,6 +2089,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     // A CLI process opened after the first streams from its own queue, so the
     // first one can exit (Queue.shutdown) and a later turn can start another.
     readonly freshQueueOnReopen?: boolean;
+    readonly crypto?: Crypto.Crypto;
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -2120,7 +2121,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         attachmentsDir,
         fileSystem,
         path: yield* Path.Path,
-        crypto: yield* Crypto.Crypto,
+        crypto: options?.crypto ?? (yield* Crypto.Crypto),
         idAllocator,
         continuationRequests: {
           offer: (request) =>
@@ -2186,22 +2187,29 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         },
       });
       const threadId = ThreadId.make("thread-claude-wake");
-      const runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("provider-session-claude-wake"),
-        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-        runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
-      });
+      const runtimeScope = yield* Scope.make();
+      const closeRuntime = Scope.close(runtimeScope, Exit.succeed(undefined));
+      yield* Effect.addFinalizer(() => closeRuntime);
+      const runtime = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-claude-wake"),
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
+        })
+        .pipe(Effect.provideService(Scope.Scope, runtimeScope));
       const providerThread = yield* runtime.ensureThread({
         threadId,
         modelSelection: CLAUDE_TEST_MODEL_SELECTION,
         runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
       });
       const events: Array<ProviderAdapterV2Event> = [];
+      const eventReceipts = yield* Queue.unbounded<ProviderAdapterV2Event>();
       yield* runtime.events.pipe(
         Stream.runForEach((event) =>
           Effect.gen(function* () {
             events.push(event);
+            yield* Queue.offer(eventReceipts, event);
             if (event.type === "turn.terminal") {
               yield* Queue.offer(terminalReceipts, event);
             }
@@ -2238,6 +2246,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         permissionModeChanges,
         continuationRequests,
         events,
+        closeRuntime,
+        eventReceipts,
         terminalReceipts,
         systemNoticeReceipts,
         getOpenedOptions: () => openedOptions,
@@ -2246,6 +2256,304 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
   const makeWakeHarness = makeWakeHarnessWithOptions();
+
+  const mcpApproval = {
+    serverName: "test-mcp",
+    title: "Test connection",
+    message: "Allow access to the workspace?",
+    requestedSchema: {
+      type: "object",
+      properties: { approval: { type: "string", enum: ["approve_once", "deny"] } },
+      required: ["approval"],
+    },
+  };
+  const nextMcpRequest = (receipts: Queue.Queue<ProviderAdapterV2Event>) =>
+    Stream.fromEffectRepeat(Queue.take(receipts)).pipe(
+      Stream.filter(
+        (event): event is Extract<ProviderAdapterV2Event, { type: "runtime_request.updated" }> =>
+          event.type === "runtime_request.updated" &&
+          event.runtimeRequest.kind === "mcp-elicitation",
+      ),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+    );
+  const startMcpTurn = Effect.fnUntraced(function* (
+    harness: Effect.Success<typeof makeWakeHarness>,
+    runtimeMode: ProviderAdapterV2RuntimePolicy["runtimeMode"] = "full-access",
+  ) {
+    return yield* harness.runtime.startTurn(
+      makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("attempt-mcp-elicitation"),
+        text: "Use the MCP tool.",
+        attachments: [],
+        runtimePolicy: ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode,
+          interactionMode: "default",
+          cwd: "/workspace",
+        }),
+      }),
+    );
+  });
+
+  it.effect.each(["full-access", "auto", "auto-accept-edits", "approval-required"] as const)(
+    "surfaces MCP approval and accepts once in %s mode",
+    (runtimeMode) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          yield* startMcpTurn(harness, runtimeMode);
+          const response = yield* Effect.promise(() =>
+            harness.getOpenedOptions()!.onElicitation!(mcpApproval, {
+              requestId: "mcp-request",
+              signal: new AbortController().signal,
+            }),
+          ).pipe(Effect.forkScoped);
+          const event = yield* nextMcpRequest(harness.eventReceipts);
+          assert.equal(event.runtimeRequest.status, "pending");
+          const card = yield* Stream.fromEffectRepeat(Queue.take(harness.eventReceipts)).pipe(
+            Stream.filter(
+              (event): event is Extract<ProviderAdapterV2Event, { type: "turn_item.updated" }> =>
+                event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
+            ),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          );
+          assert.equal(card.turnItem.type, "approval_request");
+          if (card.turnItem.type !== "approval_request") return;
+          assert.equal(card.turnItem.prompt, mcpApproval.message);
+          assert.equal(card.turnItem.appName, mcpApproval.title);
+          assert.deepEqual(
+            card.turnItem.options?.map((option) => option.decision),
+            ["accept", "decline", "cancel"],
+          );
+          const node = harness.events.find(
+            (event) => event.type === "node.updated" && event.node.id === card.turnItem.nodeId,
+          );
+          assert.equal(
+            node?.type === "node.updated" ? node.node.parentNodeId : undefined,
+            NodeId.make("node-attempt-mcp-elicitation"),
+          );
+          yield* harness.runtime.respondToRuntimeRequest({
+            requestId: event.runtimeRequest.id,
+            decision: "accept",
+          });
+          assert.deepEqual(yield* Fiber.join(response), {
+            action: "accept",
+            content: { approval: "approve_once" },
+          });
+          assert.isTrue(
+            Exit.isFailure(
+              yield* harness.runtime
+                .respondToRuntimeRequest({ requestId: event.runtimeRequest.id, decision: "accept" })
+                .pipe(Effect.exit),
+            ),
+          );
+        }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect("keeps concurrent MCP approvals distinct and rejects persistence responses", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* startMcpTurn(harness);
+        const first = yield* Effect.promise(() =>
+          harness.getOpenedOptions()!.onElicitation!(mcpApproval, {
+            requestId: "same-id",
+            signal: new AbortController().signal,
+          }),
+        ).pipe(Effect.forkScoped);
+        const firstRequest = (yield* nextMcpRequest(harness.eventReceipts)).runtimeRequest;
+        const second = yield* Effect.promise(() =>
+          harness.getOpenedOptions()!.onElicitation!(mcpApproval, {
+            requestId: "same-id",
+            signal: new AbortController().signal,
+          }),
+        ).pipe(Effect.forkScoped);
+        const secondRequest = (yield* nextMcpRequest(harness.eventReceipts)).runtimeRequest;
+        assert.notEqual(firstRequest.id, secondRequest.id);
+        for (const decision of ["acceptAlways", "acceptForSession"] as const) {
+          assert.isTrue(
+            Exit.isFailure(
+              yield* harness.runtime
+                .respondToRuntimeRequest({ requestId: firstRequest.id, decision })
+                .pipe(Effect.exit),
+            ),
+          );
+        }
+        yield* harness.runtime.respondToRuntimeRequest({
+          requestId: secondRequest.id,
+          decision: "decline",
+        });
+        assert.deepEqual(yield* Fiber.join(second), { action: "decline" });
+        assert.isUndefined(first.pollUnsafe());
+        yield* harness.runtime.respondToRuntimeRequest({
+          requestId: firstRequest.id,
+          decision: "cancel",
+        });
+        assert.deepEqual(yield* Fiber.join(first), { action: "cancel" });
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect.each(["abort", "interrupt", "close"] as const)(
+    "cancels MCP approval on %s and rejects late replies",
+    (action) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({ close: Queue.shutdown });
+          yield* startMcpTurn(harness);
+          const abort = new AbortController();
+          const response = yield* Effect.promise(() =>
+            harness.getOpenedOptions()!.onElicitation!(mcpApproval, {
+              requestId: "cancel-me",
+              signal: abort.signal,
+            }),
+          ).pipe(Effect.forkScoped);
+          const request = (yield* nextMcpRequest(harness.eventReceipts)).runtimeRequest;
+          if (action === "abort") abort.abort();
+          else if (action === "close") yield* harness.closeRuntime;
+          else
+            yield* harness.runtime.interruptTurn({
+              providerThread: harness.providerThread,
+              providerTurnId: request.providerTurnId!,
+            });
+          assert.deepEqual(yield* Fiber.join(response), { action: "cancel" });
+          const cancelled = (yield* nextMcpRequest(harness.eventReceipts)).runtimeRequest;
+          assert.equal(cancelled.id, request.id);
+          assert.equal(cancelled.status, "cancelled");
+          const terminalCard = yield* Stream.fromEffectRepeat(
+            Queue.take(harness.eventReceipts),
+          ).pipe(
+            Stream.filter(
+              (event): event is Extract<ProviderAdapterV2Event, { type: "turn_item.updated" }> =>
+                event.type === "turn_item.updated" &&
+                event.turnItem.nodeId === request.nodeId &&
+                event.turnItem.status === "cancelled",
+            ),
+            Stream.runHead,
+            Effect.map(Option.getOrThrow),
+          );
+          assert.isNotNull(terminalCard.turnItem.completedAt);
+          assert.isTrue(
+            Exit.isFailure(
+              yield* harness.runtime
+                .respondToRuntimeRequest({ requestId: request.id, decision: "accept" })
+                .pipe(Effect.exit),
+            ),
+          );
+        }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ),
+  );
+
+  it.effect("does not publish an MCP approval when interruption races request setup", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const crypto = yield* Crypto.Crypto;
+        const allocating = yield* Deferred.make<void>();
+        const releaseAllocation = yield* Deferred.make<void>();
+        let holdRequestAllocation = false;
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: Queue.shutdown,
+          crypto: {
+            ...crypto,
+            randomUUIDv4: Effect.gen(function* () {
+              if (holdRequestAllocation) {
+                yield* Deferred.succeed(allocating, undefined);
+                yield* Deferred.await(releaseAllocation);
+              }
+              return yield* crypto.randomUUIDv4;
+            }),
+          },
+        });
+        yield* startMcpTurn(harness);
+        const started = yield* Stream.fromEffectRepeat(Queue.take(harness.eventReceipts)).pipe(
+          Stream.filter(
+            (event): event is Extract<ProviderAdapterV2Event, { type: "provider_turn.updated" }> =>
+              event.type === "provider_turn.updated",
+          ),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        // Turn startup also allocates a UUID; pause only the MCP request allocation.
+        holdRequestAllocation = true;
+        const response = yield* Effect.promise(() =>
+          harness.getOpenedOptions()!.onElicitation!(mcpApproval, {
+            requestId: "interrupted-during-setup",
+            signal: new AbortController().signal,
+          }),
+        ).pipe(Effect.forkScoped);
+        yield* Deferred.await(allocating);
+        const interruption = yield* harness.runtime
+          .interruptTurn({
+            providerThread: harness.providerThread,
+            providerTurnId: started.providerTurn.id,
+          })
+          .pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* Deferred.succeed(releaseAllocation, undefined);
+        assert.deepEqual(yield* Fiber.join(response), { action: "cancel" });
+        yield* Fiber.join(interruption);
+        yield* Queue.take(harness.terminalReceipts);
+        assert.isFalse(harness.events.some((event) => event.type === "runtime_request.updated"));
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect(
+    "declines unsupported MCP input and idle callbacks without creating approval cards",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarness;
+          yield* startMcpTurn(harness);
+          const onElicitation = harness.getOpenedOptions()!.onElicitation!;
+          for (const request of [
+            { ...mcpApproval, mode: "url" as const, url: "https://example.com/authorize" },
+            {
+              ...mcpApproval,
+              requestedSchema: {
+                type: "object",
+                properties: { name: { type: "string" } },
+                required: ["name"],
+              },
+            },
+          ]) {
+            assert.deepEqual(
+              yield* Effect.promise(() =>
+                onElicitation(request, {
+                  requestId: "unsupported",
+                  signal: new AbortController().signal,
+                }),
+              ),
+              { action: "decline" },
+            );
+          }
+          const abort = new AbortController();
+          abort.abort();
+          assert.deepEqual(
+            yield* Effect.promise(() =>
+              onElicitation(mcpApproval, { requestId: "aborted", signal: abort.signal }),
+            ),
+            { action: "cancel" },
+          );
+          yield* harness.offerAndWait(turnOneResult);
+          yield* Queue.take(harness.terminalReceipts);
+          assert.deepEqual(
+            yield* Effect.promise(() =>
+              onElicitation(mcpApproval, {
+                requestId: "idle",
+                signal: new AbortController().signal,
+              }),
+            ),
+            { action: "decline" },
+          );
+          assert.isFalse(harness.events.some((event) => event.type === "runtime_request.updated"));
+        }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+      ),
+  );
 
   it.effect.each([
     { isError: false, title: "Check weather" },
