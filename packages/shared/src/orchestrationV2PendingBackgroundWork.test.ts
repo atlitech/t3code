@@ -27,8 +27,8 @@ describe("backgroundWorkHoldsCompletion", () => {
 
   it.each([
     ["nothing pending", false, []],
-    ["a dev server", false, [task("dev", "command")]],
-    ["two long-lived shells", false, [task("web", "command"), task("api", "command")]],
+    ["a tracked command", true, [task("build", "command")]],
+    ["two tracked commands", true, [task("build", "command"), task("test", "command")]],
     ["a subagent", true, [task("review", "subagent")]],
     ["a monitor", true, [task("watch", "monitor")]],
     ["a command and a monitor", true, [task("dev", "command"), task("watch", "monitor")]],
@@ -41,6 +41,31 @@ describe("backgroundWorkHoldsCompletion", () => {
 });
 
 describe("derivePendingBackgroundWork", () => {
+  it("does not hold completion for a detached process after its launching shell exits", () => {
+    const tasks = derivePendingBackgroundWork({
+      latestRun: { id: "run-1" as never, ordinal: 1, status: "completed" },
+      providerThreads: [],
+      turnItems: [
+        {
+          id: "launch-server",
+          type: "command_execution",
+          status: "completed",
+          title: "Start detached server",
+          input: "nohup npm run dev > /tmp/dev.log 2>&1 < /dev/null &",
+        },
+        {
+          id: "persistent-monitor",
+          type: "dynamic_tool",
+          status: "running",
+          title: "Watch logs",
+          input: { persistent: true, command: "tail -f /tmp/dev.log" },
+        },
+      ],
+    });
+    expect(tasks).toEqual([]);
+    expect(backgroundWorkHoldsCompletion(tasks)).toBe(false);
+  });
+
   it("returns empty while the latest run is not settled", () => {
     const tasks = derivePendingBackgroundWork({
       latestRun: { id: "run-1" as never, ordinal: 1, status: "running" },

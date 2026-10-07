@@ -178,7 +178,7 @@ describe("resolveThreadListV2Status", () => {
   });
 
   it.each([
-    { kind: "command", status: "ready" },
+    { kind: "command", status: "waiting" },
     { kind: "monitor", status: "waiting" },
   ] as const)(
     "presents an unseen completion with a $kind roster as $status",
@@ -2295,6 +2295,40 @@ describe("buildThreadListV2ListItems row-state stamps", () => {
 });
 
 describe("Working section beta", () => {
+  it("keeps a settled turn waiting on a command in Working until its roster clears", () => {
+    const waiting = presentThreadShell(
+      environmentId,
+      makeRawThreadShell({
+        latestRunId: RunId.make("run-build"),
+        status: "completed",
+        pendingBackgroundTasks: [{ taskId: "build", kind: "command" }],
+      }),
+    );
+    const layout = buildThreadListV2Items({
+      threads: [waiting],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      workingShelfEnabled: true,
+    });
+    expect(layout.workingCount).toBe(1);
+    expect(layout.items).toEqual([]);
+
+    const finished = presentThreadShell(environmentId, {
+      ...waiting.source,
+      pendingBackgroundTasks: [],
+    });
+    const finishedLayout = buildThreadListV2Items({
+      threads: [finished],
+      environmentId: null,
+      searchQuery: "",
+      now: NOW,
+      workingShelfEnabled: true,
+    });
+    expect(finishedLayout.workingCount).toBe(0);
+    expect(finishedLayout.items.map((item) => item.thread.id)).toEqual([waiting.id]);
+  });
+
   const running = {
     status: "running" as const,
     activeRunId: null,

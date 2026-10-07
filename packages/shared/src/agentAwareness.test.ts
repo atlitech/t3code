@@ -86,10 +86,10 @@ describe("projectThreadAwarenessV2", () => {
   });
 
   it.each([
-    ["only a dev server", "completed", [{ taskId: "dev", kind: "command" }]],
+    ["a tracked command", "running", [{ taskId: "build", kind: "command" }]],
     ["a monitor", "running", [{ taskId: "watch", kind: "monitor" }]],
     [
-      "a dev server and a subagent",
+      "a command and a subagent",
       "running",
       [
         { taskId: "dev", kind: "command" },
