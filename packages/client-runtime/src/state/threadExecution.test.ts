@@ -18,6 +18,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 import {
   presentPendingBackgroundWork,
+  pendingBackgroundWorkStatusLabel,
   presentProviderGoal,
   deriveReportedModelSelection,
   deriveLatestThreadRun,
@@ -32,6 +33,20 @@ import {
 import { threadRuntimeCanArchive, type ThreadRuntimeSummary } from "./models.ts";
 
 const now = DateTime.makeUnsafe("2026-07-28T10:00:00.000Z");
+
+describe("pendingBackgroundWorkStatusLabel", () => {
+  it("names command waits without showing command text", () => {
+    const command = { taskId: "build", kind: "command" as const, description: "npm run build" };
+    expect(pendingBackgroundWorkStatusLabel([command])).toBe("Waiting on command");
+    expect(pendingBackgroundWorkStatusLabel([command, { ...command, taskId: "test" }])).toBe(
+      "Waiting on commands",
+    );
+    expect(
+      pendingBackgroundWorkStatusLabel([command, { taskId: "review", kind: "subagent" }]),
+    ).toBe("Waiting");
+    expect(pendingBackgroundWorkStatusLabel([])).toBe("Waiting");
+  });
+});
 
 function run(id: string, ordinal: number, status: OrchestrationV2RunStatus) {
   return {
@@ -552,26 +567,25 @@ describe("presentPendingBackgroundWork", () => {
     expect(presentPendingBackgroundWork([])).toBeNull();
   });
 
-  // A command left running, such as a dev server, does not wake the agent.
-  it("says only commands are running, not waited on", () => {
+  it("waits for tracked commands after the root turn ends", () => {
     expect(
       presentPendingBackgroundWork([
-        { taskId: "dev", kind: "command", description: "Start the shared dev server" },
+        { taskId: "dev", kind: "command", description: "Run the build" },
       ]),
-    ).toMatchObject({ title: "Running: Start the shared dev server", waiting: false });
+    ).toMatchObject({ title: "Waiting on command Run the build", waiting: true });
     expect(presentPendingBackgroundWork([{ taskId: "a", kind: "command" }])).toMatchObject({
-      title: "Running a command",
-      waiting: false,
+      title: "Waiting on a command",
+      waiting: true,
     });
     expect(
       presentPendingBackgroundWork([
-        { taskId: "a", kind: "command", description: "vp run dev" },
-        { taskId: "b", kind: "command", description: "tailscale serve" },
+        { taskId: "a", kind: "command", description: "vp run build" },
+        { taskId: "b", kind: "command", description: "vp test run" },
       ]),
-    ).toMatchObject({ title: "Running 2 commands", waiting: false });
+    ).toMatchObject({ title: "Waiting on 2 commands", waiting: true });
     expect(
       presentPendingBackgroundWork([
-        { taskId: "a", kind: "command", description: "vp run dev" },
+        { taskId: "a", kind: "command", description: "vp run build" },
         { taskId: "b", kind: "monitor", description: "Watch PR checks" },
       ]),
     ).toMatchObject({ title: "Waiting on 1 command and 1 monitor", waiting: true });

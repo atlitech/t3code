@@ -73,8 +73,8 @@ export function resolveThreadListV2ProviderDrivers(
  * failures. Ready is the unlabeled resting state; waiting (runtime status "idle") is the agent
  * parked on open background tasks, grey like working rather than a false Done.
  * The orchestrator v2 presentation bridge parks runtime at idle when the
- * post-settlement background roster holds the run's completion (subagents,
- * monitors); commands left running, such as a dev server, read as ready.
+ * post-settlement background roster holds the run's completion (commands,
+ * subagents, monitors). Detached processes are not tracked in that roster.
  */
 export type ThreadListV2Status =
   | "approval"

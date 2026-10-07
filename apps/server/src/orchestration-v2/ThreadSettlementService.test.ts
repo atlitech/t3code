@@ -151,14 +151,14 @@ describe("isAutoSettlementCandidate", () => {
     ).toBe(false);
   });
 
-  it("settles a thread whose only background work is a command left running", () => {
+  it("waits for a tracked command before auto-settling the thread", () => {
+    const waiting = shell({
+      pendingBackgroundTasks: [{ taskId: "build", kind: "command", description: "vp run build" }],
+    });
+    expect(ThreadSettlementService.isAutoSettlementCandidate(waiting, NOW_MS)).toBe(false);
     expect(
       ThreadSettlementService.isAutoSettlementCandidate(
-        shell({
-          pendingBackgroundTasks: [
-            { taskId: "dev", kind: "command", description: "vp run dev --share" },
-          ],
-        }),
+        { ...waiting, pendingBackgroundTasks: [] },
         NOW_MS,
       ),
     ).toBe(true);

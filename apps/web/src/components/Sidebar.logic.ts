@@ -1,4 +1,5 @@
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
+import { pendingBackgroundWorkStatusLabel } from "@t3tools/client-runtime/state/thread-execution";
 import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
@@ -631,6 +632,8 @@ export interface ThreadStatusPill {
     | "Pending Approval"
     | "Awaiting Input"
     | "Waiting"
+    | "Waiting on command"
+    | "Waiting on commands"
     | "Plan Ready";
   colorClass: string;
   dotClass: string;
@@ -643,6 +646,8 @@ const THREAD_STATUS_PRIORITY: Record<ThreadStatusPill["label"], number> = {
   Working: 3,
   Connecting: 3,
   Waiting: 2.5,
+  "Waiting on command": 2.5,
+  "Waiting on commands": 2.5,
   "Plan Ready": 2,
   Completed: 1,
 };
@@ -946,9 +951,8 @@ export function resolveThreadRowClassName(input: {
 // unlabeled resting state — the agent stopped and is waiting on the user,
 // whether it finished, asked a question, or proposed a plan. Waiting
 // (runtime status "idle") is the agent stopped with background work that will
-// wake it (subagents, monitors): not the user's turn yet, so it renders grey
-// like working, not as a false Done. Commands it left running, such as a dev
-// server, do not hold the thread; it reads as ready.
+// wake it (commands, subagents, monitors): not the user's turn yet, so it renders
+// grey like working, not as a false Done. Detached processes are not tracked.
 // Unread completion is tracked separately: it describes whether a ready
 // thread needs attention, not what the thread is currently doing.
 export type SidebarThreadStatus =
@@ -1208,7 +1212,7 @@ export function resolveThreadStatusPill(input: {
 
   if (backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])) {
     return {
-      label: "Waiting",
+      label: pendingBackgroundWorkStatusLabel(thread.pendingBackgroundTasks ?? []),
       colorClass: "text-sidebar-muted-foreground",
       dotClass: "bg-sidebar-muted-foreground",
       pulse: false,
