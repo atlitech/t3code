@@ -104,7 +104,7 @@ function resolveThreadAwarenessPhaseV2(
     case "waiting":
       return "running";
     case "completed":
-      // Work that will wake the agent keeps the run going; a dev server does not.
+      // Tracked background work can resume the agent after the root turn ends.
       return backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
         ? "running"
         : "completed";

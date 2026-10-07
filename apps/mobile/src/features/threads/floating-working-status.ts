@@ -9,8 +9,7 @@ export type FloatingWorkingStatus =
   | { readonly kind: "working"; readonly startedAt: string }
   | { readonly kind: "syncing"; readonly label: string }
   | { readonly kind: "compacting" }
-  // The turn settled while background work it started still runs. `waiting`
-  // is false when only commands remain, such as a dev server: the agent is done.
+  // The turn settled while provider-managed work, including commands, still runs.
   | {
       readonly kind: "background";
       readonly label: string;

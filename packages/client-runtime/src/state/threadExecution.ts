@@ -234,8 +234,8 @@ export function deriveThreadRuntime(
   const liveActivityRun = latestMatchingRun(projection, (run) =>
     ACTIVITY_RUN_STATUSES.has(run.status),
   );
-  // Same rule as the shell runtime: only background work that holds the
-  // completion parks the thread at idle; a dev server left running does not.
+  // Same rule as the shell runtime: pending provider-managed work parks the
+  // thread at idle, including commands that can resume the agent on completion.
   const backgroundWorkHoldsRun = backgroundWorkHoldsCompletion(
     derivePendingBackgroundWork({
       latestRun: latestRunProjection,
@@ -311,14 +311,12 @@ export interface PendingBackgroundWorkItem {
 
 export interface PendingBackgroundWorkPresentation {
   /**
-   * "Waiting on subagent Review src/math.ts", "Waiting on 2 subagents and 1 command",
-   * or "Running: Start the dev server" when only commands remain.
+   * "Waiting on subagent Review src/math.ts" or "Waiting on 2 subagents and 1 command".
    */
   readonly title: string;
   readonly items: ReadonlyArray<PendingBackgroundWorkItem>;
   /**
-   * True when the work will wake the agent (subagents, monitors). False when
-   * only commands remain, such as a dev server: the agent is done.
+   * True while provider-managed background work remains, including commands.
    */
   readonly waiting: boolean;
 }
@@ -328,12 +326,19 @@ function joinWithAnd(parts: ReadonlyArray<string>): string {
   return `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 }
 
+/** A compact waiting label for thread lists, without exposing command text. */
+export function pendingBackgroundWorkStatusLabel(
+  tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+): "Waiting" | "Waiting on command" | "Waiting on commands" {
+  if (tasks.length === 0 || tasks.some((task) => task.kind !== "command")) return "Waiting";
+  return tasks.length === 1 ? "Waiting on command" : "Waiting on commands";
+}
+
 /** Names what a settled thread still runs, grouped by kind, for the composer strip. */
 export function presentPendingBackgroundWork(
   tasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
 ): PendingBackgroundWorkPresentation | null {
   if (tasks.length === 0) return null;
-  const waiting = backgroundWorkHoldsCompletion(tasks);
   const items = tasks
     .map((task): PendingBackgroundWorkItem => {
       const description = task.description?.trim();
@@ -360,14 +365,8 @@ export function presentPendingBackgroundWork(
   if (items.length === 1 && only !== undefined) {
     const noun = BACKGROUND_WORK_KINDS[only.kind].singular;
     const named = only.label !== noun;
-    const title = waiting
-      ? named
-        ? `Waiting on ${noun} ${only.label}`
-        : `Waiting on a ${noun}`
-      : named
-        ? `Running: ${only.label}`
-        : `Running a ${noun}`;
-    return { title, items, waiting };
+    const title = named ? `Waiting on ${noun} ${only.label}` : `Waiting on a ${noun}`;
+    return { title, items, waiting: true };
   }
   const counts = new Map<BackgroundWorkKind, number>();
   for (const item of items) counts.set(item.kind, (counts.get(item.kind) ?? 0) + 1);
@@ -375,7 +374,7 @@ export function presentPendingBackgroundWork(
     const { singular, plural } = BACKGROUND_WORK_KINDS[kind];
     return `${count} ${count === 1 ? singular : plural}`;
   });
-  return { title: `${waiting ? "Waiting on" : "Running"} ${joinWithAnd(groups)}`, items, waiting };
+  return { title: `Waiting on ${joinWithAnd(groups)}`, items, waiting: true };
 }
 
 export interface ProviderGoalPresentation {

@@ -7531,17 +7531,8 @@ export default function ChatView(props: ChatViewProps) {
       id: `background-work:${activeThread.id}`,
       variant: "default",
       priority: "activity",
-      // A dev server can run for hours after the agent is done, so only work
-      // that will wake the agent pulses.
-      icon: (
-        <span
-          className={cn(
-            "size-1.5 rounded-full bg-foreground",
-            presentation.waiting && "animate-status-pulse",
-          )}
-          aria-hidden="true"
-        />
-      ),
+      // Waiting can last a long time; keep the indicator static between updates.
+      icon: <span className="size-1.5 rounded-full bg-foreground" aria-hidden="true" />,
       title: presentation.title,
       // A single named item is already in the title.
       description:

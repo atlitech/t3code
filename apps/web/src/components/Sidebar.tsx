@@ -33,6 +33,7 @@ import {
   threadWokeAt,
 } from "@t3tools/client-runtime/state/thread-settled";
 import { createInboxReturnTracker } from "@t3tools/client-runtime/state/thread-inbox";
+import { pendingBackgroundWorkStatusLabel } from "@t3tools/client-runtime/state/thread-execution";
 import {
   resolveSettledThreadTimestamp,
   sortSettledThreads,
@@ -1304,7 +1305,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: {
         ? {
             // Waiting is calm background presence (post-settle background
             // roster), not active progress, so the label keeps full strength.
-            label: "Waiting",
+            label: pendingBackgroundWorkStatusLabel(thread.pendingBackgroundTasks ?? []),
             icon: null,
             className: "text-muted-foreground",
           }
