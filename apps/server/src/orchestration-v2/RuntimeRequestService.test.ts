@@ -291,3 +291,78 @@ it.effect("preserves genuine provider session lookup failures as the cause", () 
     assert.strictEqual(error.cause, lookupFailure);
   }).pipe(Effect.provide(layerTest));
 });
+
+it.effect("completes queued responses when the MCP provider already cancelled the request", () => {
+  const threadId = ThreadId.make("thread-cancelled-elicitation");
+  const providerSessionId = ProviderSessionId.make("session-cancelled-elicitation");
+  const requestId = RuntimeRequestId.make("request-cancelled-elicitation");
+  const getSession = vi.fn(() => Effect.succeed(Option.none()));
+  const layerTest = layerRuntimeRequestTest(
+    projectionWithRuntimeRequest({
+      ...resolvedRuntimeRequest(requestId, providerSessionId),
+      kind: "mcp-elicitation",
+      status: "cancelled",
+      decision: "cancel",
+    }),
+    getSession,
+  );
+
+  return Effect.gen(function* () {
+    const service = yield* RuntimeRequestService.RuntimeRequestServiceV2;
+    yield* service.respond({ threadId, providerSessionId, requestId, decision: "accept" });
+    // No live callback remains, including when its entire provider session has closed.
+    assert.equal(getSession.mock.calls.length, 0);
+  }).pipe(Effect.provide(layerTest));
+});
+
+it.effect.each([
+  {
+    kind: "mcp-elicitation",
+    status: "cancelled",
+    capability: "wrong-session",
+    reason: "request-not-resumable",
+  },
+  {
+    kind: "mcp-elicitation",
+    status: "cancelled",
+    capability: "not-resumable",
+    reason: "request-not-resumable",
+  },
+  { kind: "mcp-elicitation", status: "expired", capability: "live", reason: "request-not-ready" },
+  { kind: "mcp-elicitation", status: "pending", capability: "live", reason: "request-not-ready" },
+  { kind: "command", status: "cancelled", capability: "live", reason: "request-not-ready" },
+] as const)(
+  "rejects $kind $status responses with $capability capability",
+  ({ kind, status, capability, reason }) => {
+    const threadId = ThreadId.make("thread-invalid-elicitation");
+    const providerSessionId = ProviderSessionId.make("session-invalid-elicitation");
+    const requestId = RuntimeRequestId.make("request-invalid-elicitation");
+    const getSession = vi.fn(() => Effect.succeed(Option.none()));
+    const layerTest = layerRuntimeRequestTest(
+      projectionWithRuntimeRequest({
+        ...resolvedRuntimeRequest(requestId, providerSessionId),
+        kind,
+        status,
+        responseCapability:
+          capability === "not-resumable"
+            ? { type: "not_resumable", reason: "The provider session ended." }
+            : {
+                type: "live",
+                providerSessionId:
+                  capability === "wrong-session"
+                    ? ProviderSessionId.make("another-session")
+                    : providerSessionId,
+              },
+      }),
+      getSession,
+    );
+    return Effect.gen(function* () {
+      const service = yield* RuntimeRequestService.RuntimeRequestServiceV2;
+      const error = yield* service
+        .respond({ threadId, providerSessionId, requestId, decision: "accept" })
+        .pipe(Effect.flip);
+      assert.equal(error.reason, reason);
+      assert.equal(getSession.mock.calls.length, 0);
+    }).pipe(Effect.provide(layerTest));
+  },
+);
