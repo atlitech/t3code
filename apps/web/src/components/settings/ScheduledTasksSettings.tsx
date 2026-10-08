@@ -827,6 +827,8 @@ function ScheduledTaskEditorDialog({
     : task;
   const selectedProjectId = draft.projectId || projects[0]?.id || "";
   const selectedProject = projects.find((project) => project.id === selectedProjectId);
+  const followsThreadModel =
+    draft.threadId !== "" && tasksQuery.data?.followsThreadModelSelection === true;
 
   // The real model picker is keyed by a `${instanceId}:${model}` string, which
   // is exactly how the draft stores its selection.
@@ -862,7 +864,10 @@ function ScheduledTaskEditorDialog({
       tasksQuery.data === null
     )
       return;
-    const selection = activeSelection;
+    // Keep the saved selection for wire compatibility; bound tasks do not execute it.
+    const selection = followsThreadModel
+      ? (task?.modelSelection ?? draft.baseModelSelection)
+      : activeSelection;
     if (
       !draft.title.trim() ||
       !draft.prompt.trim() ||
@@ -1121,19 +1126,25 @@ function ScheduledTaskEditorDialog({
             </Field>
 
             <Field label="Model">
-              <ProviderModelPicker
-                disabled={saving || !connected}
-                activeInstanceId={activeInstanceId}
-                model={activeModel}
-                lockedProvider={null}
-                instanceEntries={instanceEntries}
-                modelOptionsByInstance={modelOptionsByInstance}
-                isComposerOwned={false}
-                triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
-                onInstanceModelChange={(instanceId, model) =>
-                  setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
-                }
-              />
+              {followsThreadModel ? (
+                <p className="text-sm text-muted-foreground">
+                  Uses this thread’s current provider and model.
+                </p>
+              ) : (
+                <ProviderModelPicker
+                  disabled={saving || !connected}
+                  activeInstanceId={activeInstanceId}
+                  model={activeModel}
+                  lockedProvider={null}
+                  instanceEntries={instanceEntries}
+                  modelOptionsByInstance={modelOptionsByInstance}
+                  isComposerOwned={false}
+                  triggerClassName={SETTINGS_PICKER_TRIGGER_CLASSNAME}
+                  onInstanceModelChange={(instanceId, model) =>
+                    setDraft((current) => ({ ...current, modelKey: `${instanceId}:${model}` }))
+                  }
+                />
+              )}
             </Field>
 
             <div className="space-y-3">

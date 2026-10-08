@@ -2,6 +2,7 @@ import type {
   OrchestrationV2ProviderFailure,
   OrchestrationV2Run,
   OrchestrationV2TurnItem,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
@@ -80,15 +81,19 @@ export function runRanAfter(
 /**
  * The latest run that actually started, when it stopped because the
  * subscription limit was reached. Queued messages after that run must stay
- * queued instead of being sent into the same limit.
+ * queued instead of being sent into the same limit. A different provider
+ * instance can continue without inheriting that account's blocker.
  */
 export function usageLimitBlockedRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
   turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
   sessionError: string | null,
+  providerInstanceId?: ProviderInstanceId,
 ): OrchestrationV2Run | null {
   const executed = latestExecutedRun(runs);
   if (executed?.status !== "failed") return null;
+  if (providerInstanceId !== undefined && executed.providerInstanceId !== providerInstanceId)
+    return null;
   const summary = threadErrorSummary(latestRootProviderFailure(executed, turnItems), sessionError);
   return summary.lastErrorClass === "usage_limit" ? executed : null;
 }
@@ -102,8 +107,9 @@ export function usageLimitRunPresentedAsLatest(
   runs: ReadonlyArray<OrchestrationV2Run>,
   turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
   sessionError: string | null,
+  providerInstanceId?: ProviderInstanceId,
 ): OrchestrationV2Run | null {
-  const blocked = usageLimitBlockedRun(runs, turnItems, sessionError);
+  const blocked = usageLimitBlockedRun(runs, turnItems, sessionError, providerInstanceId);
   return blocked !== null && runs.some((run) => run.ordinal > blocked.ordinal) ? blocked : null;
 }
 

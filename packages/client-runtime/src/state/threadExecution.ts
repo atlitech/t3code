@@ -76,6 +76,7 @@ function presentedUsageLimitRun(
     projection.runs,
     projection.turnItems,
     providerSession?.lastError ?? null,
+    projection.thread.modelSelection.instanceId,
   );
 }
 
@@ -230,6 +231,10 @@ export function deriveThreadRuntime(
   );
   const usageLimitedRun = presentedUsageLimitRun(projection);
   const latestRunProjection = presentedLatestRun(projection);
+  const failure = latestRootProviderFailure(latestRunProjection, projection.turnItems);
+  const previousProviderLimit =
+    failure?.class === "usage_limit" &&
+    latestRunProjection?.providerInstanceId !== projection.thread.modelSelection.instanceId;
   const activityRun = deriveThreadActivityRun(projection);
   const liveActivityRun = latestMatchingRun(projection, (run) =>
     ACTIVITY_RUN_STATUSES.has(run.status),
@@ -261,7 +266,9 @@ export function deriveThreadRuntime(
       ? "failed"
       : backgroundWorkHoldsRun && latestRunProjection?.status !== "failed"
         ? "idle"
-        : (activityRun?.status ?? "idle"),
+        : previousProviderLimit && liveActivityRun === null
+          ? "idle"
+          : (activityRun?.status ?? "idle"),
     activeRunId,
     activityStartedAt:
       liveActivityRun === null
@@ -270,7 +277,7 @@ export function deriveThreadRuntime(
     providerInstanceId: projection.thread.providerInstanceId,
     providerName: providerSession?.driver ?? null,
     ...threadErrorSummary(
-      latestRootProviderFailure(latestRunProjection, projection.turnItems),
+      previousProviderLimit ? null : failure,
       providerSession?.lastError ?? null,
     ),
     updatedAt: DateTime.formatIso(projection.updatedAt),

@@ -922,6 +922,7 @@ type ShellThreadRow = {
   readonly forked_from_run_source_thread_id: string | null;
   readonly latest_run_id: string | null;
   readonly latest_run_status: string | null;
+  readonly latest_run_provider_instance_id: string | null;
   readonly latest_run_requested_at: string | null;
   readonly latest_run_started_at: string | null;
   readonly latest_run_completed_at: string | null;
@@ -1359,7 +1360,12 @@ export function threadShellFromProjection(
       projection.runs,
       projection.turnItems,
       providerSession?.lastError ?? null,
+      projection.thread.modelSelection.instanceId,
     ) ?? latestUnheldRun(projection.runs);
+  const failure = latestRootProviderFailure(latestRun, projection.turnItems);
+  const previousProviderLimit =
+    failure?.class === "usage_limit" &&
+    latestRun?.providerInstanceId !== projection.thread.modelSelection.instanceId;
   const activeRun =
     projection.runs
       .filter(isInterruptibleRunForShell)
@@ -1441,9 +1447,9 @@ export function threadShellFromProjection(
     activityRunStatus: activityRun?.status ?? null,
     activityRunStartedAt:
       activityRun === null ? null : orchestrationV2RunWorkStartedAt(activityRun),
-    status: latestRun?.status ?? "idle",
+    status: previousProviderLimit ? "idle" : (latestRun?.status ?? "idle"),
     ...threadErrorSummary(
-      latestRootProviderFailure(latestRun, projection.turnItems),
+      previousProviderLimit ? null : failure,
       providerSession?.lastError ?? null,
     ),
     pendingRuntimeRequest:
@@ -3421,6 +3427,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               latest.ordinal DESC, latest.run_id DESC
             LIMIT 1
           ) AND r.status = 'failed'
+            AND r.provider_instance_id = json_extract(t.payload_json, '$.modelSelection.instanceId')
           INNER JOIN orchestration_v2_projection_turn_items item ON item.turn_item_id = (
             SELECT error.turn_item_id FROM orchestration_v2_projection_turn_items error
             WHERE error.thread_id = t.thread_id AND error.run_id = r.run_id
@@ -4951,6 +4958,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               END AS forked_from_run_source_thread_id,
               presented.run_id AS latest_run_id,
               presented.status AS latest_run_status,
+              presented.provider_instance_id AS latest_run_provider_instance_id,
               presented.requested_at AS latest_run_requested_at,
               json_extract(presented.payload_json, '$.startedAt') AS latest_run_started_at,
               presented.completed_at AS latest_run_completed_at,
@@ -5113,6 +5121,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 candidate.ordinal DESC, candidate.run_id DESC
               LIMIT 1
             ) AND blocked.status = 'failed'
+              AND blocked.provider_instance_id = json_extract(t.payload_json, '$.modelSelection.instanceId')
             WHERE t.deleted_at IS NULL${threadId === undefined ? sql`` : sql` AND t.thread_id = ${threadId}`}${
               location === "active"
                 ? sql` AND json_extract(t.payload_json, '$.archivedAt') IS NULL`
@@ -5424,8 +5433,15 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           row.terminal_failure_payload_json === null
             ? null
             : yield* decodeTurnItemPayload(row.terminal_failure_payload_json);
+        const previousProviderLimit =
+          terminalFailureItem?.type === "error" &&
+          terminalFailureItem.failure?.class === "usage_limit" &&
+          row.latest_run_provider_instance_id !== thread.modelSelection.instanceId;
+        if (previousProviderLimit) terminalFailureItem = null;
         let latestRunId = row.latest_run_id === null ? null : RunId.make(row.latest_run_id);
-        let latestRunStatus = shellStatusFromStoredRunStatus(row.latest_run_status);
+        let latestRunStatus = previousProviderLimit
+          ? ("idle" as const)
+          : shellStatusFromStoredRunStatus(row.latest_run_status);
         let latestRunRequestedAt =
           row.latest_run_requested_at === null
             ? null

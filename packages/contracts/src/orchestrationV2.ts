@@ -1112,6 +1112,8 @@ export type OrchestrationV2Notification = typeof OrchestrationV2Notification.Typ
 
 export const OrchestrationV2ConversationMessage = Schema.Struct({
   notification: Schema.optional(OrchestrationV2Notification),
+  /** Native buffered output belongs to this provider thread, even after the app thread switches. */
+  providerContinuation: Schema.optional(Schema.Struct({ providerThreadId: ProviderThreadId })),
   ...OrchestrationV2CreationFields,
   scheduledTaskId: Schema.optional(ScheduledTaskId),
   // The sending agent's thread in this environment, separate from the receiving thread.
@@ -2835,6 +2837,7 @@ export const OrchestrationV2Command = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("message.dispatch"),
     notification: Schema.optional(OrchestrationV2Notification),
+    providerContinuation: Schema.optional(Schema.Struct({ providerThreadId: ProviderThreadId })),
     ...OrchestrationV2CreationFields,
     scheduledTaskId: Schema.optional(ScheduledTaskId),
     senderThreadId: Schema.optional(ThreadId),

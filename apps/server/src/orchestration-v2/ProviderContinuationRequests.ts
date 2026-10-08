@@ -11,6 +11,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 
 export interface ProviderContinuationRequest {
   readonly threadId: ThreadId;
@@ -63,7 +64,42 @@ export class ProviderContinuationRequests extends Context.Reference<{
   defaultValue: () => ({ offer: () => Effect.void, take: Effect.never }),
 }) {}
 
-export const layer = Layer.effect(
+/** Message-scoped native wake cleanup, settled by post-commit effects. */
+export class ProviderContinuationCleanup extends Context.Reference<{
+  readonly register: (messageId: MessageId, clear: Effect.Effect<void>) => Effect.Effect<void>;
+  readonly discard: (messageId: MessageId) => Effect.Effect<void>;
+  readonly release: (messageId: MessageId) => Effect.Effect<void>;
+}>("t3/orchestration-v2/ProviderContinuationCleanup", {
+  defaultValue: () => ({
+    register: () => Effect.void,
+    discard: () => Effect.void,
+    release: () => Effect.void,
+  }),
+}) {}
+
+const layerCleanup = Layer.effect(
+  ProviderContinuationCleanup,
+  Effect.gen(function* () {
+    const callbacks = yield* Ref.make(new Map<MessageId, Effect.Effect<void>>());
+    const take = (messageId: MessageId) =>
+      Ref.modify(callbacks, (current) => {
+        const clear = current.get(messageId);
+        if (clear === undefined) return [undefined, current] as const;
+        const next = new Map(current);
+        next.delete(messageId);
+        return [clear, next] as const;
+      });
+    return {
+      register: (messageId: MessageId, clear: Effect.Effect<void>) =>
+        Ref.update(callbacks, (current) => new Map(current).set(messageId, clear)),
+      discard: (messageId: MessageId) =>
+        take(messageId).pipe(Effect.flatMap((clear) => clear ?? Effect.void)),
+      release: (messageId: MessageId) => take(messageId).pipe(Effect.asVoid),
+    };
+  }),
+);
+
+const layerRequests = Layer.effect(
   ProviderContinuationRequests,
   Effect.gen(function* () {
     const queue = yield* Queue.unbounded<ProviderContinuationRequest>();
@@ -74,3 +110,5 @@ export const layer = Layer.effect(
     };
   }),
 );
+
+export const layer = Layer.merge(layerRequests, layerCleanup);

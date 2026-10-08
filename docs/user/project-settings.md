@@ -56,8 +56,10 @@ branch name remains.
 
 Open **Settings → Scheduled tasks** to create recurring tasks or manage existing
 ones across your connected environments. Use the settings filter to narrow the
-list by environment or project. Each task runs on the environment you choose,
-using its project, model, and workspace settings. Fixed-time schedules use that
+list by environment or project. Tasks that create new threads use their saved
+project, model, and workspace settings. Tasks that post into an existing thread
+use that thread's current provider and model, including changes made while a
+scheduled prompt waits in its queue. Fixed-time schedules use that
 environment's time zone, which may differ from your phone's.
 
 You can edit, pause, resume, run immediately, or delete a task from the list.

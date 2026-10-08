@@ -163,9 +163,11 @@ describe("ProviderContinuationService", () => {
         const command = (yield* Queue.take(dispatched)) as {
           readonly creationSource: string;
           readonly notification: OrchestrationV2Notification;
+          readonly providerContinuation: { readonly providerThreadId: ProviderThreadId };
         };
         // ClaudeAdapterV2 keys on this to attach buffered CLI output.
         assert.equal(command.creationSource, "provider");
+        assert.deepEqual(command.providerContinuation, { providerThreadId });
         assert.deepEqual(command.notification, {
           source: { kind: "background_task" },
           outcome: "updated",
@@ -179,6 +181,41 @@ describe("ProviderContinuationService", () => {
       );
     });
   });
+
+  it.effect(
+    "retains native cleanup until committed discard and releases accepted offers without clearing",
+    () =>
+      Effect.gen(function* () {
+        const dispatched = yield* Queue.unbounded<unknown>();
+        const cleared: MessageId[] = [];
+        yield* Effect.gen(function* () {
+          const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+          const cleanup = yield* ProviderContinuationRequests.ProviderContinuationCleanup;
+          for (const action of ["discard", "release"] as const) {
+            let dispatchedMessageId: MessageId | undefined;
+            yield* requests.offer({
+              ...request(),
+              clearIfCurrent: () =>
+                Effect.sync(() => {
+                  assert.isDefined(dispatchedMessageId);
+                  cleared.push(dispatchedMessageId!);
+                }),
+            });
+            const command = (yield* Queue.take(dispatched)) as { messageId: MessageId };
+            dispatchedMessageId = command.messageId;
+            const before = cleared.length;
+            yield* cleanup[action](command.messageId);
+            yield* cleanup.discard(command.messageId);
+            assert.equal(cleared.length, before + (action === "discard" ? 1 : 0));
+          }
+        }).pipe(
+          Effect.provide(
+            layerTest({ dispatched, getThreadRecords: () => Effect.succeed(projection) }),
+          ),
+          Effect.scoped,
+        );
+      }),
+  );
 
   it.effect("delivers a message_text wake as a real prompt, not a buffered wake", () => {
     return Effect.gen(function* () {
