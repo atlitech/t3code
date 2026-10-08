@@ -583,6 +583,8 @@ function TaskForm({
   const projects = useProjects().filter((project) => project.environmentId === environmentId);
   const config = useEnvironmentServerConfig(environmentId);
   const modelOptions = useMemo(() => buildModelOptions(config, null), [config]);
+  const followsThreadModel =
+    draft.task?.threadId != null && tasks.data?.followsThreadModelSelection === true;
   const canOperate = useAtomValue(
     serverEnvironment.upsertScheduledTask.permissionAtom(environmentId),
   );
@@ -619,6 +621,10 @@ function TaskForm({
     // Signatures are edited on desktop and web; send the task's current one,
     // not the copy taken when this form opened, so a newer edit survives.
     const liveTask = tasks.data?.tasks.find((task) => task.id === draft.task?.id);
+    // Bound tasks retain this legacy field without requiring its provider to remain installed.
+    const modelSelection = followsThreadModel
+      ? (draft.task?.modelSelection ?? draft.modelSelection)
+      : draft.modelSelection;
     const schedule = scheduleFromDraft(
       draft.schedule.mode === "webhook" && liveTask?.schedule.type === "webhook"
         ? { ...draft.schedule, signature: liveTask.schedule.signature }
@@ -638,7 +644,7 @@ function TaskForm({
       !draft.title.trim() ||
       !draft.prompt.trim() ||
       !draft.projectId ||
-      !draft.modelSelection ||
+      !modelSelection ||
       !schedule ||
       (draft.workspace === "existing_worktree" && !draft.checkoutPath.trim())
     ) {
@@ -657,7 +663,7 @@ function TaskForm({
       title: draft.title.trim(),
       prompt: draft.prompt.trim(),
       projectId: draft.projectId,
-      modelSelection: draft.modelSelection,
+      modelSelection,
       schedule,
       enabled: draft.enabled,
       threadId: draft.task?.threadId ?? null,
@@ -767,21 +773,27 @@ function TaskForm({
               });
           }}
         />
-        <PickerRow
-          label="Model"
-          borderTop
-          value={
-            modelOptions.find(
-              (option) =>
-                option.selection.instanceId === draft.modelSelection?.instanceId &&
-                option.selection.model === draft.modelSelection?.model,
-            )?.label ??
-            draft.modelSelection?.model ??
-            (modelOptions.length ? "Choose model" : "No models available")
-          }
-          onPress={() => navigation.navigate("SettingsScheduledTaskModel")}
-          disabled={saving || dictationPending || environmentUnavailable}
-        />
+        {followsThreadModel ? (
+          <Text className="px-4 py-3 text-base text-foreground-muted">
+            Uses this thread’s current provider and model.
+          </Text>
+        ) : (
+          <PickerRow
+            label="Model"
+            borderTop
+            value={
+              modelOptions.find(
+                (option) =>
+                  option.selection.instanceId === draft.modelSelection?.instanceId &&
+                  option.selection.model === draft.modelSelection?.model,
+              )?.label ??
+              draft.modelSelection?.model ??
+              (modelOptions.length ? "Choose model" : "No models available")
+            }
+            onPress={() => navigation.navigate("SettingsScheduledTaskModel")}
+            disabled={saving || dictationPending || environmentUnavailable}
+          />
+        )}
       </SettingsSection>
 
       <SettingsSection title="Workspace">

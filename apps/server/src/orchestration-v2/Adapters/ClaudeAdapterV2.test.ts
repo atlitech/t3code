@@ -5449,6 +5449,53 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("discarding an old native wake cannot clear a newer buffered wake", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-wake-discard"),
+            text: "Run the build in the background.",
+            attachments: [],
+          }),
+        );
+        yield* harness.offerAndWait(wakeTaskStarted);
+        yield* harness.offerAndWait(turnOneResult);
+        yield* Queue.take(harness.terminalReceipts);
+        yield* harness.offerAndWait(wakeNotification);
+        yield* harness.offerAndWait(wakeAssistant);
+        yield* harness.offerAndWait(wakeResult);
+        const first = harness.continuationRequests[0]!;
+        assert.isDefined(first.clearIfCurrent);
+        assert.isDefined(first.dispatchIfCurrent);
+        yield* first.clearIfCurrent!();
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+        assert.isTrue(Option.isNone(yield* first.dispatchIfCurrent!(Effect.void)));
+
+        yield* harness.offerAndWait(wakeTurnInit);
+        yield* harness.offerAndWait(
+          makeAssistantTextFrame({
+            uuid: "00000000-0000-4000-8000-000000000199",
+            text: "A newer background task completed.",
+          }),
+        );
+        const second = harness.continuationRequests[1]!;
+        assert.isDefined(second);
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        yield* first.clearIfCurrent!();
+        assert.isTrue(yield* harness.hasPendingBackgroundWork);
+        assert.isTrue(Option.isSome(yield* second.dispatchIfCurrent!(Effect.void)));
+        yield* second.clearIfCurrent!();
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(Effect.provide(Layer.merge(IdAllocator.layer, NodeServices.layer))),
+    ),
+  );
+
   it.effect("buffers wake output and requests a single continuation run", () =>
     Effect.scoped(
       Effect.gen(function* () {

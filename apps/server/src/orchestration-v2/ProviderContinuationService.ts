@@ -2,6 +2,7 @@ import { CommandId, type OrchestrationV2ThreadProjection } from "@t3tools/contra
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
+import * as Option from "effect/Option";
 
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/continuationRequests";
@@ -61,6 +62,7 @@ export const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const ids = yield* IdAllocator.IdAllocatorV2;
     const requests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
+    const cleanup = yield* ProviderContinuationRequests.ProviderContinuationCleanup;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const retryAttempts = yield* Ref.make(new Map<string, number>());
 
@@ -152,6 +154,10 @@ export const layer = Layer.effectDiscard(
           ordinal: projection.messages.length + 1,
         });
         const commandId = CommandId.make(`provider-continuation:${messageId}`);
+        const nativeWake = request.delivery !== "message_text";
+        if (nativeWake && request.clearIfCurrent !== undefined) {
+          yield* cleanup.register(messageId, request.clearIfCurrent());
+        }
         const dispatch = threads.dispatch({
           type: "message.dispatch",
           commandId,
@@ -163,6 +169,9 @@ export const layer = Layer.effectDiscard(
             outcome: "updated",
             summary: "Background activity updated",
           },
+          ...(nativeWake
+            ? { providerContinuation: { providerThreadId: request.providerThreadId } }
+            : {}),
           attachments: [],
           dispatchMode: { type: "queue_after_active" },
           createdBy: "agent",
@@ -172,11 +181,16 @@ export const layer = Layer.effectDiscard(
           // marker or the turn settles immediately having prompted nothing.
           creationSource: request.delivery === "message_text" ? "server" : "provider",
         });
-        if (request.dispatchIfCurrent === undefined) {
-          yield* dispatch;
-          return;
-        }
-        yield* request.dispatchIfCurrent(dispatch);
+        yield* (
+          request.dispatchIfCurrent === undefined
+            ? dispatch.pipe(Effect.asVoid)
+            : request.dispatchIfCurrent(dispatch).pipe(
+                Effect.tap((result) =>
+                  Option.isNone(result) ? cleanup.release(messageId) : Effect.void,
+                ),
+                Effect.asVoid,
+              )
+        ).pipe(Effect.onError(() => cleanup.release(messageId)));
       },
     );
 

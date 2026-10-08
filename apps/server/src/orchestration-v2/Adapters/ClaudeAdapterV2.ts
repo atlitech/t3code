@@ -3179,10 +3179,15 @@ export function makeClaudeAdapterV2(
         const pendingSubagentFramesByToolUseId = yield* Ref.make(
           new Map<string, ReadonlyArray<SDKMessage>>(),
         );
+        let nextWakeGeneration = 0;
         const wakeBuffers = yield* Ref.make(
           new Map<
             string,
-            { readonly messages: ReadonlyArray<SDKMessage>; readonly detail: string | null }
+            {
+              readonly generation: number;
+              readonly messages: ReadonlyArray<SDKMessage>;
+              readonly detail: string | null;
+            }
           >(),
         );
         // Background work that ended and has not been named by a wake offer yet,
@@ -3343,7 +3348,7 @@ export function makeClaudeAdapterV2(
               return { kind: "command", label, outcome };
           }
         });
-        const requestedContinuations = yield* Ref.make(new Set<string>());
+        const requestedContinuations = yield* Ref.make(new Map<string, number>());
         // ExitPlanMode plans whose permission callback fired while the tool's
         // root frames were held for a prompt echo. Each projects when its
         // tool_use frame is handled, in whichever run that frame is routed
@@ -3716,7 +3721,7 @@ export function makeClaudeAdapterV2(
               if (!current.has(nativeThreadId)) {
                 return current;
               }
-              const updated = new Set(current);
+              const updated = new Map(current);
               updated.delete(nativeThreadId);
               return updated;
             });
@@ -5557,6 +5562,7 @@ export function makeClaudeAdapterV2(
             const existing = current.get(wakeInput.nativeThreadId);
             const updated = new Map(current);
             updated.set(wakeInput.nativeThreadId, {
+              generation: existing?.generation ?? ++nextWakeGeneration,
               messages: [...(existing?.messages ?? []), message],
               detail: notificationSummary ?? existing?.detail ?? null,
             });
@@ -5606,12 +5612,14 @@ export function makeClaudeAdapterV2(
             });
             return;
           }
+          if (buffered === undefined) return;
+          const generation = buffered.generation;
           const shouldOffer = yield* Ref.modify(requestedContinuations, (current) => {
             if (current.has(wakeInput.nativeThreadId)) {
               return [false, current] as const;
             }
-            const updated = new Set(current);
-            updated.add(wakeInput.nativeThreadId);
+            const updated = new Map(current);
+            updated.set(wakeInput.nativeThreadId, generation);
             return [true, updated] as const;
           });
           if (!shouldOffer) {
@@ -5634,6 +5642,32 @@ export function makeClaudeAdapterV2(
             driver: CLAUDE_PROVIDER,
             detail,
             ...(notification === null ? {} : { notification }),
+            dispatchIfCurrent: (dispatch) =>
+              Ref.get(requestedContinuations).pipe(
+                Effect.flatMap((current) =>
+                  current.get(wakeInput.nativeThreadId) === generation
+                    ? Effect.map(dispatch, Option.some)
+                    : Effect.succeed(Option.none()),
+                ),
+              ),
+            clearIfCurrent: () =>
+              Effect.gen(function* () {
+                // Cleanup can arrive after another turn consumed this wake. Never
+                // clear a newer offer or output buffered for a later native wake.
+                yield* Ref.update(wakeBuffers, (current) => {
+                  if (current.get(wakeInput.nativeThreadId)?.generation !== generation)
+                    return current;
+                  const updated = new Map(current);
+                  updated.delete(wakeInput.nativeThreadId);
+                  return updated;
+                });
+                yield* Ref.update(requestedContinuations, (current) => {
+                  if (current.get(wakeInput.nativeThreadId) !== generation) return current;
+                  const updated = new Map(current);
+                  updated.delete(wakeInput.nativeThreadId);
+                  return updated;
+                });
+              }),
           });
         });
 
@@ -7792,7 +7826,7 @@ export function makeClaudeAdapterV2(
               return [entry.messages, updated] as const;
             });
             yield* Ref.update(requestedContinuations, (current) => {
-              const updated = new Set(current);
+              const updated = new Map(current);
               updated.delete(nativeThreadId);
               return updated;
             });

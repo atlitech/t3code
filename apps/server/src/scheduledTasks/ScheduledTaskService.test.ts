@@ -3,7 +3,7 @@ import * as NodeUtil from "node:util";
 
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
-import { ScheduledTaskError } from "@t3tools/contracts";
+import { ScheduledTaskError, ScheduledTaskUpsertInput } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -22,6 +22,71 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ScheduledTaskService from "./ScheduledTaskService.ts";
 
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
+const decodeUpsertInput = Schema.decodeUnknownEffect(ScheduledTaskUpsertInput);
+
+it.effect("bound tasks follow the thread while fresh threads retain the saved model", () =>
+  Effect.gen(function* () {
+    const sends: ThreadManagementService.ThreadManagementSendInput[] = [];
+    const launches: ThreadLaunchService.ThreadLaunchInput[] = [];
+    const dependencies = Layer.mergeAll(
+      NodeCrypto.layer,
+      Scheduler.layer,
+      Layer.mock(SecretRequests.SecretRequests)({}),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        sendToThread: (input) =>
+          Effect.sync(() => sends.push(input)).pipe(
+            Effect.andThen(Effect.die(new Error("test dispatch failure"))),
+          ),
+      }),
+      Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+        launch: (input) =>
+          Effect.sync(() => launches.push(input)).pipe(
+            Effect.andThen(Effect.die(new Error("test launch failure"))),
+          ),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const input = yield* decodeUpsertInput({
+        title: "Review",
+        prompt: "Review the open pull requests.",
+        enabled: true,
+        schedule: { type: "interval", everyMs: 60_000 },
+        projectId: "project:follow-thread",
+        threadId: "thread:follow-thread",
+        workspaceStrategy: { type: "root" },
+        modelSelection: { instanceId: "removed-account", model: "old-model" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      });
+      const bound = (yield* service.upsert(input)).task;
+      // Editing a bound task must remain possible after its saved account disappears.
+      yield* service.upsert({ ...input, id: bound.id, requireExisting: true, title: "Edited" });
+      yield* service.runNow({ id: bound.id });
+      yield* service.runNow({ id: bound.id });
+      assert.lengthOf(sends, 2);
+      for (const send of sends) {
+        assert.equal(send.threadId, input.threadId);
+        assert.equal(send.scheduledTaskId, bound.id);
+        assert.equal(send.mode, "queue");
+        assert.isUndefined(send.modelSelection);
+      }
+      assert.lengthOf(launches, 0);
+
+      const fresh = (yield* service.upsert({ ...input, threadId: null })).task;
+      yield* service.runNow({ id: fresh.id });
+      assert.lengthOf(launches, 1);
+      assert.deepEqual(launches[0]?.modelSelection, input.modelSelection);
+      assert.equal(launches[0]?.initialMessage?.scheduledTaskId, fresh.id);
+      const listed = yield* service.list();
+      assert.isTrue(listed.followsThreadModelSelection);
+      assert.deepEqual(
+        listed.tasks.find((task) => task.id === bound.id)?.modelSelection,
+        input.modelSelection,
+      );
+    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(dependencies))));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
 
 const insertRow = (
   sql: SqlClient.SqlClient,

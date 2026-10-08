@@ -4,11 +4,20 @@ import * as Schema from "effect/Schema";
 import {
   MIN_SCHEDULED_TASK_INTERVAL_MS,
   ScheduledTaskSchedule,
+  ScheduledTaskListResult,
   ScheduledTaskUpsertSchedule,
 } from "./scheduledTask.ts";
 
 const decodeSchedule = Schema.decodeUnknownSync(ScheduledTaskSchedule);
 const decodeUpsertSchedule = Schema.decodeUnknownSync(ScheduledTaskUpsertSchedule);
+
+it("decodes task lists from servers with and without thread model inheritance", () => {
+  const decode = Schema.decodeUnknownSync(ScheduledTaskListResult);
+  expect(decode({ tasks: [] }).followsThreadModelSelection).toBeUndefined();
+  expect(decode({ tasks: [], followsThreadModelSelection: true }).followsThreadModelSelection).toBe(
+    true,
+  );
+});
 
 describe("ScheduledTaskSchedule", () => {
   it("keeps legacy sub-minute persisted schedules readable", () => {

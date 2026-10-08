@@ -531,7 +531,7 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   bindToCurrentThread: Schema.optional(
     Schema.Boolean.annotate({
       description:
-        "True (default) posts each run into this thread; false creates a fresh top-level thread per run.",
+        "True (default) posts each run into this thread using its current provider and model when the run starts; false creates a fresh top-level thread per run using the saved provider and model.",
     }),
   ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),

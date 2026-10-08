@@ -185,6 +185,61 @@ describe("thread execution presentation", () => {
         turnItems: [{ ...item, failure: { ...item.failure, class: "provider_error" as const } }],
       }),
     ).toMatchObject({ status: "queued", lastErrorClass: null });
+
+    const otherProvider = ProviderInstanceId.make("claude-atli");
+    expect(usageLimitBlockedRun(projection.runs, [item], null, otherProvider)).toBeNull();
+    expect(usageLimitBlockedRun(projection.runs, [item], null, failed.providerInstanceId)?.id).toBe(
+      failed.id,
+    );
+    const switched = {
+      ...projection,
+      thread: {
+        ...projection.thread,
+        providerInstanceId: otherProvider,
+        modelSelection: { instanceId: otherProvider, model: "claude-opus" },
+      },
+    };
+    // Choosing another account clears the old account's blocker without erasing its run.
+    expect(deriveThreadRuntime({ ...switched, runs: [failed] })).toMatchObject({
+      status: "idle",
+      lastError: null,
+      lastErrorClass: null,
+    });
+    const successful = {
+      ...run("recovery", 4, "completed"),
+      providerInstanceId: otherProvider,
+      modelSelection: switched.thread.modelSelection,
+      completedAt: DateTime.add(now, { minutes: 1 }),
+    };
+    expect(
+      deriveThreadRuntime({ ...switched, runs: [failed, queued, cancelledQueued, successful] }),
+    ).toMatchObject({ status: "completed", lastError: null, lastErrorClass: null });
+    // A scheduled run submitted earlier can execute later on the new provider.
+    // Its real limit must still stop work even though its ordinal is lower.
+    const limitedSchedule = {
+      ...queued,
+      providerInstanceId: otherProvider,
+      modelSelection: switched.thread.modelSelection,
+      rootNodeId: NodeId.make("schedule-root"),
+      status: "failed" as const,
+      startedAt: successful.completedAt,
+      completedAt: DateTime.add(now, { minutes: 2 }),
+    };
+    expect(
+      deriveThreadRuntime({
+        ...switched,
+        runs: [failed, limitedSchedule, cancelledQueued, successful],
+        turnItems: [
+          item,
+          {
+            ...item,
+            id: TurnItemId.make("new-limit"),
+            runId: queued.id,
+            nodeId: limitedSchedule.rootNodeId,
+          },
+        ],
+      }),
+    ).toMatchObject({ status: "failed", lastErrorClass: "usage_limit" });
   });
 
   it("keeps live activity attached to an executing run when a newer run is queued", () => {

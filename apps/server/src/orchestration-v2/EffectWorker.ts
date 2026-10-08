@@ -21,6 +21,7 @@ import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/continuationRequests";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
@@ -97,6 +98,7 @@ export const layerExecutor: Layer.Layer<
     const resourceCleanup = yield* ResourceCleanupService.ResourceCleanupService;
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const continuationCleanup = yield* ProviderContinuationRequests.ProviderContinuationCleanup;
     const providerTurnControl = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
     const providerTurnStart = yield* ProviderTurnStartService.ProviderTurnStartServiceV2;
     const runtimeRequests = yield* RuntimeRequestService.RuntimeRequestServiceV2;
@@ -108,6 +110,8 @@ export const layerExecutor: Layer.Layer<
       execute: (effect, options) => {
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
+          case "provider-continuation.discard":
+            return continuationCleanup.discard(effect.request.messageId);
           case "provider-runtime.continue": {
             const sourceRunId = effect.request.sourceRunId;
             return continueRestartedRun({ threadId: effect.threadId, sourceRunId }).pipe(
@@ -149,10 +153,20 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
-          case "provider-turn.start":
+          case "provider-turn.start": {
+            const continuationMessageId = effect.request.providerContinuationMessageId;
+            const discardContinuation =
+              continuationMessageId === undefined
+                ? Effect.void
+                : continuationCleanup.discard(continuationMessageId);
             return providerTurnStart
               .start({ threadId: effect.threadId, runId: effect.request.runId, willRetry })
               .pipe(
+                // Adapters consume their buffer before start returns. The
+                // generation-scoped callback is then a no-op; otherwise it
+                // disposes output abandoned by a failed or cancelled start.
+                Effect.tap(() => discardContinuation),
+                Effect.tapError(() => (willRetry ? Effect.void : discardContinuation)),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -162,6 +176,7 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          }
           case "provider-turn.interrupt":
             return providerTurnControl
               .interrupt({
