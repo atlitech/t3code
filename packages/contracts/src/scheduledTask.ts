@@ -202,6 +202,8 @@ export const ScheduledTaskListResult = Schema.Struct({
   // Trigger types grow over time; a client must not lose the whole list over
   // one task it cannot decode.
   tasks: ForwardCompatibleArray(ScheduledTask),
+  /** Bound tasks follow the thread's model; absent on servers that use the saved model. */
+  followsThreadModelSelection: Schema.optionalKey(Schema.Boolean),
 });
 export type ScheduledTaskListResult = typeof ScheduledTaskListResult.Type;
 

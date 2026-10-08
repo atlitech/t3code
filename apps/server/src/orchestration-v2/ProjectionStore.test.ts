@@ -2419,6 +2419,108 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect("keeps an old provider's limit out of switched thread shells and recovery", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* addRolledBackRecoveryCandidate("switched-limit");
+      const initial = yield* store.getThreadProjection(threadId);
+      const original = initial.runs[0]!;
+      const now = yield* DateTime.now;
+      const failed = { ...original, status: "failed" as const, completedAt: now };
+      yield* store.apply({
+        id: EventId.make("switched-limit:run"),
+        type: "run.updated",
+        threadId,
+        occurredAt: now,
+        payload: failed,
+      });
+      yield* store.apply({
+        id: EventId.make("switched-limit:error"),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          id: TurnItemId.make("switched-limit:error"),
+          threadId,
+          runId: original.id,
+          nodeId: original.rootNodeId,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 2,
+          status: "failed",
+          title: "Usage limit reached",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "error",
+          failure: {
+            class: "usage_limit",
+            message: "Plan limit reached.",
+            resetAt: "2099-01-01T00:00:00.000Z",
+            code: "usageLimitExceeded",
+            retryable: null,
+          },
+        },
+      });
+      const switched = {
+        ...initial.thread,
+        providerInstanceId: ProviderInstanceId.make("other-account"),
+        modelSelection: { ...modelSelection, instanceId: ProviderInstanceId.make("other-account") },
+      };
+      yield* store.apply({
+        id: EventId.make("switched-limit:selection"),
+        type: "thread.metadata-updated",
+        threadId,
+        occurredAt: now,
+        payload: switched,
+      });
+      const assertHealthy = Effect.fnUntraced(function* (status: "idle" | "completed") {
+        const projection = yield* store.getThreadProjection(threadId);
+        const sqlShell = yield* store.getThreadShell(threadId);
+        for (const shell of [sqlShell, ProjectionStore.threadShellFromProjection(projection)]) {
+          assert.equal(shell?.status, status);
+          assert.isNull(shell?.lastError);
+          assert.isNull(shell?.lastErrorClass);
+          assert.isNull(shell?.usageLimitResetAt);
+        }
+        assert.isUndefined(
+          (yield* store.getLimitRecoveryCandidates({ now, autoResume: true, snooze: false })).find(
+            (candidate) => candidate.id === threadId,
+          ),
+        );
+        assert.equal(projection.runs.find((run) => run.id === failed.id)?.status, "failed");
+      });
+      yield* assertHealthy("idle");
+      // A manual reply succeeds ahead of the old schedule and native wake backlog.
+      for (const [ordinal, status] of [
+        [2, "queued"],
+        [3, "cancelled"],
+        [4, "completed"],
+      ] as const) {
+        yield* store.apply({
+          id: EventId.make(`switched-limit:run:${ordinal}`),
+          type: "run.created",
+          threadId,
+          occurredAt: now,
+          payload: {
+            ...original,
+            id: RunId.make(`switched-limit:run:${ordinal}`),
+            ordinal,
+            providerInstanceId:
+              status === "completed" ? switched.providerInstanceId : providerInstanceId,
+            modelSelection: status === "completed" ? switched.modelSelection : modelSelection,
+            status,
+            startedAt: status === "completed" ? now : null,
+            completedAt: status === "queued" ? null : DateTime.add(now, { minutes: 1 }),
+          },
+        });
+      }
+      yield* assertHealthy("completed");
+    }),
+  );
+
   it.effect("projects only the latest failed root turn's limit into SQL and memory shells", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;

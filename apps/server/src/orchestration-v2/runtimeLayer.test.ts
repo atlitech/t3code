@@ -63,6 +63,7 @@ import * as EventSink from "./EventSink.ts";
 import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/continuationRequests";
 import * as PullRequestWatchReactor from "./PullRequestWatchReactor.ts";
 import { PullRequestProviderError } from "../pullRequest/PullRequestProvider.ts";
 import * as PullRequestService from "../pullRequest/PullRequestService.ts";
@@ -268,6 +269,7 @@ const moveProject = (projectId: ProjectId, workspaceRoot: string, updatedAt: str
 
 const layerTest = Layer.mergeAll(
   RuntimeLayer.layer,
+  ProviderContinuationRequests.layer,
   RuntimeLayer.layerEventSink,
   ProjectStore.layer,
   ProjectionStore.layer,
@@ -480,6 +482,59 @@ const layerSharedApplicationDataPlaneTest = Layer.mergeAll(
 );
 
 it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
+  it.effect("discards an obsolete native wake through the shared post-commit cleanup worker", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const cleanup = yield* ProviderContinuationRequests.ProviderContinuationCleanup;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const threadId = ThreadId.make("runtime-native-wake-cleanup");
+      const messageId = MessageId.make("runtime-native-wake-cleanup-message");
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-native-wake-cleanup-create"),
+        threadId,
+        projectId: ProjectId.make("runtime-native-wake-cleanup-project"),
+        title: "Native wake cleanup",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      let cleared = 0;
+      yield* cleanup.register(
+        messageId,
+        Effect.sync(() => {
+          cleared += 1;
+        }),
+      );
+      const result = yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("runtime-native-wake-cleanup-dispatch"),
+        threadId,
+        messageId,
+        createdBy: "agent",
+        creationSource: "provider",
+        text: "Background task completed.",
+        attachments: [],
+        notification: {
+          source: { kind: "background_task" },
+          outcome: "completed",
+          summary: "Done",
+        },
+        providerContinuation: { providerThreadId: ProviderThreadId.make("obsolete-native-owner") },
+        dispatchMode: { type: "queue_after_active" },
+      });
+      assert.isFalse(result.storedEvents.some((event) => event.event.type === "run.updated"));
+      yield* worker.drain();
+      assert.equal(cleared, 1);
+      yield* cleanup.discard(messageId);
+      assert.equal(cleared, 1);
+    }),
+  );
+
   it.effect("emits model updates separately from provider switches", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;

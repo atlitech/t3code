@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
+  MessageId,
   ProviderSessionId,
   ProviderThreadId,
   ProviderTurnId,
@@ -24,6 +25,7 @@ import * as EffectOutbox from "./EffectOutbox.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ProviderContinuationRequests from "@t3tools/provider-core/server/continuationRequests";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as RuntimeRequestService from "./RuntimeRequestService.ts";
@@ -193,6 +195,63 @@ it("does not retry pure interrupt races where the turn is already gone", () => {
     ),
   );
 });
+
+it.effect(
+  "disposes native wake buffers through the shared cleanup registry after committed effects",
+  () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const failFirstStart = yield* Ref.make(false);
+      const executorLayer = layerExecutorFor({ events, failFirstStart }).pipe(
+        Layer.provide(ProviderContinuationRequests.layer),
+      );
+      yield* Effect.gen(function* () {
+        const cleanup = yield* ProviderContinuationRequests.ProviderContinuationCleanup;
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        const discarded = MessageId.make("native-wake-discarded");
+        yield* cleanup.register(
+          discarded,
+          Ref.update(events, (current) => [...current, "discarded"]),
+        );
+        const discardEffect = {
+          ...restartEffect(now, { type: "detach" }),
+          request: { type: "provider-continuation.discard" as const, messageId: discarded },
+        };
+        assert.deepEqual(yield* Ref.get(events), []);
+        yield* executor.execute(discardEffect);
+        yield* executor.execute(discardEffect);
+        assert.deepEqual(yield* Ref.get(events), ["discarded"]);
+
+        for (const willRetry of [true, false]) {
+          yield* Ref.set(events, []);
+          yield* Ref.set(failFirstStart, true);
+          const messageId = MessageId.make(`native-wake-start:${willRetry}`);
+          yield* cleanup.register(
+            messageId,
+            Ref.update(events, (current) => [...current, "cleared"]),
+          );
+          const startEffect = {
+            ...restartEffect(now, { type: "detach" }),
+            request: {
+              type: "provider-turn.start" as const,
+              runId,
+              providerContinuationMessageId: messageId,
+            },
+          };
+          const result = yield* Effect.exit(executor.execute(startEffect, { willRetry }));
+          assert.isTrue(Exit.isFailure(result));
+          assert.deepEqual(yield* Ref.get(events), willRetry ? ["start"] : ["start", "cleared"]);
+          if (willRetry) {
+            yield* executor.execute(startEffect);
+            assert.deepEqual(yield* Ref.get(events), ["start", "start", "cleared"]);
+          }
+          yield* cleanup.discard(messageId);
+          assert.equal((yield* Ref.get(events)).filter((event) => event === "cleared").length, 1);
+        }
+      }).pipe(Effect.provide(Layer.merge(ProviderContinuationRequests.layer, executorLayer)));
+    }),
+);
 
 it.effect("settles a stopped run when its adapter has already lost the native turn", () =>
   Effect.gen(function* () {

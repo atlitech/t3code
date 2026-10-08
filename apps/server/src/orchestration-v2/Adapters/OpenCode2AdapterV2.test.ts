@@ -31,6 +31,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as References from "effect/References";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -3576,6 +3577,30 @@ describe("OpenCode2 adapter", () => {
           [kept.id],
         );
       }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("discarding a held native wake leaves a newer wake available", () =>
+    Effect.gen(function* () {
+      const offers = yield* Queue.unbounded<ProviderContinuationRequest>();
+      yield* resumed([
+        event("session.execution.started", { sessionID: SESSION }),
+        event("session.execution.succeeded", { sessionID: SESSION }),
+        event("session.execution.started", { sessionID: SESSION }),
+      ]).pipe(
+        Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
+          offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          take: Effect.never,
+        }),
+      );
+      const first = yield* Queue.take(offers);
+      const second = yield* Queue.take(offers);
+      assert.isDefined(first.clearIfCurrent);
+      yield* first.clearIfCurrent!();
+      assert.isTrue(Option.isNone(yield* first.dispatchIfCurrent!(Effect.void)));
+      assert.isTrue(Option.isSome(yield* second.dispatchIfCurrent!(Effect.void)));
+      yield* first.clearIfCurrent!();
+      assert.isTrue(Option.isSome(yield* second.dispatchIfCurrent!(Effect.void)));
     }).pipe(Effect.scoped),
   );
 

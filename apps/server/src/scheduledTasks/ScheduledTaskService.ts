@@ -822,8 +822,8 @@ export const layer = Layer.effect(
                   scheduledTaskId: active.id,
                   text: prompt,
                   attachments: [],
-                  modelSelection: active.modelSelection,
-                  // Scheduled prompts must not interrupt tools in the bound thread.
+                  // Follow the thread's model when the queued prompt starts,
+                  // without interrupting its tools. Saved models belong to new threads.
                   mode: "queue",
                   createdBy: active.createdBy,
                   creationSource: active.creationSource,
@@ -981,7 +981,7 @@ export const layer = Layer.effect(
 
     const list: ScheduledTaskService["Service"]["list"] = () =>
       listRows().pipe(
-        Effect.map((tasks) => ({ tasks })),
+        Effect.map((tasks) => ({ tasks, followsThreadModelSelection: true })),
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
 
