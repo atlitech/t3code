@@ -19,7 +19,13 @@ import { ADMISSION_FILE, isForkVersion, type PriorReleaseSource } from "./prior-
 import type { AdmissionCheck } from "./probe.ts";
 
 /** Every check an admission runs; a record missing one is refused. */
-export const REQUIRED_CHECKS = ["archive-digest", "root", "environment-version", "readback"];
+export const REQUIRED_CHECKS = [
+  "archive-digest",
+  "root",
+  "environment-version",
+  "readback",
+  "event-log",
+];
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
@@ -123,6 +129,7 @@ const ReadbackSummary = Schema.fromJsonString(
     passed: Schema.Boolean,
     threads: Schema.Number,
     messages: Schema.Number,
+    events: Schema.Number,
     items: Schema.Array(
       Schema.Struct({ kind: Schema.String, id: Schema.String, passed: Schema.Boolean }),
     ),
@@ -154,14 +161,26 @@ export const writeAdmissionRecord = Effect.fn("writeAdmissionRecord")(function* 
   const archiveSha256 = toHex(yield* crypto.digest("SHA-256", yield* fs.readFile(options.archive)));
   const probe = yield* decodeProbeChecks(yield* fs.readFileString(options.probe));
   const readback = yield* decodeReadbackSummary(yield* fs.readFileString(options.readback));
-  const unread = readback.items.filter((item) => !item.passed).length;
+  // Each check passes only with items of its own kind, all passed.
+  const verdict = (kinds: ReadonlyArray<string>) => {
+    const items = readback.items.filter((item) => kinds.includes(item.kind));
+    const failed = items.filter((item) => !item.passed).length;
+    return { passed: readback.passed && items.length > 0 && failed === 0, failed };
+  };
+  const projections = verdict(["thread", "message"]);
+  const eventLog = verdict(["event"]);
   const checks: ReadonlyArray<AdmissionCheck> = [
     archiveDigestCheck(archiveSha256, options.expectedSha256),
     ...probe,
     {
       name: "readback",
-      passed: readback.passed && unread === 0 && readback.items.length > 0,
-      detail: `${readback.threads} threads and ${readback.messages} messages seeded by v${options.priorVersion}; ${unread} not read back`,
+      passed: projections.passed,
+      detail: `${readback.threads} threads and ${readback.messages} messages seeded by v${options.priorVersion}; ${projections.failed} not read back`,
+    },
+    {
+      name: "event-log",
+      passed: eventLog.passed,
+      detail: `${readback.events} events seeded by v${options.priorVersion}; ${eventLog.failed} missing from the log or not replayed`,
     },
   ];
   const admitted = yield* buildAdmissionRecord({

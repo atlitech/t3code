@@ -9,8 +9,8 @@
 #
 # The archive starts once on an empty home so it migrates, stops, and gets the
 # fixtures seeded with sqlite3; that database is pre-upgrade.sqlite. It then
-# starts again on the same home, and the snapshot responses it serves for the
-# fixture threads are snapshot-response.json.
+# starts again on the same home, and what readback.ts reads (the seeded event
+# rows, the thread snapshots, and the event replays) is snapshot-response.json.
 set -euo pipefail
 
 archive="${1:?usage: record-fixture.sh <t3-VERSION-linux-x64.tar.gz>}"
@@ -30,6 +30,10 @@ stop_server
 
 node "$here/seed.ts" --fixtures "$here/fixtures.json" --out "$work/seed.sql"
 sqlite3 -bail "$db" <"$work/seed.sql"
+# The seeded log as the prior left it, for readback.ts's event-log check.
+sqlite3 -json "$db" \
+  "SELECT sequence, event_id, stream_id, event_type FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread' ORDER BY sequence" \
+  >"$work/seeded-events.json"
 
 # One self-contained file: no -wal or -shm beside it once committed.
 cp "$db" "$work/pre-upgrade.sqlite"
@@ -44,7 +48,8 @@ start_server "$t3" "$home" "$port" "$work/serve.log"
 run_t3 "$t3" "$home" auth session issue --base-dir "$home" --scope orchestration:read \
   --token-only >"$work/token"
 node "$here/readback.ts" --base-url "http://127.0.0.1:$port" --token-file "$work/token" \
-  --fixtures "$here/fixtures.json" --out "$work/readback.json" \
+  --fixtures "$here/fixtures.json" --seeded-events "$work/seeded-events.json" \
+  --out "$work/readback.json" \
   --responses-out "$work/snapshot-response.json"
 stop_server
 

@@ -37,9 +37,12 @@ const readbackPassed = {
   passed: true,
   threads: 1,
   messages: 1,
+  events: 2,
   items: [
     { kind: "thread", id: "thread-1", passed: true, detail: "read back" },
     { kind: "message", id: "message-1", passed: true, detail: "read back" },
+    { kind: "event", id: "event-thread-1", passed: true, detail: "read back" },
+    { kind: "event", id: "event-message-1", passed: true, detail: "read back" },
   ],
 };
 
@@ -136,7 +139,42 @@ it.layer(NodeServices.layer)("admission record", (it) => {
         readback: {
           ...readbackPassed,
           passed: false,
-          items: [readbackPassed.items[0], { ...readbackPassed.items[1], passed: false }],
+          items: readbackPassed.items.map((item) =>
+            item.kind === "message" ? { ...item, passed: false } : item,
+          ),
+        },
+      });
+      assert.strictEqual(result.exit._tag, "Failure");
+      assert.deepStrictEqual(result.written, []);
+    }),
+  );
+
+  it.effect("writes nothing when a seeded event was not replayed from the event log", () =>
+    Effect.gen(function* () {
+      const result = yield* admit({
+        expectedSha256: archiveSha256,
+        probe: probePassed,
+        readback: {
+          ...readbackPassed,
+          passed: false,
+          items: readbackPassed.items.map((item) =>
+            item.id === "event-message-1" ? { ...item, passed: false } : item,
+          ),
+        },
+      });
+      assert.strictEqual(result.exit._tag, "Failure");
+      assert.deepStrictEqual(result.written, []);
+    }),
+  );
+
+  it.effect("writes nothing when the readback result has no event-log items", () =>
+    Effect.gen(function* () {
+      const result = yield* admit({
+        expectedSha256: archiveSha256,
+        probe: probePassed,
+        readback: {
+          ...readbackPassed,
+          items: readbackPassed.items.filter((item) => item.kind !== "event"),
         },
       });
       assert.strictEqual(result.exit._tag, "Failure");
@@ -155,6 +193,7 @@ it.effect("refuses a record that is incomplete, malformed, or not passed", () =>
       { ...input, priorVersion: input.version },
       { ...input, checks: [] },
       { ...input, checks: passingChecks.filter((check) => check.name !== "readback") },
+      { ...input, checks: passingChecks.filter((check) => check.name !== "event-log") },
       { ...input, checks: [...passingChecks, passingChecks[0]!] },
       {
         ...input,
