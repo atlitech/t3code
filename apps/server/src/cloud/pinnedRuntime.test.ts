@@ -10,6 +10,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
 import * as ProcessRunner from "../processRunner.ts";
 import {
+  ADMITTED_ARCHIVE_MISMATCH_STEP,
   ensurePinnedRuntimeInstalled,
   pinnedRuntimeCommand,
   pinnedRuntimePaths,
@@ -237,6 +238,33 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       }).pipe(Effect.flip);
       assert.instanceOf(error, PinnedRuntimeInstallError);
       assert.equal(error.step, "verifying the t3 release archive checksum");
+      assert.deepEqual(commands, []);
+      assert.deepEqual(yield* fs.readDirectory(path.join(baseDir, "runtime", "versions")), []);
+    }),
+  );
+
+  it.effect("refuses a release-verified archive that is not the admitted one", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({
+        prefix: "t3-pinned-archive-unadmitted-",
+      });
+      const commands: string[] = [];
+      const error = yield* ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        httpClient: releaseHttpClient(yield* validChecksums),
+        admittedArchiveSha256: "0".repeat(64),
+        runner: extractingRunner(fs, path, commands),
+        validate: () => Effect.die("must not validate an unadmitted archive"),
+      }).pipe(Effect.flip);
+      assert.instanceOf(error, PinnedRuntimeInstallError);
+      assert.equal(error.step, ADMITTED_ARCHIVE_MISMATCH_STEP);
       assert.deepEqual(commands, []);
       assert.deepEqual(yield* fs.readDirectory(path.join(baseDir, "runtime", "versions")), []);
     }),

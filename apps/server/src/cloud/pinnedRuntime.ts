@@ -99,6 +99,10 @@ export class PinnedRuntimePreflightBlockedError extends Schema.TaggedError<Pinne
   }
 }
 
+/** The install step that refuses an archive its admission record did not admit. */
+export const ADMITTED_ARCHIVE_MISMATCH_STEP =
+  "verifying the t3 release archive against its admission record";
+
 export type PinnedRuntimeProgress =
   | { readonly stage: "download"; readonly received: number; readonly total: number | undefined }
   | { readonly stage: "verify" | "extract" | "validate" | "cached" };
@@ -125,6 +129,11 @@ interface PinnedRuntimeInstallInput {
   readonly arch: string;
   readonly httpClient: HttpClient.HttpClient;
   readonly releaseBaseUrl?: string | undefined;
+  /**
+   * The sha256 a release admission record names for this archive. When set, a
+   * downloaded archive with any other digest is refused before it is unpacked.
+   */
+  readonly admittedArchiveSha256?: string | undefined;
   readonly onProgress?: (progress: PinnedRuntimeProgress) => void;
 }
 
@@ -224,9 +233,18 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
     catch: (cause) =>
       new PinnedRuntimeInstallError({ step: "verifying the t3 release archive", cause }),
   });
-  if (Hex.encode(new Uint8Array(digest)) !== expected) {
+  const archiveSha256 = Hex.encode(new Uint8Array(digest));
+  if (archiveSha256 !== expected) {
     return yield* new PinnedRuntimeInstallError({
       step: "verifying the t3 release archive checksum",
+    });
+  }
+  if (
+    input.admittedArchiveSha256 !== undefined &&
+    archiveSha256 !== input.admittedArchiveSha256.toLowerCase()
+  ) {
+    return yield* new PinnedRuntimeInstallError({
+      step: ADMITTED_ARCHIVE_MISMATCH_STEP,
     });
   }
 

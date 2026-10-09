@@ -22,25 +22,45 @@ interface HarnessOptions {
   readonly mode?: "web" | "desktop";
   readonly managed?: boolean;
   readonly preflight?: "ready" | "blocked";
+  /** The version the staged runtime reports; the update target in each test. */
+  readonly version?: string;
+  /** ADMISSION.json per release version; a missing entry is a 404. */
+  readonly admission?: Readonly<Record<string, string>>;
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
   readonly desktopAppUpdate?: DesktopAppUpdate.DesktopAppUpdate["Service"];
 }
 
-// The staged runtime is a release archive: the fake client serves SHA256SUMS
-// and the tarball, and the fake runner stands in for tar before it answers
-// the staged preflight.
+// The staged runtime is a release archive: the fake client serves SHA256SUMS,
+// ADMISSION.json, and the tarball, and the fake runner stands in for tar
+// before it answers the staged preflight.
 const archiveBytes = new TextEncoder().encode("not really a tarball");
-const releaseHttpClient = (order: string[]) =>
+const archiveSha256 = Effect.promise(() => crypto.subtle.digest("SHA-256", archiveBytes)).pipe(
+  Effect.map((digest) =>
+    Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
+  ),
+);
+const admissionRecord = (version: string, sha256: string) =>
+  JSON.stringify(
+    { version, archive: `t3-${version}-linux-x64.tar.gz`, archiveSha256: sha256, checks: [] },
+    null,
+    2,
+  );
+const releaseHttpClient = (order: string[], admission: Readonly<Record<string, string>> = {}) =>
   HttpClient.make((request) =>
     Effect.gen(function* () {
+      const version = /\/v([^/]+)\/[^/]+$/.exec(request.url)?.[1] ?? "";
       if (request.url.endsWith("/SHA256SUMS")) {
-        const digest = yield* Effect.promise(() => crypto.subtle.digest("SHA-256", archiveBytes));
-        const hex = Array.from(new Uint8Array(digest), (byte) =>
-          byte.toString(16).padStart(2, "0"),
-        ).join("");
         return HttpClientResponse.fromWeb(
           request,
-          new Response(`${hex}  t3-1.1.0-linux-x64.tar.gz\n`),
+          new Response(`${yield* archiveSha256}  t3-${version}-linux-x64.tar.gz\n`),
+        );
+      }
+      if (request.url.endsWith("/ADMISSION.json")) {
+        order.push("admission");
+        const record = admission[version];
+        return HttpClientResponse.fromWeb(
+          request,
+          record === undefined ? new Response("Not Found", { status: 404 }) : new Response(record),
         );
       }
       order.push("download");
@@ -77,10 +97,14 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
         order.push("preflight");
         const result =
           options.preflight === "blocked"
-            ? { status: "blocked", version: "1.1.0", reason: "local update required" }
+            ? {
+                status: "blocked",
+                version: options.version ?? "1.1.0",
+                reason: "local update required",
+              }
             : {
                 status: "ready",
-                version: "1.1.0",
+                version: options.version ?? "1.1.0",
                 launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
               };
         return {
@@ -119,7 +143,7 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
         run: () => Effect.die("unexpected desktop app update run"),
       },
     ),
-    Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order)),
+    Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order, options.admission)),
     Effect.provideService(HostProcessPlatform, "linux"),
     Effect.provideService(HostProcessArchitecture, "x64"),
     Effect.provide(ServerConfig.layer({ ...config, mode: options.mode ?? "web" })),
@@ -352,6 +376,40 @@ it.layer(NodeServices.layer)("server self update", (it) => {
         updateId: "launcher-id",
       });
       expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+    }),
+  );
+
+  it.effect("installs a fork version whose admission record names the archive", () =>
+    Effect.gen(function* () {
+      const version = "0.0.47-atli.1";
+      const { selfUpdate, order } = yield* makeHarness({
+        version,
+        admission: { [version]: admissionRecord(version, yield* archiveSha256) },
+      });
+      expect((yield* selfUpdate.update({ targetVersion: version })).targetVersion).toBe(version);
+      expect(order).toEqual(["admission", "download", "extract", "preflight", "accept"]);
+    }),
+  );
+
+  it.effect.each([
+    ["no admission record", "0.0.47-atli.1", undefined, "has no admission record"],
+    // The owner override is `t3 update`'s alone; in-app updates never skip admission.
+    ["a pre-admission version", "0.0.46-atli.2", undefined, "has no admission record"],
+    [
+      "a record for another archive digest",
+      "0.0.47-atli.1",
+      "0".repeat(64),
+      "is not the archive its admission record admitted",
+    ],
+  ] as const)("refuses a fork version with %s before downloading it", ([, version, sha, reason]) =>
+    Effect.gen(function* () {
+      const { selfUpdate, order } = yield* makeHarness({
+        version,
+        admission: sha === undefined ? {} : { [version]: admissionRecord(version, sha) },
+      });
+      const error = yield* selfUpdate.update({ targetVersion: version }).pipe(Effect.flip);
+      expect(error.reason).toContain(reason);
+      expect(order).toEqual(["admission"]);
     }),
   );
 

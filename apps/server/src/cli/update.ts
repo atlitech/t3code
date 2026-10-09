@@ -28,11 +28,14 @@ import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } fr
 import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
 import {
+  ADMITTED_ARCHIVE_MISMATCH_STEP,
   ensurePinnedRuntimeInstalled,
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
   pinnedRuntimePaths,
 } from "../cloud/pinnedRuntime.ts";
+import { PRE_ADMISSION_FORK_VERSIONS, verifyReleaseAdmission } from "../cloud/releaseAdmission.ts";
+import { runStagedServicePreflight } from "../cloud/servicePreflight.ts";
 import { compareExactServiceVersions, isExactServiceVersion } from "../cloud/serviceProtocol.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
@@ -230,6 +233,12 @@ const updateFlags = {
     Flag.withDescription("Allow moving to an older version than the one running."),
     Flag.withDefault(false),
   ),
+  allowUnadmitted: Flag.Boolean("allow-unadmitted").pipe(
+    Flag.withDescription(
+      `Install a fork version that predates admission records (${PRE_ADMISSION_FORK_VERSIONS.join(", ")}) without one.`,
+    ),
+    Flag.withDefault(false),
+  ),
   yes: Flag.Boolean("yes").pipe(
     Flag.withAlias("y"),
     Flag.withDescription(
@@ -261,9 +270,11 @@ export const updateCommand = Command.make("update", {
         baseDir: config.baseDir,
         logsDir: config.logsDir,
         serverRuntimeStatePath: config.serverRuntimeStatePath,
+        dbPath: config.dbPath,
         channel: Option.getOrUndefined(flags.channel),
         requestedVersion: Option.getOrUndefined(flags.version),
         allowDowngrade: flags.allowDowngrade,
+        allowUnadmitted: flags.allowUnadmitted,
         assumeYes: flags.yes,
       }).pipe(
         Effect.provide(
@@ -273,6 +284,50 @@ export const updateCommand = Command.make("update", {
     }),
   ),
 );
+
+/**
+ * Refuses a fork target whose release does not admit this machine's archive,
+ * and resolves the admitted archive digest (undefined for official versions).
+ * The owner can override only for the fork versions that predate admission
+ * records, and the override is logged.
+ */
+export const admitUpdateTarget = Effect.fn("cli.update.admit_target")(function* (input: {
+  readonly httpClient: HttpClient.HttpClient;
+  readonly version: string;
+  readonly platform: NodeJS.Platform;
+  readonly arch: string;
+  readonly releaseBaseUrl: string | undefined;
+  readonly allowUnadmitted: boolean;
+}) {
+  return yield* verifyReleaseAdmission(input).pipe(
+    Effect.catchTags({
+      ReleaseAdmissionError: (error) => {
+        const preAdmission = PRE_ADMISSION_FORK_VERSIONS.includes(error.version);
+        if (input.allowUnadmitted && preAdmission) {
+          return Console.log(
+            `  Installing t3@${error.version} without admission (--allow-unadmitted): ${error.reason}`,
+          ).pipe(
+            Effect.andThen(
+              Effect.logWarning(
+                "t3 update is installing an unadmitted pre-admission version.",
+              ).pipe(Effect.annotateLogs({ version: error.version, reason: error.reason })),
+            ),
+            Effect.as(undefined),
+          );
+        }
+        return Effect.fail(
+          new CliUpdateError({
+            reason: preAdmission
+              ? `${error.reason} Pass --allow-unadmitted to install this pre-admission version anyway.`
+              : input.allowUnadmitted
+                ? `${error.reason} --allow-unadmitted applies only to ${PRE_ADMISSION_FORK_VERSIONS.join(", ")}.`
+                : error.reason,
+          }),
+        );
+      },
+    }),
+  );
+});
 
 /**
  * A `t3 serve` or `t3` someone started by hand, as opposed to the one the
@@ -328,13 +383,15 @@ const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(fun
   return false;
 });
 
-const runUpdate = Effect.fn("cli.update.run")(function* (input: {
+export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   readonly baseDir: string;
   readonly logsDir: string;
   readonly serverRuntimeStatePath: string;
+  readonly dbPath: string;
   readonly channel: CliReleaseChannel | undefined;
   readonly requestedVersion: string | undefined;
   readonly allowDowngrade: boolean;
+  readonly allowUnadmitted: boolean;
   readonly assumeYes: boolean;
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -440,6 +497,18 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
       reason: `t3@${targetVersion} is older than the installed ${newestInstalled}. Pass --allow-downgrade to install it anyway.`,
     });
   }
+  const releaseBaseUrl = environment[CLI_RELEASE_BASE_URL_ENV]?.trim() || undefined;
+  const admittedArchiveSha256 = yield* admitUpdateTarget({
+    httpClient,
+    version: targetVersion,
+    platform,
+    arch,
+    releaseBaseUrl,
+    allowUnadmitted: input.allowUnadmitted,
+  });
+  // Releases before the update preflight existed do not know the command; a
+  // rollback to one still has to work, so only then is its failure tolerated.
+  const isDowngrade = compareExactServiceVersions(targetVersion, currentVersion) < 0;
 
   const alreadyOnDisk = yield* fs
     .readFileString(pinnedRuntimePaths(path, input.baseDir, targetVersion, platform).sentinelPath)
@@ -491,7 +560,8 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     httpClient,
     platform,
     arch,
-    releaseBaseUrl: environment[CLI_RELEASE_BASE_URL_ENV]?.trim() || undefined,
+    releaseBaseUrl,
+    admittedArchiveSha256,
     validate: (paths) =>
       runner
         .run({
@@ -514,21 +584,51 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
                   }),
                 ),
           ),
+          // Migrates a copy of this home's database with the new runtime, so a
+          // version that cannot read the data is refused before anything moves.
+          Effect.andThen(
+            runStagedServicePreflight({
+              runner,
+              runtime: paths,
+              databasePath: input.dbPath,
+              targetVersion,
+            }).pipe(
+              Effect.catchIf(
+                (error) =>
+                  isDowngrade &&
+                  error._tag === "PinnedRuntimeInstallError" &&
+                  error.exitCode !== undefined,
+                () =>
+                  Effect.logWarning(
+                    "The downgrade target has no update preflight; its database check was skipped.",
+                  ).pipe(Effect.annotateLogs({ targetVersion })),
+              ),
+            ),
+          ),
         ),
   }).pipe(
     Effect.ensuring(Effect.sync(progress.finish)),
-    Effect.catchIf(
-      (error): error is PinnedRuntimeInstallError =>
-        error._tag === "PinnedRuntimeInstallError" &&
+    Effect.mapError((error) => {
+      if (error._tag === "PinnedRuntimePreflightBlockedError") {
+        return new CliUpdateError({
+          reason: `Not switching to t3@${targetVersion}: ${error.reason}`,
+        });
+      }
+      if (error.step === ADMITTED_ARCHIVE_MISMATCH_STEP) {
+        return new CliUpdateError({
+          reason: `The archive downloaded for t3@${targetVersion} is not the one its admission record admitted.`,
+        });
+      }
+      if (
         error.step.startsWith("downloading the t3 release checksums") &&
-        String(error.cause).includes("404"),
-      () =>
-        Effect.fail(
-          new CliUpdateError({
-            reason: `No release archive was published for t3@${targetVersion}.`,
-          }),
-        ),
-    ),
+        String(error.cause).includes("404")
+      ) {
+        return new CliUpdateError({
+          reason: `No release archive was published for t3@${targetVersion}.`,
+        });
+      }
+      return error;
+    }),
   );
 
   const launchedAs = (yield* HostProcessIsExecutable) ? yield* resolveLauncherPath : undefined;
@@ -539,8 +639,8 @@ const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   });
 
   // The service switch runs in this process against the target version: the
-  // downloaded runtime has already proven it runs (the `--version` check
-  // above), and doing it here rather than through the target's own CLI means
+  // downloaded runtime has already proven it runs and can migrate this
+  // home's data (the `--version` check and update preflight above), and doing it here rather than through the target's own CLI means
   // a downgrade to a version without today's commands still works. The unit
   // is rewritten either way so a later `t3 service restart` lands on the new
   // version; only the restart itself waits for the user's answer.
