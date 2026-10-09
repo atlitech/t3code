@@ -291,7 +291,7 @@ export const updateCommand = Command.make("update", {
  * The owner can override only for the fork versions that predate admission
  * records, and the override is logged.
  */
-export const admitUpdateTarget = Effect.fn("cli.update.admit_target")(function* (input: {
+const admitUpdateTarget = Effect.fn("cli.update.admit_target")(function* (input: {
   readonly httpClient: HttpClient.HttpClient;
   readonly version: string;
   readonly platform: NodeJS.Platform;

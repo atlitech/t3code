@@ -99,7 +99,7 @@ export const runServicePreflight = Effect.fn("cloud.service_preflight.run")(func
   );
 });
 
-export function decodeServicePreflightResult(value: unknown): ServicePreflightResult | undefined {
+function decodeServicePreflightResult(value: unknown): ServicePreflightResult | undefined {
   if (typeof value !== "object" || value === null) {
     return undefined;
   }
