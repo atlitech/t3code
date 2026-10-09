@@ -3,7 +3,10 @@ name: Fork server release
 # Fork-only (atlitech/t3code). Builds the self-contained Linux x64 server
 # archive the official release ships and publishes it with SHA256SUMS and
 # manifest.json as a prerelease, in the layout scripts/install.sh and
-# `t3 update` download from. Releases are immutable: the guard refuses a used
+# `t3 update` download from. Before anything publishes, the admission job
+# installs that exact archive over data the previously admitted release wrote,
+# upgrades and runs it, and the release ships its attested ADMISSION.json only
+# when every check passed. Releases are immutable: the guard refuses a used
 # version, and publish creates the tag and the release with every asset at once.
 # Runbook: docs/operations/fork-server.md.
 
@@ -13,6 +16,11 @@ on:
       version:
         description: "Fork version, <next upstream patch>-atli.<n> (for example 0.0.46-atli.1)"
         required: true
+        type: string
+      admission-bootstrap-prior:
+        description: "First admission only: the earlier release (for example 0.0.46-atli.3) to upgrade from while no release carries ADMISSION.json. Leave empty otherwise."
+        required: false
+        default: ""
         type: string
 
 concurrency:
@@ -93,6 +101,8 @@ jobs:
       contents: read
       id-token: write
       attestations: write
+    outputs:
+      archive-sha256: ${{ steps.digest.outputs.sha256 }}
     env:
       # Public T3 Connect identifiers baked into the server and web bundles.
       T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
@@ -166,6 +176,15 @@ jobs:
             --output-dir release-cli
           node scripts/smoke-cli-archive.ts --archive "release-cli/t3-$VERSION-linux-x64.tar.gz" --expect-version "$VERSION"
 
+      # admission refuses any archive whose sha256 is not this one.
+      - name: Record archive digest
+        id: digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha256="$(sha256sum "release-cli/t3-$VERSION-linux-x64.tar.gz" | cut -d ' ' -f 1)"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
       - name: Attest archive provenance
         uses: actions/attest-build-provenance@v3
         with:
@@ -180,12 +199,91 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Installs the built archive over a T3 home the prior release migrated and
+  # seeded, upgrades and runs it, and reads the seeded threads back through the
+  # candidate. Writes ADMISSION.json only when every check passed, so a failed
+  # admission publishes nothing. Verifiers: scripts/linux-admission/.
+  admission:
+    name: Admit Linux server upgrade
+    needs: [guard, build-linux]
+    if: github.repository == 'atlitech/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.guard.outputs.sha }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - name: Install sqlite3
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v sqlite3 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y sqlite3
+          fi
+          sqlite3 --version
+
+      - name: Download archive
+        uses: actions/download-artifact@v8
+        with:
+          name: release-linux-x64
+          path: ${{ runner.temp }}/candidate
+
+      - name: Choose the release to upgrade from
+        id: prior
+        env:
+          BOOTSTRAP: ${{ inputs.admission-bootstrap-prior }}
+        run: node scripts/linux-admission/prior-release.ts --repo "$GH_REPO" --release-version "$VERSION" --bootstrap "$BOOTSTRAP"
+
+      - name: Upgrade from the prior release and check the candidate
+        env:
+          CANDIDATE_ARCHIVE: ${{ runner.temp }}/candidate/t3-${{ needs.guard.outputs.version }}-linux-x64.tar.gz
+          EXPECTED_SHA256: ${{ needs.build-linux.outputs.archive-sha256 }}
+          RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+          PRIOR_VERSION: ${{ steps.prior.outputs.version }}
+          PRIOR_SOURCE: ${{ steps.prior.outputs.source }}
+          VERIFIER_COMMIT: ${{ needs.guard.outputs.sha }}
+          WORKDIR: ${{ runner.temp }}/admission
+          OUT_DIR: ${{ runner.temp }}/admission-record
+        run: bash scripts/linux-admission/run-admission.sh
+
+      # Not a `release-*` artifact: publish adds it after the manifest step,
+      # which accepts only archives.
+      - name: Upload admission record
+        uses: actions/upload-artifact@v7
+        with:
+          name: admission
+          path: ${{ runner.temp }}/admission-record/ADMISSION.json
+          if-no-files-found: error
+          retention-days: 7
+
   # Creates the tag and the release together, with every asset in one call, so
   # a published release never changes. A failed run is retried by dispatching
   # the next version, never by re-running this job against a used one.
   publish:
     name: Publish release
-    needs: [guard, build-linux]
+    needs: [guard, build-linux, admission]
     if: github.repository == 'atlitech/t3code'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -230,12 +328,19 @@ jobs:
           node scripts/fork-release-manifest.ts --dir release --commit "$SHA" --release-version "$VERSION"
           cat release/SHA256SUMS release/manifest.json
 
-      - name: Attest SHA256SUMS and manifest.json provenance
+      - name: Download admission record
+        uses: actions/download-artifact@v8
+        with:
+          name: admission
+          path: release
+
+      - name: Attest SHA256SUMS, manifest.json, and ADMISSION.json provenance
         uses: actions/attest-build-provenance@v3
         with:
           subject-path: |
             release/SHA256SUMS
             release/manifest.json
+            release/ADMISSION.json
 
       # Tags created with GITHUB_TOKEN start no other workflows.
       - name: Create tag and release

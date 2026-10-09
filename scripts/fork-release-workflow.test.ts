@@ -3,9 +3,10 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
-// A fork release is dispatched from atli, guarded before any build, and
-// published once: the tag and an immutable release with every asset, each
-// asset carrying a build provenance attestation.
+// A fork release is dispatched from atli, guarded before any build, admitted
+// by upgrading over the prior release's data, and published once: the tag and
+// an immutable release with every asset, each asset carrying a build
+// provenance attestation.
 const workflow = NodeFS.readFileSync(
   NodePath.join(import.meta.dirname, "..", ".github", "workflows", "fork-server-release.yml"),
   "utf8",
@@ -50,7 +51,7 @@ const jobMap = (body: ReadonlyArray<string>, key: string): ReadonlyMap<string, s
   const entries = new Map<string, string>();
   if (start === -1) return entries;
   for (const line of body.slice(start + 1)) {
-    const entry = /^ {6}([A-Za-z-]+):\s*(.+?)\s*$/.exec(line);
+    const entry = /^ {6}([A-Za-z0-9-]+):\s*(.+?)\s*$/.exec(line);
     if (!entry) break;
     entries.set(entry[1]!, entry[2]!);
   }
@@ -164,5 +165,77 @@ describe("fork server release workflow", () => {
     );
     expect(manifest).toBeGreaterThan(-1);
     expect(manifest).toBeLessThan(attest);
+  });
+
+  it("admits the built Linux archive before publish", () => {
+    const admission = job("admission");
+    expect(needsOf(admission)).toEqual(expect.arrayContaining(["guard", "build-linux"]));
+    expect(needsOf(job("publish"))).toContain("admission");
+    const text = admission.join("\n");
+    expect(text).toMatch(/ref: \$\{\{ needs\.guard\.outputs\.sha \}\}/);
+    expect(text).toMatch(
+      /uses: actions\/download-artifact@[^\n]*\n\s+with:\n\s+name: release-linux-x64\n/,
+    );
+    expect(text).toMatch(/bash scripts\/linux-admission\/run-admission\.sh/);
+  });
+
+  it("checks the admitted archive against the digest its build reported", () => {
+    expect(jobMap(job("build-linux"), "outputs").get("archive-sha256")).toBe(
+      "${{ steps.digest.outputs.sha256 }}",
+    );
+    const digest = stepsOf(job("build-linux")).find((step) => /id: digest/.test(step));
+    expect(digest).toMatch(/sha256sum "release-cli\/t3-\$VERSION-linux-x64\.tar\.gz"/);
+    expect(job("admission").join("\n")).toMatch(
+      /EXPECTED_SHA256: \$\{\{ needs\.build-linux\.outputs\.archive-sha256 \}\}/,
+    );
+  });
+
+  it("gives the admission job no write permission", () => {
+    expect([...jobMap(job("admission"), "permissions")]).toEqual([["contents", "read"]]);
+  });
+
+  it("takes the first admission's prior release only from the dispatch input, through env", () => {
+    expect(workflow).toMatch(
+      /^ {6}admission-bootstrap-prior:\n(?: {8}.*\n)*? {8}required: false\n/m,
+    );
+    const prior = stepsOf(job("admission")).find((step) =>
+      /node scripts\/linux-admission\/prior-release\.ts/.test(step),
+    );
+    expect(prior).toMatch(/BOOTSTRAP: \$\{\{ inputs\.admission-bootstrap-prior \}\}/);
+    expect(prior).toMatch(/--bootstrap "\$BOOTSTRAP"/);
+  });
+
+  it("ships ADMISSION.json from the admission artifact, added after the manifest", () => {
+    const upload = stepsOf(job("admission")).find((step) =>
+      /uses: actions\/upload-artifact@/.test(step),
+    );
+    expect(upload).toMatch(/name: admission\n/);
+    expect(upload).toMatch(/path: .+\/ADMISSION\.json\n/);
+    expect(upload).toMatch(/if-no-files-found: error/);
+
+    const steps = stepsOf(job("publish"));
+    const manifest = steps.findIndex((step) =>
+      /node scripts\/fork-release-manifest\.ts/.test(step),
+    );
+    const download = steps.findIndex(
+      (step) =>
+        /uses: actions\/download-artifact@/.test(step) &&
+        /name: admission\n/.test(`${step}\n`) &&
+        /path: release\b/.test(step),
+    );
+    expect(download).toBeGreaterThan(manifest);
+    expect(manifest).toBeGreaterThan(-1);
+  });
+
+  it("attests ADMISSION.json before creating the release with it", () => {
+    const steps = stepsOf(job("publish"));
+    const download = steps.findIndex((step) => /name: admission\n/.test(`${step}\n`));
+    const attest = steps.findIndex(
+      (step) => ATTEST.test(step) && step.includes("release/ADMISSION.json"),
+    );
+    const create = steps.findIndex((step) => /gh release create "\$TAG" release\/\* \\/.test(step));
+    expect(download).toBeGreaterThan(-1);
+    expect(attest).toBeGreaterThan(download);
+    expect(create).toBeGreaterThan(attest);
   });
 });

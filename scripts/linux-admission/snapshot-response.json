@@ -1,0 +1,208 @@
+[
+  {
+    "threadId": "admission-thread-upgrade-notes",
+    "status": 200,
+    "body": {
+      "snapshotSequence": 1,
+      "projection": {
+        "thread": {
+          "createdBy": "user",
+          "creationSource": "web",
+          "id": "admission-thread-upgrade-notes",
+          "projectId": "admission-project",
+          "title": "Upgrade notes",
+          "providerInstanceId": "codex",
+          "modelSelection": {
+            "instanceId": "codex",
+            "model": "gpt-5-codex"
+          },
+          "runtimeMode": "full-access",
+          "interactionMode": "default",
+          "branch": null,
+          "worktreePath": null,
+          "activeProviderThreadId": null,
+          "lineage": {
+            "parentThreadId": null,
+            "relationshipToParent": null,
+            "rootThreadId": "admission-thread-upgrade-notes"
+          },
+          "forkedFrom": null,
+          "createdAt": "2026-10-01T09:00:00.000Z",
+          "updatedAt": "2026-10-09T14:33:43.837Z",
+          "archivedAt": null,
+          "settledOverride": "settled",
+          "settledAt": "2026-10-01T09:02:00.000Z",
+          "unsettledAt": null,
+          "pinnedAt": null,
+          "pinOrderKey": null,
+          "activeOrderKey": null,
+          "lastVisitedAt": null,
+          "deletedAt": null
+        },
+        "runs": [],
+        "attempts": [],
+        "nodes": [],
+        "subagents": [],
+        "providerSessions": [],
+        "providerThreads": [],
+        "providerTurns": [],
+        "runtimeRequests": [],
+        "messages": [
+          {
+            "createdBy": "user",
+            "creationSource": "web",
+            "id": "admission-message-notes-1",
+            "threadId": "admission-thread-upgrade-notes",
+            "runId": null,
+            "nodeId": null,
+            "role": "user",
+            "text": "Summarize what changed in the last release.",
+            "attachments": [],
+            "streaming": false,
+            "createdAt": "2026-10-01T09:00:00.000Z",
+            "updatedAt": "2026-10-01T09:00:00.000Z"
+          },
+          {
+            "createdBy": "agent",
+            "creationSource": "provider",
+            "id": "admission-message-notes-2",
+            "threadId": "admission-thread-upgrade-notes",
+            "runId": null,
+            "nodeId": null,
+            "role": "assistant",
+            "text": "The release adds a settings page and fixes the server's startup order.",
+            "attachments": [],
+            "streaming": false,
+            "createdAt": "2026-10-01T09:01:00.000Z",
+            "updatedAt": "2026-10-01T09:01:00.000Z"
+          },
+          {
+            "createdBy": "user",
+            "creationSource": "web",
+            "id": "admission-message-notes-3",
+            "threadId": "admission-thread-upgrade-notes",
+            "runId": null,
+            "nodeId": null,
+            "role": "user",
+            "text": "Quote it as \"server's\" and keep the line break:\nsecond line.",
+            "attachments": [],
+            "streaming": false,
+            "createdAt": "2026-10-01T09:02:00.000Z",
+            "updatedAt": "2026-10-01T09:02:00.000Z"
+          },
+          {
+            "createdBy": "agent",
+            "creationSource": "provider",
+            "id": "admission-message-notes-4",
+            "threadId": "admission-thread-upgrade-notes",
+            "runId": null,
+            "nodeId": null,
+            "role": "assistant",
+            "text": "Done: \"server's\" quoted, line break kept.",
+            "attachments": [],
+            "streaming": false,
+            "createdAt": "2026-10-01T09:03:00.000Z",
+            "updatedAt": "2026-10-01T09:03:00.000Z"
+          }
+        ],
+        "plans": [],
+        "turnItems": [],
+        "checkpointScopes": [],
+        "checkpoints": [],
+        "contextHandoffs": [],
+        "contextTransfers": [],
+        "visibleTurnItems": [],
+        "updatedAt": "2026-10-09T14:33:43.837Z"
+      }
+    }
+  },
+  {
+    "threadId": "admission-thread-plan-review",
+    "status": 200,
+    "body": {
+      "snapshotSequence": 2,
+      "projection": {
+        "thread": {
+          "createdBy": "user",
+          "creationSource": "mobile",
+          "id": "admission-thread-plan-review",
+          "projectId": "admission-project",
+          "title": "Plan review",
+          "providerInstanceId": "claudeAgent",
+          "modelSelection": {
+            "instanceId": "claudeAgent",
+            "model": "claude-sonnet-4-5"
+          },
+          "runtimeMode": "approval-required",
+          "interactionMode": "plan",
+          "branch": null,
+          "worktreePath": null,
+          "activeProviderThreadId": null,
+          "lineage": {
+            "parentThreadId": null,
+            "relationshipToParent": null,
+            "rootThreadId": "admission-thread-plan-review"
+          },
+          "forkedFrom": null,
+          "createdAt": "2026-10-02T14:30:00.000Z",
+          "updatedAt": "2026-10-09T14:33:43.868Z",
+          "archivedAt": null,
+          "settledOverride": "settled",
+          "settledAt": "2026-10-02T14:30:00.000Z",
+          "unsettledAt": null,
+          "pinnedAt": null,
+          "pinOrderKey": null,
+          "activeOrderKey": null,
+          "lastVisitedAt": null,
+          "deletedAt": null
+        },
+        "runs": [],
+        "attempts": [],
+        "nodes": [],
+        "subagents": [],
+        "providerSessions": [],
+        "providerThreads": [],
+        "providerTurns": [],
+        "runtimeRequests": [],
+        "messages": [
+          {
+            "createdBy": "user",
+            "creationSource": "mobile",
+            "id": "admission-message-plan-1",
+            "threadId": "admission-thread-plan-review",
+            "runId": null,
+            "nodeId": null,
+            "role": "user",
+            "text": "Review the migration plan before we ship it.",
+            "attachments": [],
+            "streaming": false,
+            "createdAt": "2026-10-02T14:30:00.000Z",
+            "updatedAt": "2026-10-02T14:30:00.000Z"
+          },
+          {
+            "createdBy": "agent",
+            "creationSource": "provider",
+            "id": "admission-message-plan-2",
+            "threadId": "admission-thread-plan-review",
+            "runId": null,
+            "nodeId": null,
+            "role": "assistant",
+            "text": "The plan is sound; run the backfill before the column drop.",
+            "attachments": [],
+            "streaming": false,
+            "createdAt": "2026-10-02T14:31:00.000Z",
+            "updatedAt": "2026-10-02T14:31:00.000Z"
+          }
+        ],
+        "plans": [],
+        "turnItems": [],
+        "checkpointScopes": [],
+        "checkpoints": [],
+        "contextHandoffs": [],
+        "contextTransfers": [],
+        "visibleTurnItems": [],
+        "updatedAt": "2026-10-09T14:33:43.868Z"
+      }
+    }
+  }
+]
