@@ -22,6 +22,7 @@ import {
   RECOVERY_POINT_STEP,
   RecoveryPointError,
   restoreSnapshot,
+  returnDisplacedDatabase,
   verifySnapshot,
 } from "./recoveryPoint.ts";
 
@@ -297,6 +298,38 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
         `.statev2.sqlite.recover-${point.id}`,
       );
       expect(yield* listRecoveryPoints(baseDir)).toEqual([point]);
+    }),
+  );
+
+  it.effect("moves a displaced database back with its journal, never over another", () =>
+    Effect.gen(function* () {
+      const { fs, path, baseDir, dbPath } = yield* makeHome();
+      const point = Option.getOrThrow(yield* createPoint(baseDir, dbPath));
+      yield* fs.writeFileString(`${dbPath}-wal`, "wal");
+      yield* fs.writeFileString(`${dbPath}-shm`, "shm");
+      const liveSha256 = fileSha256(dbPath);
+      const displacedDir = yield* displaceDatabase(baseDir, dbPath, point.id);
+
+      // A database back at the path is never overwritten, and nothing moves.
+      yield* fs.writeFileString(`${dbPath}-shm`, "another");
+      const refused = yield* returnDisplacedDatabase(displacedDir, dbPath).pipe(Effect.flip);
+      expect(refused.message).toContain(`Refusing to move the database back over ${dbPath}-shm`);
+      expect(yield* fs.readFileString(`${dbPath}-shm`)).toBe("another");
+      expect(yield* fs.exists(dbPath)).toBe(false);
+      expect((yield* fs.readDirectory(displacedDir)).toSorted()).toEqual([
+        "statev2.sqlite",
+        "statev2.sqlite-shm",
+        "statev2.sqlite-wal",
+      ]);
+      yield* fs.remove(`${dbPath}-shm`);
+
+      yield* returnDisplacedDatabase(displacedDir, dbPath);
+
+      expect(fileSha256(dbPath)).toBe(liveSha256);
+      expect(yield* fs.readFileString(`${dbPath}-wal`)).toBe("wal");
+      expect(yield* fs.readFileString(`${dbPath}-shm`)).toBe("shm");
+      expect(yield* fs.readDirectory(displacedDir)).toEqual([]);
+      expect(path.dirname(displacedDir)).toBe(path.join(baseDir, "recovery", "displaced"));
     }),
   );
 });

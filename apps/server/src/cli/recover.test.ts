@@ -11,6 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient } from "effect/http";
 import * as TestConsole from "effect/testing/TestConsole";
@@ -133,6 +134,8 @@ const recover = Effect.fn("test.recover")(function* (
     readonly list?: boolean;
     readonly allowUnverifiedRuntime?: boolean;
     readonly stop?: Effect.Effect<boolean, BootService.BootServiceError>;
+    /** Wraps the file system recover runs on, to make one write fail. */
+    readonly fs?: (fs: FileSystem.FileSystem) => FileSystem.FileSystem;
   },
 ) {
   const events: string[] = [];
@@ -182,6 +185,7 @@ const recover = Effect.fn("test.recover")(function* (
   }).pipe(
     Effect.provideService(BootService.BootService, service),
     Effect.provideService(ProcessRunner.ProcessRunner, runner),
+    Effect.provideService(FileSystem.FileSystem, options.fs?.(home.fs) ?? home.fs),
     // The prior version's service is stubbed, so nothing downloads.
     Effect.provideService(
       HttpClient.HttpClient,
@@ -196,6 +200,16 @@ const recover = Effect.fn("test.recover")(function* (
   );
   return { exit, events };
 });
+
+const refusedBy = (method: string, pathOrDescriptor: string) =>
+  Effect.fail(
+    PlatformError.systemError({
+      _tag: "PermissionDenied",
+      module: "FileSystem",
+      method,
+      pathOrDescriptor,
+    }),
+  );
 
 const failureReason = (exit: Exit.Exit<unknown, unknown>) =>
   exit._tag === "Failure" ? String(exit.cause) : "";
@@ -479,5 +493,105 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         "  allowed the unverified runtime t3@1.2.3 (--allow-unverified-runtime)",
       );
     }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect(
+    "keeps a completed swap and finishes when recovery.json cannot be written after it",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeUpdatedHome();
+        // Writes to recovery.json fail only once the snapshot is renamed into
+        // place, so the record before the swap still lands.
+        let swapped = false;
+        const { exit, events } = yield* recover(home, {
+          service: "serves-this-home",
+          fs: (fs) => ({
+            ...fs,
+            rename: (from, to) =>
+              fs.rename(from, to).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    if (to === home.dbPath) swapped = true;
+                  }),
+                ),
+              ),
+            writeFileString: (filePath, data, writeOptions) =>
+              swapped && home.path.basename(filePath) === ".recovery.json.tmp"
+                ? refusedBy("writeFileString", filePath)
+                : fs.writeFileString(filePath, data, writeOptions),
+          }),
+        });
+
+        assert.equal(exit._tag, "Success", failureReason(exit));
+        assert.isTrue(swapped);
+        assert.deepEqual(events, [
+          "stop (database in place: true)",
+          "service for 1.2.3",
+          "install (allowDowngrade: true, start: false)",
+          "restart",
+        ]);
+        yield* assertSwapped(home);
+        const record = yield* readRecord(home);
+        assert.deepEqual(
+          (record["actions"] as ReadonlyArray<{ readonly action: string }>).map(
+            (entry) => entry.action,
+          ),
+          ["stopped the background service"],
+        );
+        const lines = yield* TestConsole.logLines;
+        assert.include(lines, `  restored the database from recovery point ${POINT_ID}`);
+        assert.include(lines, "Recovered to t3@1.2.3.");
+        const warnings = yield* TestConsole.errorLines;
+        assert.lengthOf(warnings, 5);
+        for (const warning of warnings) {
+          assert.include(
+            String(warning),
+            `Warning: could not record this action in ${home.path.join(home.point.dir, "recovery.json")}`,
+          );
+        }
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect(
+    "moves the current database back and refuses when the snapshot cannot be restored",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeUpdatedHome();
+        const { exit, events } = yield* recover(home, {
+          service: "serves-this-home",
+          fs: (fs) => ({
+            ...fs,
+            copyFile: (from, to) =>
+              from === home.point.snapshotPath
+                ? refusedBy("copyFile", from)
+                : fs.copyFile(from, to),
+          }),
+        });
+
+        assert.equal(exit._tag, "Failure");
+        const reason = failureReason(exit);
+        assert.include(reason, "Could not restore the recovery point's snapshot.");
+        assert.include(reason, `The current database was moved back to ${home.dbPath}`);
+        assert.include(reason, "run `t3 service restart` to start it again");
+        assert.deepEqual(events, ["stop (database in place: true)"]);
+        // The live database and its journal are back; the displaced directory
+        // is left empty and the snapshot's temporary copy is gone.
+        assert.deepEqual(yield* home.fs.readFile(home.dbPath), home.liveBytes);
+        assert.equal(yield* home.fs.readFileString(`${home.dbPath}-wal`), "wal");
+        assert.equal(yield* home.fs.readFileString(`${home.dbPath}-shm`), "shm");
+        assert.deepEqual(yield* home.fs.readDirectory(displacedDir(home)), []);
+        assert.deepEqual(
+          (yield* home.fs.readDirectory(home.path.dirname(home.dbPath))).toSorted(),
+          ["statev2.sqlite", "statev2.sqlite-shm", "statev2.sqlite-wal"],
+        );
+        assert.equal(yield* home.fs.readLink(home.launcher), home.toEntry);
+        const record = yield* readRecord(home);
+        assert.deepEqual(
+          (record["actions"] as ReadonlyArray<{ readonly action: string }>).map(
+            (entry) => entry.action,
+          ),
+          ["stopped the background service"],
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 });

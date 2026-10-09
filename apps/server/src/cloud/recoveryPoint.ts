@@ -383,6 +383,35 @@ export const displaceDatabase = Effect.fn("cloud.recovery_point.displace_databas
 });
 
 /**
+ * Moves a database that `displaceDatabase` set aside in `displacedDir` back to
+ * `dbPath`, with its -wal and -shm when present. Refuses while a database or
+ * its -wal or -shm is at `dbPath`, so it never overwrites one.
+ */
+export const returnDisplacedDatabase = Effect.fn("cloud.recovery_point.return_displaced_database")(
+  function* (displacedDir: string, dbPath: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    for (const suffix of DATABASE_COMPANION_SUFFIXES) {
+      if (yield* fs.exists(`${dbPath}${suffix}`)) {
+        return yield* new RecoveryPointError({
+          detail: `Refusing to move the database back over ${dbPath}${suffix}.`,
+        });
+      }
+    }
+    for (const suffix of DATABASE_COMPANION_SUFFIXES) {
+      const from = path.join(displacedDir, `${path.basename(dbPath)}${suffix}`);
+      if (!(yield* fs.exists(from))) continue;
+      yield* fs.rename(from, `${dbPath}${suffix}`);
+    }
+  },
+  Effect.mapError((cause) =>
+    cause._tag === "RecoveryPointError"
+      ? cause
+      : new RecoveryPointError({ detail: "Could not move the database back into place.", cause }),
+  ),
+);
+
+/**
  * Copies the point's snapshot to `dbPath`, readable only by its owner. Refuses
  * while a database or its -wal or -shm is still there: displace it first.
  */

@@ -21,6 +21,7 @@ import {
   listRecoveryPoints,
   loadRecoveryPoint,
   restoreSnapshot,
+  returnDisplacedDatabase,
   verifySnapshot,
 } from "../cloud/recoveryPoint.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -202,10 +203,24 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
     );
   }
 
+  // Before the swap a record that cannot be written refuses, since nothing
+  // has moved yet.
   const record = (action: string, extra?: { readonly allowUnverifiedRuntime?: boolean }) =>
     Console.log(`  ${action}`).pipe(
       Effect.andThen(appendRecoveryAction(input.baseDir, id, action, extra)),
       Effect.mapError((error) => refuse(error.message)),
+    );
+  // After the swap the restored database stays and the remaining steps still
+  // run: an action that cannot be recorded is only warned about.
+  const recordAfterSwap = (action: string) =>
+    Console.log(`  ${action}`).pipe(
+      Effect.andThen(appendRecoveryAction(input.baseDir, id, action)),
+      Effect.catch((error) =>
+        Console.error(
+          `  Warning: could not record this action in ${path.join(point.dir, "recovery.json")}: ${error.message}`,
+        ),
+      ),
+      Effect.asVoid,
     );
 
   yield* Console.log(
@@ -239,22 +254,55 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
         `Not recovering: the background service reported stopped but a server is still running on this T3 home (pid ${afterStop.value.pid}); the database was not moved. Stop that process, then run t3 recover again.`,
       );
     }
-    yield* record("stopped the background service");
+    yield* record("stopped the background service").pipe(
+      Effect.mapError((error) =>
+        refuse(
+          `${error.message} The database was not moved. The background service is stopped; run \`t3 service restart\` to start it again.`,
+        ),
+      ),
+    );
   }
 
+  // The swap is one step: the snapshot is restored right after the live
+  // database moves aside, and a failed restore moves that database back, so
+  // the home is never left without a database.
   const stoppedNote = servesThisHome
-    ? " The background service is stopped; run `t3 service restart` once the database is in place."
+    ? " The background service is stopped; run `t3 service restart` to start it again."
     : "";
-  const displacedDir = yield* displaceDatabase(input.baseDir, input.dbPath, id).pipe(
-    Effect.mapError((error) => refuse(`${error.message}${stoppedNote}`)),
+  const displacedDir = yield* Effect.uninterruptible(
+    Effect.gen(function* () {
+      const target = yield* displaceDatabase(input.baseDir, input.dbPath, id).pipe(
+        Effect.mapError((error) => refuse(`${error.message}${stoppedNote}`)),
+      );
+      yield* restoreSnapshot(input.baseDir, id, input.dbPath).pipe(
+        Effect.catch((restoreError) =>
+          returnDisplacedDatabase(target, input.dbPath).pipe(
+            Effect.matchEffect({
+              onSuccess: () =>
+                Effect.fail(
+                  refuse(
+                    `${restoreError.message} The current database was moved back to ${input.dbPath}; nothing was changed.${stoppedNote}`,
+                  ),
+                ),
+              onFailure: (returnError) =>
+                Effect.fail(
+                  refuse(
+                    `${restoreError.message} Moving the current database back also failed: ${returnError.message} It is kept in ${target}; move ${path.basename(input.dbPath)} and its -wal and -shm from there back to ${path.dirname(input.dbPath)} before starting a server.${
+                      servesThisHome
+                        ? " The background service is stopped; run `t3 service restart` once the database is back in place."
+                        : ""
+                    }`,
+                  ),
+                ),
+            }),
+          ),
+        ),
+      );
+      return target;
+    }),
   );
-  yield* record(`moved the current database to ${displacedDir}`);
-  yield* restoreSnapshot(input.baseDir, id, input.dbPath).pipe(
-    Effect.mapError((error) =>
-      refuse(`${error.message} The database it replaces is kept in ${displacedDir}.${stoppedNote}`),
-    ),
-  );
-  yield* record(`restored the database from recovery point ${id}`);
+  yield* recordAfterSwap(`moved the current database to ${displacedDir}`);
+  yield* recordAfterSwap(`restored the database from recovery point ${id}`);
 
   const runtime = pinnedRuntimePaths(path, input.baseDir, from.version, platform);
   const launchedAs = (yield* HostProcessIsExecutable) ? yield* resolveLauncherPath : undefined;
@@ -264,7 +312,7 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
     targetEntryPath: runtime.entryPath,
   }).pipe(Effect.mapError((error) => refuse(error.message)));
   if (Option.isSome(repointed)) {
-    yield* record(`pointed the launcher ${repointed.value} at t3@${from.version}`);
+    yield* recordAfterSwap(`pointed the launcher ${repointed.value} at t3@${from.version}`);
   } else {
     yield* Console.log(`  Run ${runtime.entryPath} to start t3@${from.version}.`);
   }
@@ -273,17 +321,15 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
     const restarted = yield* BootService.BootService.pipe(
       Effect.flatMap((target) =>
         target.install({ allowDowngrade: true, start: false }).pipe(
-          Effect.tap(() => record(`pointed the background service at t3@${from.version}`)),
+          Effect.tap(() => recordAfterSwap(`pointed the background service at t3@${from.version}`)),
           Effect.andThen(target.restart),
         ),
       ),
       Effect.provide(input.serviceForVersion(from.version)),
       Effect.mapError((error) =>
-        error._tag === "CliRecoverError"
-          ? error
-          : refuse(
-              `The database is restored but the background service could not be moved to t3@${from.version}: ${error.message}`,
-            ),
+        refuse(
+          `The database is restored but the background service could not be moved to t3@${from.version}: ${error.message}`,
+        ),
       ),
     );
     if (!restarted) {
@@ -291,7 +337,7 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
         `The database is restored but the background service was not restarted on t3@${from.version}. Run \`t3 service restart\`.`,
       );
     }
-    yield* record(`restarted the background service on t3@${from.version}`);
+    yield* recordAfterSwap(`restarted the background service on t3@${from.version}`);
   } else if (status.installed && status.installedBaseDir !== undefined) {
     yield* Console.log(
       `  The background service serves ${status.installedBaseDir} and was left unchanged.`,
