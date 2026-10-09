@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // Fork-only (atlitech/t3code). Writes the SHA256SUMS and manifest.json that
-// fork-server-release.yml publishes next to the archives its build jobs made.
+// fork-server-release.yml publishes next to the assets its build jobs made:
+// the Linux server archive and the Mac desktop DMG.
 // Runbook: docs/operations/fork-server.md.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -60,11 +61,16 @@ const PART_PATTERN = /^[a-z0-9_]+$/;
 const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
-/** Reads platform and arch from `t3-<version>-<platform>-<arch>.tar.gz`. */
+/**
+ * Reads platform and arch from a release asset's name. Only two shapes are
+ * assets: the server archive `t3-<version>-<platform>-<arch>.tar.gz` and the
+ * Mac desktop DMG `T3-Code-<version>-arm64.dmg`.
+ */
 export const parseAssetName = (
   version: string,
   file: string,
 ): { readonly platform: string; readonly arch: string } | undefined => {
+  if (file === `T3-Code-${version}-arm64.dmg`) return { platform: "darwin", arch: "arm64" };
   const prefix = `t3-${version}-`;
   const suffix = ".tar.gz";
   if (!file.startsWith(prefix) || !file.endsWith(suffix)) return undefined;
@@ -87,7 +93,7 @@ export const buildReleaseManifest = (input: {
       });
     }
     if (input.files.length === 0) {
-      return yield* new ReleaseManifestError({ detail: "there are no release archives." });
+      return yield* new ReleaseManifestError({ detail: "there are no release assets." });
     }
     const assets: Array<ReleaseManifestAsset> = [];
     for (const asset of input.files.toSorted((left, right) =>
@@ -96,7 +102,7 @@ export const buildReleaseManifest = (input: {
       const parsed = parseAssetName(input.version, asset.file);
       if (!parsed) {
         return yield* new ReleaseManifestError({
-          detail: `'${asset.file}' is not named t3-${input.version}-<platform>-<arch>.tar.gz.`,
+          detail: `'${asset.file}' is not named t3-${input.version}-<platform>-<arch>.tar.gz or T3-Code-${input.version}-arm64.dmg.`,
         });
       }
       if (!SHA256_PATTERN.test(asset.sha256)) {
@@ -113,7 +119,7 @@ export const buildReleaseManifest = (input: {
         )
       ) {
         return yield* new ReleaseManifestError({
-          detail: `more than one archive for ${parsed.platform}-${parsed.arch}.`,
+          detail: `more than one asset for ${parsed.platform}-${parsed.arch}.`,
         });
       }
       assets.push({ ...parsed, file: asset.file, size: asset.size, sha256: asset.sha256 });
@@ -163,10 +169,8 @@ export const writeReleaseManifest = Effect.fn("writeReleaseManifest")(function* 
 const command = Command.make(
   "fork-release-manifest",
   {
-    dir: Flag.String("dir").pipe(Flag.withDescription("Directory holding the release archives.")),
-    commit: Flag.String("commit").pipe(
-      Flag.withDescription("Commit the archives were built from."),
-    ),
+    dir: Flag.String("dir").pipe(Flag.withDescription("Directory holding the release assets.")),
+    commit: Flag.String("commit").pipe(Flag.withDescription("Commit the assets were built from.")),
     // `--version` is the runner's own flag.
     version: Flag.String("release-version").pipe(
       Flag.withDescription("Fork version, for example 0.0.46-atli.1."),

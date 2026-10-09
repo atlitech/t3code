@@ -15,6 +15,11 @@ const mac = {
   size: 5678,
   sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 };
+const dmg = {
+  file: "T3-Code-0.0.46-atli.1-arm64.dmg",
+  size: 91011,
+  sha256: "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae",
+};
 
 const parseSha256Sums = (text: string) =>
   new Map(
@@ -50,12 +55,33 @@ it.effect("names the commit, version and every asset, agreeing with SHA256SUMS",
   }),
 );
 
+it.effect("records the Mac desktop DMG as darwin arm64, next to the server archive", () =>
+  Effect.gen(function* () {
+    const release = yield* buildReleaseManifest({ commit, version, files: [dmg, linux] });
+
+    assert.deepStrictEqual(release.manifest.assets, [
+      { platform: "linux", arch: "x64", ...linux },
+      { platform: "darwin", arch: "arm64", ...dmg },
+    ]);
+    assert.strictEqual(parseSha256Sums(release.sha256sums).get(dmg.file), dmg.sha256);
+  }),
+);
+
 it("reads platform and arch from the archive name", () => {
   assert.deepStrictEqual(parseAssetName(version, linux.file), { platform: "linux", arch: "x64" });
   assert.isUndefined(parseAssetName(version, "t3-0.0.46-atli.2-linux-x64.tar.gz"));
   assert.isUndefined(parseAssetName(version, "t3-0.0.46-atli.1-linux.tar.gz"));
   assert.isUndefined(parseAssetName(version, "t3-0.0.46-atli.1-linux-x64-musl.tar.gz"));
   assert.isUndefined(parseAssetName(version, "t3-0.0.46-atli.1-linux-x64.zip"));
+});
+
+it("reads the Mac desktop DMG only under its exact name", () => {
+  assert.deepStrictEqual(parseAssetName(version, dmg.file), { platform: "darwin", arch: "arm64" });
+  assert.isUndefined(parseAssetName(version, "T3-Code-0.0.46-atli.2-arm64.dmg"));
+  assert.isUndefined(parseAssetName(version, "T3-Code-0.0.46-atli.1-x64.dmg"));
+  assert.isUndefined(parseAssetName(version, "T3-Code-0.0.46-atli.1-arm64.dmg.blockmap"));
+  assert.isUndefined(parseAssetName(version, "T3-Code-0.0.46-atli.1-arm64.zip"));
+  assert.isUndefined(parseAssetName(version, "t3-code-0.0.46-atli.1-arm64.dmg"));
 });
 
 it.effect("refuses files a release must not carry", () =>
@@ -67,6 +93,8 @@ it.effect("refuses files a release must not carry", () =>
       { commit, files: [{ ...linux, sha256: "abc" }] },
       { commit, files: [{ ...linux, size: 0 }] },
       { commit, files: [linux, { ...linux, sha256: mac.sha256 }] },
+      { commit, files: [mac, dmg] },
+      { commit, files: [{ ...dmg, file: "T3-Code-0.0.46-atli.1-arm64.dmg.blockmap" }] },
     ];
     for (const input of refused) {
       const error = yield* Effect.flip(buildReleaseManifest({ version, ...input }));

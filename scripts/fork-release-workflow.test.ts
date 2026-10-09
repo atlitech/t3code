@@ -51,7 +51,8 @@ const jobMap = (body: ReadonlyArray<string>, key: string): ReadonlyMap<string, s
   const entries = new Map<string, string>();
   if (start === -1) return entries;
   for (const line of body.slice(start + 1)) {
-    const entry = /^ {6}([A-Za-z0-9-]+):\s*(.+?)\s*$/.exec(line);
+    if (/^ {6}#/.test(line)) continue;
+    const entry = /^ {6}([A-Za-z0-9_-]+):\s*(.+?)\s*$/.exec(line);
     if (!entry) break;
     entries.set(entry[1]!, entry[2]!);
   }
@@ -79,6 +80,9 @@ const stepsOf = (body: ReadonlyArray<string>): ReadonlyArray<string> => {
   return steps.filter((step) => step.length > 0).map((step) => step.join("\n"));
 };
 
+const runsOn = (body: ReadonlyArray<string>): string | undefined =>
+  body.map((line) => /^ {4}runs-on:\s*(.+?)\s*$/.exec(line)?.[1]).find(Boolean);
+
 const buildJobs = (): ReadonlyArray<string> =>
   [...jobs().keys()].filter((name) => name.startsWith("build-"));
 
@@ -100,7 +104,7 @@ describe("fork server release workflow", () => {
 
   it("guards, builds, and publishes in separate jobs", () => {
     const names = [...jobs().keys()];
-    expect(names).toEqual(expect.arrayContaining(["guard", "build-linux", "publish"]));
+    expect(names).toEqual(expect.arrayContaining(["guard", "build-linux", "build-mac", "publish"]));
     expect(buildJobs().length).toBeGreaterThan(0);
   });
 
@@ -118,6 +122,78 @@ describe("fork server release workflow", () => {
     const needs = needsOf(job("publish"));
     expect(needs).toContain("guard");
     for (const name of buildJobs()) expect(needs, name).toContain(name);
+  });
+
+  it("publishes nothing unless the Mac desktop app built", () => {
+    expect(needsOf(job("publish"))).toEqual(
+      expect.arrayContaining(["guard", "build-linux", "admission", "build-mac"]),
+    );
+  });
+
+  it("builds the Mac arm64 DMG from the guarded commit on a GitHub-hosted macOS runner", () => {
+    const body = job("build-mac");
+    const text = body.join("\n");
+    expect(runsOn(body)).toMatch(/^macos-\d+$/);
+    expect(needsOf(body)).toContain("guard");
+    expect(text).toMatch(/ref: \$\{\{ needs\.guard\.outputs\.sha \}\}/);
+
+    const rust = stepsOf(body).find((step) => /uses: dtolnay\/rust-toolchain@/.test(step));
+    expect(rust).toBeDefined();
+    const pinned = /uses: (dtolnay\/rust-toolchain@[0-9a-f]{40})\b/.exec(rust!)?.[1];
+    expect(pinned).toBeDefined();
+    expect(job("build-linux").join("\n")).toContain(pinned!);
+    expect(rust).toMatch(/toolchain: stable/);
+    expect(rust).toMatch(/targets: aarch64-apple-darwin/);
+
+    const env = jobMap(body, "env");
+    for (const name of [
+      "T3CODE_CLERK_PUBLISHABLE_KEY",
+      "T3CODE_CLERK_JWT_TEMPLATE",
+      "T3CODE_CLERK_CLI_OAUTH_CLIENT_ID",
+      "T3CODE_RELAY_URL",
+    ]) {
+      expect(env.get(name), name).toBe(`\${{ vars.${name} }}`);
+      expect(jobMap(job("build-linux"), "env").get(name), name).toBe(env.get(name));
+    }
+    expect(env.get("T3CODE_DESKTOP_VERSION")).toBe("${{ needs.guard.outputs.version }}");
+
+    const build = stepsOf(body).findIndex((step) =>
+      /run: vp run dist:desktop:dmg:arm64$/m.test(step),
+    );
+    expect(build).toBeGreaterThan(stepsOf(body).indexOf(rust!));
+  });
+
+  it("ships the Mac app unsigned, without Apple secrets", () => {
+    const text = job("build-mac").join("\n");
+    expect(text).not.toMatch(/secrets\./);
+    expect(text).not.toMatch(/--signed|T3CODE_DESKTOP_SIGNED|CSC_|APPLE_/);
+  });
+
+  it("checks the Mac app's identity, then attests and uploads the DMG", () => {
+    const steps = stepsOf(job("build-mac"));
+    const dmg = "release/T3-Code-${{ needs.guard.outputs.version }}-arm64.dmg";
+    const build = steps.findIndex((step) => /run: vp run dist:desktop:dmg:arm64$/m.test(step));
+    const identity = steps.findIndex((step) => /node scripts\/fork-mac-identity\.ts/.test(step));
+    const attest = steps.findIndex((step) => ATTEST.test(step));
+    const upload = steps.findIndex((step) => /uses: actions\/upload-artifact@/.test(step));
+    expect(build).toBeGreaterThan(-1);
+    expect(identity).toBeGreaterThan(build);
+    expect(attest).toBeGreaterThan(identity);
+    expect(upload).toBeGreaterThan(attest);
+
+    const check = steps[identity]!;
+    expect(check).toMatch(
+      /hdiutil attach "release\/T3-Code-\$VERSION-arm64\.dmg" -nobrowse -readonly/,
+    );
+    expect(check).toMatch(/plutil -convert xml1 -o - /);
+    expect(check).toMatch(/codesign -dv --verbose=2 [^\n]*2>&1 \|\| true/);
+    expect(check).toMatch(/--release-version "\$VERSION"/);
+    expect(check).toMatch(/hdiutil detach/);
+
+    expect(steps[attest]).toContain(`subject-path: ${dmg}`);
+    expect(steps[upload]).toMatch(/name: release-darwin-arm64\n/);
+    expect(steps[upload]).toContain(`path: ${dmg}`);
+    expect(steps[upload]).toMatch(/if-no-files-found: error/);
   });
 
   it("never uploads to an existing release or replaces an asset", () => {
