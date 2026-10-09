@@ -3,11 +3,12 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: %s [--no-prebuild] [--universal]\n' "$0"
+  printf 'Usage: %s [--release-version <X.Y.Z-atli.N>] [--no-prebuild] [--universal]\n' "$0"
 }
 
 prebuild=1
 architectures='arm64-v8a'
+release_version="${T3CODE_RELEASE_VERSION:-}"
 
 while (($# > 0)); do
   case "$1" in
@@ -16,6 +17,14 @@ while (($# > 0)); do
       ;;
     --universal)
       architectures=''
+      ;;
+    --release-version)
+      if (($# < 2)) || [[ -z "$2" ]]; then
+        usage >&2
+        exit 2
+      fi
+      release_version="$2"
+      shift
       ;;
     -h | --help)
       usage
@@ -28,6 +37,13 @@ while (($# > 0)); do
   esac
   shift
 done
+
+# app.config.ts derives the personal versionCode from the release version at
+# prebuild, so a build that skips prebuild cannot carry it.
+if [[ -n "$release_version" ]] && ((!prebuild)); then
+  printf -- '--release-version needs prebuild to write the versionCode; drop --no-prebuild.\n' >&2
+  exit 2
+fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../../../.." && pwd)"
@@ -65,6 +81,15 @@ T3CODE_PERSONAL_ANDROID_KEY_PASSWORD="$(
   security find-generic-password -a "$keychain_account" -s "$key_service" -w
 )"
 trap 'unset T3CODE_PERSONAL_ANDROID_KEYSTORE_PASSWORD T3CODE_PERSONAL_ANDROID_KEY_PASSWORD' EXIT
+
+if [[ -n "$release_version" ]]; then
+  export T3CODE_RELEASE_VERSION="$release_version"
+  printf 'Building release %s; prebuild derives its versionCode.\n' "$release_version"
+else
+  unset T3CODE_RELEASE_VERSION
+  printf 'No release version: this build carries versionCode 1 (the floor) and cannot install\n'
+  printf 'over a CI-built release APK, because Android refuses a versionCode downgrade.\n'
+fi
 
 if ((prebuild)); then
   (

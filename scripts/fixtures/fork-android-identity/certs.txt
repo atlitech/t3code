@@ -1,0 +1,4 @@
+Signer #1 certificate DN: CN=T3 Code Personal, OU=Personal Android, O=Elvis Nieves Miranda, L=San Juan, ST=Puerto Rico, C=US
+Signer #1 certificate SHA-256 digest: 8be8ce453295854ea7d25ace67081dd59a924ec1ae8ae111721e8c2446b37e8e
+Signer #1 certificate SHA-1 digest: a2d52b3c016e3ccf4eab882431e8d8fc1f00df91
+Signer #1 certificate MD5 digest: ff5ce12deacc6b48a018af4fbf35f1b2

@@ -5,7 +5,8 @@ Fork-only runbook. `atli` is upstream `main` plus our commits.
 publishes the same self-contained Linux x64 server archive an official release
 ships, so a VM that already runs the official background service can switch to
 our build and keep its T3 Connect link. Each release also carries the unsigned
-Mac arm64 desktop app, built from the same commit.
+Mac arm64 desktop app and the personal Android arm64-v8a APK, built from the
+same commit.
 
 ## Versions
 
@@ -38,6 +39,26 @@ and restart `<n>` at 1.
   | `T3CODE_CLERK_CLI_OAUTH_CLIENT_ID` | `hzxSgY2cH10sDU2r`             |
   | `T3CODE_RELAY_URL`                 | `https://relay.t3.codes`       |
 
+- **Settings → Environments**: create `personal-android-signing` and, under
+  **Deployment branches and tags**, allow only the `atli` branch. Only the
+  Android build job uses it, and it runs only from `atli`. Add:
+
+  | Kind             | Name                                        | Value                                                   |
+  | ---------------- | ------------------------------------------- | ------------------------------------------------------- |
+  | Secret           | `T3CODE_PERSONAL_ANDROID_KEYSTORE_BASE64`   | the personal keystore, `base64 < keystore.jks`          |
+  | Secret           | `T3CODE_PERSONAL_ANDROID_KEYSTORE_PASSWORD` | the keystore password                                   |
+  | Secret           | `T3CODE_PERSONAL_ANDROID_KEY_PASSWORD`      | the key password                                        |
+  | Variable         | `T3CODE_PERSONAL_ANDROID_KEY_ALIAS`         | the key alias                                           |
+  | Secret, optional | `GOOGLE_SERVICES_JSON_BASE64`               | `base64 < google-services.json`, for push notifications |
+
+  Use the key the installed personal app is signed with, or `adb install -r`
+  refuses the CI APK. Without `GOOGLE_SERVICES_JSON_BASE64` the APK builds
+  without push notifications.
+
+- Optional, under **Variables**: `T3CODE_CLERK_GOOGLE_ANDROID_CLIENT_ID`, the
+  Google Android OAuth client ID. Only when it is set does the APK offer native
+  Google sign-in.
+
 - Disable upstream's **Release** workflow:
   `gh workflow disable Release -R atlitech/t3code`. Its `v*.*.*` tag filter
   also matches `v*-atli.*`, and it runs on a schedule. It needs upstream's
@@ -56,14 +77,17 @@ A guard job runs before any build. It refuses a dispatch from any other ref, a
 version whose tag or release already exists, and an `atli` tip without a
 passing `Check` run (CI runs on every push to `atli`). Every build checks out
 the commit the guard approved, and the publish job creates the tag and the
-release together, with every asset at once. A release publishes only when both
-the Linux server and the Mac desktop app build.
+release together, with every asset at once. A release publishes only when the
+Linux server, the Mac desktop app, and the Android APK all build. The Android
+job checks the app's public config before it builds, and the APK's package,
+signing certificate, and versionCode before it uploads.
 
 The result is the prerelease `v0.0.46-atli.1` with
 `t3-0.0.46-atli.1-linux-x64.tar.gz`, `T3-Code-0.0.46-atli.1-arm64.dmg`,
-`SHA256SUMS`, and `manifest.json`, which names the source commit, the version,
-and each asset's platform, arch, size, and sha256. Each of those files has a
-build provenance attestation:
+`T3-Code-0.0.46-atli.1-android-arm64-v8a.apk`, `SHA256SUMS`, and
+`manifest.json`, which names the source commit, the version, and each asset's
+platform, arch, size, and sha256. Each of those files has a build provenance
+attestation:
 
 ```sh
 gh attestation verify t3-0.0.46-atli.1-linux-x64.tar.gz -R atlitech/t3code
@@ -187,10 +211,29 @@ T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR=1 T3CODE_DESKTOP_VERSION=0.0.46-atli.2 vp 
 
 Copy the app out, sign it ad hoc, and install it as above.
 
-## Building the personal Android app
+## Installing the personal Android app
 
-Use the `develop-t3-personal-android` skill. Its script reads the signing
-passwords from the macOS Keychain and builds a standalone release APK:
+Every release carries the personal app (`com.elvis.t3code`) as an arm64-v8a
+APK signed with the personal key. Download it, check it, and install it over
+the existing app:
+
+```sh
+gh release download v0.0.46-atli.2 -R atlitech/t3code -p 'T3-Code-*-android-arm64-v8a.apk' -p SHA256SUMS
+shasum -a 256 -c --ignore-missing SHA256SUMS
+gh attestation verify T3-Code-0.0.46-atli.2-android-arm64-v8a.apk -R atlitech/t3code
+adb devices -l
+adb -s <device-serial> install -r T3-Code-0.0.46-atli.2-android-arm64-v8a.apk
+```
+
+The APK's versionCode is derived from the release version, so each release
+installs over the one before it, and Android refuses to install an older
+release over a newer one.
+
+### Building it locally
+
+When a release cannot be used, use the `develop-t3-personal-android` skill. Its
+script reads the signing passwords from the macOS Keychain and builds a
+standalone release APK:
 
 ```sh
 .agents/skills/develop-t3-personal-android/scripts/build-personal-apk.sh
@@ -200,7 +243,9 @@ adb -s <device-serial> install -r apps/mobile/android/app/build/outputs/apk/rele
 
 After an upstream update, run it without `--no-prebuild` when dependencies or
 native config changed. `install -r` keeps the app's data only when the APK is signed
-with the same key as the installed app; the skill describes how to check.
+with the same key as the installed app; the skill describes how to check. A local
+build without `--release-version` carries versionCode 1, so it cannot update
+over an APK from a release; uninstall the app first, which deletes its data.
 
 ## Pull request watcher
 

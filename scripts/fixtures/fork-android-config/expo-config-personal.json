@@ -1,0 +1,365 @@
+{
+  "name": "T3 Code Personal",
+  "slug": "t3-code",
+  "platforms": ["ios", "android"],
+  "scheme": "t3code-personal",
+  "version": "2.0.0",
+  "runtimeVersion": {
+    "policy": "fingerprint"
+  },
+  "orientation": "portrait",
+  "icon": "../../assets/dev/blueprint-ios-1024.png",
+  "userInterfaceStyle": "automatic",
+  "updates": {
+    "enabled": false
+  },
+  "ios": {
+    "icon": "../../assets/dev/app-icon.icon",
+    "supportsTablet": true,
+    "requireFullScreen": false,
+    "bundleIdentifier": "com.elvis.t3code",
+    "appleTeamId": "ARK85ZXQ4Z",
+    "associatedDomains": ["applinks:clerk.t3.codes", "webcredentials:clerk.t3.codes"],
+    "entitlements": {
+      "keychain-access-groups": ["$(AppIdentifierPrefix)com.elvis.t3code"],
+      "com.apple.security.application-groups": ["group.com.elvis.t3code"]
+    },
+    "infoPlist": {
+      "NSAppTransportSecurity": {
+        "NSAllowsArbitraryLoads": true
+      },
+      "NSLocalNetworkUsageDescription": "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
+      "NSPhotoLibraryAddUsageDescription": "Allow T3 Code to save images to your photo library.",
+      "UIBackgroundModes": ["audio"],
+      "ITSAppUsesNonExemptEncryption": false
+    }
+  },
+  "android": {
+    "icon": "../../assets/dev/blueprint-ios-1024.png",
+    "package": "com.elvis.t3code",
+    "versionCode": 1,
+    "adaptiveIcon": {
+      "backgroundColor": "#347FF8",
+      "backgroundImage": "./assets/android-icon-background-dev.png",
+      "foregroundImage": "./assets/android-icon-foreground.png",
+      "monochromeImage": "./assets/android-icon-mark.png"
+    },
+    "predictiveBackGestureEnabled": true,
+    "blockedPermissions": ["android.permission.ACTIVITY_RECOGNITION"],
+    "permissions": ["android.permission.MODIFY_AUDIO_SETTINGS", "android.permission.CAMERA"]
+  },
+  "web": {
+    "favicon": "../../assets/dev/blueprint-ios-1024.png"
+  },
+  "plugins": [
+    "expo-asset",
+    [
+      "expo-font",
+      {
+        "ios": {
+          "fonts": [
+            "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
+            "@expo-google-fonts/dm-sans/500Medium/DMSans_500Medium.ttf",
+            "@expo-google-fonts/dm-sans/700Bold/DMSans_700Bold.ttf"
+          ]
+        },
+        "android": {
+          "fonts": [
+            {
+              "fontFamily": "DMSans-Regular",
+              "fontDefinitions": [
+                {
+                  "path": "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
+                  "weight": 400
+                }
+              ]
+            },
+            {
+              "fontFamily": "DMSans-Medium",
+              "fontDefinitions": [
+                {
+                  "path": "@expo-google-fonts/dm-sans/500Medium/DMSans_500Medium.ttf",
+                  "weight": 500
+                }
+              ]
+            },
+            {
+              "fontFamily": "DMSans-Bold",
+              "fontDefinitions": [
+                {
+                  "path": "@expo-google-fonts/dm-sans/700Bold/DMSans_700Bold.ttf",
+                  "weight": 700
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ],
+    "expo-secure-store",
+    "expo-sqlite",
+    "./plugins/withShareExtensionDisplayName.cjs",
+    [
+      "expo-sharing",
+      {
+        "ios": {
+          "enabled": true,
+          "extensionBundleIdentifier": "com.elvis.t3code.sharing",
+          "appGroupId": "group.com.elvis.t3code",
+          "activationRule": {
+            "supportsText": true,
+            "supportsWebUrlWithMaxCount": 1,
+            "supportsImageWithMaxCount": 8,
+            "supportsMovieWithMaxCount": 8,
+            "supportsFileWithMaxCount": 8
+          }
+        },
+        "android": {
+          "enabled": true,
+          "singleShareMimeTypes": ["*/*"],
+          "multipleShareMimeTypes": ["*/*"]
+        }
+      }
+    ],
+    [
+      "expo-notifications",
+      {
+        "icon": "./assets/android-notification-icon.png",
+        "color": "#00639B",
+        "mode": "production"
+      }
+    ],
+    [
+      "@clerk/expo",
+      {
+        "theme": "./clerk-theme.json",
+        "appleSignIn": true
+      }
+    ],
+    "expo-web-browser",
+    [
+      "expo-quick-actions",
+      {
+        "androidIcons": {
+          "shortcut_icon": {
+            "foregroundImage": "./assets/android-icon-foreground.png",
+            "backgroundColor": "#347FF8",
+            "backgroundImage": "./assets/android-icon-background-dev.png"
+          }
+        }
+      }
+    ],
+    [
+      "expo-audio",
+      {
+        "microphonePermission": "Allow T3 Code to use your microphone for voice input.",
+        "recordAudioAndroid": false,
+        "enableBackgroundPlayback": false,
+        "enableBackgroundRecording": false
+      }
+    ],
+    [
+      "expo-camera",
+      {
+        "cameraPermission": "Allow T3 Code to access your camera so you can scan pairing QR codes.",
+        "microphonePermission": false,
+        "barcodeScannerEnabled": true,
+        "recordAudioAndroid": false
+      }
+    ],
+    [
+      "expo-image-picker",
+      {
+        "photosPermission": false,
+        "microphonePermission": false
+      }
+    ],
+    [
+      "expo-splash-screen",
+      {
+        "image": "../../assets/dev/blueprint-ios-1024.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#ffffff",
+        "imageWidth": 220,
+        "dark": {
+          "image": "../../assets/dev/blueprint-ios-1024.png",
+          "backgroundColor": "#0a0a0a"
+        },
+        "android": {
+          "image": "./assets/android-splash-icon-dev.png",
+          "imageWidth": 288,
+          "dark": {
+            "image": "./assets/android-splash-icon-dev.png"
+          }
+        }
+      }
+    ],
+    [
+      "expo-build-properties",
+      {
+        "android": {
+          "minSdkVersion": 24,
+          "extraProguardRules": "-dontwarn kotlin.MustUseReturnValues\n-keep class * extends androidx.work.InputMerger { <init>(); }"
+        },
+        "ios": {
+          "deploymentTarget": "18.0",
+          "extraPods": [
+            {
+              "name": "GoogleUtilities",
+              "modular_headers": true
+            },
+            {
+              "name": "RecaptchaInterop",
+              "modular_headers": true
+            }
+          ]
+        }
+      }
+    ],
+    "./plugins/withIosCocoaPodsUuidCache.cjs",
+    [
+      "expo-sensors",
+      {
+        "motionPermission": false
+      }
+    ],
+    "./plugins/withWidgetLogoAsset.cjs",
+    [
+      "expo-widgets",
+      {
+        "bundleIdentifier": "com.elvis.t3code.widgets",
+        "groupIdentifier": "group.com.elvis.t3code",
+        "enablePushNotifications": true,
+        "frequentUpdates": true,
+        "enableAndroid": true,
+        "widgets": [
+          {
+            "name": "SubscriptionUsage",
+            "displayName": "Subscription usage",
+            "description": "Subscription quotas from your connected T3 Code environments.",
+            "ios": {
+              "configuration": {
+                "title": "Subscription usage",
+                "description": "Both shows Session and Weekly when available. The Lock Screen shows the tightest selected limit.",
+                "parameters": {
+                  "codexPeriod": {
+                    "title": "Codex limits",
+                    "type": "enum",
+                    "default": "auto",
+                    "values": [
+                      {
+                        "name": "Both",
+                        "value": "auto"
+                      },
+                      {
+                        "name": "Session",
+                        "value": "session"
+                      },
+                      {
+                        "name": "Weekly",
+                        "value": "weekly"
+                      }
+                    ]
+                  },
+                  "claudePeriod": {
+                    "title": "Claude limits",
+                    "type": "enum",
+                    "default": "auto",
+                    "values": [
+                      {
+                        "name": "Both",
+                        "value": "auto"
+                      },
+                      {
+                        "name": "Session",
+                        "value": "session"
+                      },
+                      {
+                        "name": "Weekly",
+                        "value": "weekly"
+                      }
+                    ]
+                  }
+                }
+              },
+              "supportedFamilies": [
+                "systemSmall",
+                "systemMedium",
+                "systemLarge",
+                "systemExtraLarge",
+                "accessoryRectangular"
+              ]
+            },
+            "android": {
+              "minWidth": 250,
+              "minHeight": 180,
+              "targetCellWidth": 4,
+              "targetCellHeight": 3,
+              "resizeMode": "both",
+              "initialLayout": "./src/widgets/SubscriptionUsage.android.tsx"
+            }
+          },
+          {
+            "name": "AgentActivity",
+            "displayName": "Agent Activity",
+            "description": "Shows the current state of active T3 Code agents.",
+            "android": {},
+            "ios": {
+              "supportedFamilies": ["systemSmall", "systemMedium", "accessoryRectangular"]
+            }
+          }
+        ]
+      }
+    ],
+    "./plugins/withAndroidCleartextTraffic.cjs",
+    "./plugins/withAndroidGradleHeap.cjs",
+    "./plugins/withAndroidInputBackground.cjs",
+    "./plugins/withAndroidModernPopupMenu.cjs",
+    "./plugins/withAndroidModernAlertDialog.cjs",
+    "./plugins/withAndroidPredictiveBackCompat.cjs",
+    "./plugins/withAndroidTabletOrientation.cjs",
+    "./plugins/withPersonalAndroidProfileable.cjs",
+    "./plugins/withPersonalAndroidSigning.cjs"
+  ],
+  "extra": {
+    "appVariant": "personal",
+    "iosPersonalTeamBuild": false,
+    "relay": {
+      "url": "https://relay.example.test"
+    },
+    "clerk": {
+      "publishableKey": "pk_test_example",
+      "jwtTemplate": "example"
+    },
+    "observability": {
+      "tracesUrl": "https://api.axiom.co/v1/traces",
+      "tracesDataset": {},
+      "tracesToken": {}
+    },
+    "eas": {
+      "build": {
+        "experimental": {
+          "ios": {
+            "appExtensions": [
+              {
+                "targetName": "expo-sharing-extension",
+                "bundleIdentifier": "com.elvis.t3code.sharing",
+                "entitlements": {
+                  "com.apple.security.application-groups": ["group.com.elvis.t3code"]
+                }
+              },
+              {
+                "targetName": "ExpoWidgetsTarget",
+                "bundleIdentifier": "com.elvis.t3code.widgets",
+                "entitlements": {
+                  "com.apple.security.application-groups": ["group.com.elvis.t3code"]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  },
+  "sdkVersion": "58.0.0"
+}

@@ -2,9 +2,10 @@ name: Fork server release
 
 # Fork-only (atlitech/t3code). Builds the self-contained Linux x64 server
 # archive the official release ships and, from the same commit, the unsigned
-# Mac arm64 desktop DMG, and publishes both with SHA256SUMS and manifest.json
-# as a prerelease, in the layout scripts/install.sh and `t3 update` download
-# from. A release publishes only when both build. Before anything publishes,
+# Mac arm64 desktop DMG and the personal Android arm64-v8a APK, and publishes
+# all three with SHA256SUMS and manifest.json as a prerelease, in the layout
+# scripts/install.sh and `t3 update` download from. A release publishes only
+# when all three build. Before anything publishes,
 # the admission job installs that exact archive over data the previously
 # admitted release wrote, upgrades and runs it, and the release ships its
 # attested ADMISSION.json only when every check passed. Releases are
@@ -297,6 +298,150 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Builds the personal Android APK (com.elvis.t3code) for arm64-v8a, signed
+  # with the owner's key from the personal-android-signing environment, which
+  # only atli may deploy to. The keystore and google-services.json are written
+  # under RUNNER_TEMP and never printed. Native Google sign-in and push turn on
+  # only when their values are set. Checked for its package, certificate, and
+  # versionCode, never run here.
+  build-android:
+    name: Build personal Android arm64-v8a APK
+    needs: guard
+    if: github.repository == 'atlitech/t3code' && github.ref == 'refs/heads/atli'
+    runs-on: ubuntu-24.04
+    environment: personal-android-signing
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      # Public T3 Connect identifiers baked into the app bundle.
+      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
+      T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.T3CODE_CLERK_JWT_TEMPLATE }}
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID }}
+      T3CODE_RELAY_URL: ${{ vars.T3CODE_RELAY_URL }}
+      APP_VARIANT: personal
+      # app.config.ts derives android.versionCode from it.
+      T3CODE_RELEASE_VERSION: ${{ needs.guard.outputs.version }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.guard.outputs.sha }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: false
+
+      - name: Install dependencies
+        run: vp install --filter=@t3tools/mobile... --filter=@t3tools/scripts...
+
+      # As the mobile workflows do, for tools that call the workspace's pnpm.
+      - name: Expose pnpm
+        run: |
+          pnpm_version="$(node --print "require('./package.json').packageManager.split('@').pop()")"
+          vp_pnpm_bin="$HOME/.vite-plus/package_manager/pnpm/$pnpm_version/pnpm/bin"
+          echo "$vp_pnpm_bin" >> "$GITHUB_PATH"
+          "$vp_pnpm_bin/pnpm" --version
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Write signing keystore
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.T3CODE_PERSONAL_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::The personal-android-signing environment has no T3CODE_PERSONAL_ANDROID_KEYSTORE_BASE64 secret."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/t3-code-personal.jks"
+          echo "T3CODE_PERSONAL_ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/t3-code-personal.jks" >> "$GITHUB_ENV"
+
+      - name: Enable native Google sign-in
+        if: vars.T3CODE_CLERK_GOOGLE_ANDROID_CLIENT_ID != ''
+        shell: bash
+        env:
+          GOOGLE_ANDROID_CLIENT_ID: ${{ vars.T3CODE_CLERK_GOOGLE_ANDROID_CLIENT_ID }}
+        run: echo "EXPO_PUBLIC_CLERK_GOOGLE_ANDROID_CLIENT_ID=$GOOGLE_ANDROID_CLIENT_ID" >> "$GITHUB_ENV"
+
+      # The secrets context is unavailable to a step's `if:`, so the shell
+      # checks the value.
+      - name: Write google-services.json
+        shell: bash
+        env:
+          GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -n "$GOOGLE_SERVICES_JSON_BASE64" ]; then
+            printf '%s' "$GOOGLE_SERVICES_JSON_BASE64" | base64 -d > "$RUNNER_TEMP/google-services.json"
+            echo "T3CODE_ANDROID_GOOGLE_SERVICES_FILE=$RUNNER_TEMP/google-services.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check public config
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd apps/mobile && vp exec expo config --type public --json) > "$RUNNER_TEMP/expo-config.json"
+          node scripts/fork-android-config.ts --config "$RUNNER_TEMP/expo-config.json"
+
+      - name: Generate the Android project
+        run: cd apps/mobile && EXPO_NO_GIT_STATUS=1 vp exec expo prebuild --clean --platform android --no-install
+
+      - name: Build signed release APK
+        env:
+          T3CODE_PERSONAL_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.T3CODE_PERSONAL_ANDROID_KEYSTORE_PASSWORD }}
+          T3CODE_PERSONAL_ANDROID_KEY_PASSWORD: ${{ secrets.T3CODE_PERSONAL_ANDROID_KEY_PASSWORD }}
+          T3CODE_PERSONAL_ANDROID_KEY_ALIAS: ${{ vars.T3CODE_PERSONAL_ANDROID_KEY_ALIAS }}
+        run: cd apps/mobile/android && ./gradlew :app:assembleRelease -PreactNativeArchitectures=arm64-v8a
+
+      - name: Name the APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "release/T3-Code-$VERSION-android-arm64-v8a.apk"
+
+      - name: Check APK identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="release/T3-Code-$VERSION-android-arm64-v8a.apk"
+          "$ANDROID_HOME/build-tools/36.0.0/aapt" dump badging "$apk" > "$RUNNER_TEMP/badging.txt"
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" > "$RUNNER_TEMP/certs.txt"
+          node scripts/fork-android-identity.ts \
+            --badging "$RUNNER_TEMP/badging.txt" \
+            --certs "$RUNNER_TEMP/certs.txt" \
+            --release-version "$VERSION"
+
+      - name: Attest APK provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release/T3-Code-${{ needs.guard.outputs.version }}-android-arm64-v8a.apk
+
+      # publish downloads every `release-*` artifact into one directory.
+      - name: Upload APK
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-android-arm64-v8a
+          path: release/T3-Code-${{ needs.guard.outputs.version }}-android-arm64-v8a.apk
+          if-no-files-found: error
+          retention-days: 7
+
   # Installs the built archive over a T3 home the prior release migrated and
   # seeded, upgrades and runs it, and reads the seeded threads back through the
   # candidate. Writes ADMISSION.json only when every check passed, so a failed
@@ -367,7 +512,7 @@ jobs:
         run: bash scripts/linux-admission/run-admission.sh
 
       # Not a `release-*` artifact: publish adds it after the manifest step,
-      # which accepts only the server archive and the DMG.
+      # which accepts only the server archive, the DMG, and the APK.
       - name: Upload admission record
         uses: actions/upload-artifact@v7
         with:
@@ -381,7 +526,7 @@ jobs:
   # the next version, never by re-running this job against a used one.
   publish:
     name: Publish release
-    needs: [guard, build-linux, admission, build-mac]
+    needs: [guard, build-linux, admission, build-mac, build-android]
     if: github.repository == 'atlitech/t3code'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -414,7 +559,7 @@ jobs:
             args:
               - --filter=@t3tools/scripts...
 
-      - name: Download archive and DMG
+      - name: Download archive, DMG, and APK
         uses: actions/download-artifact@v8
         with:
           pattern: release-*
@@ -448,5 +593,5 @@ jobs:
           gh release create "$TAG" release/* \
             --target "$SHA" \
             --prerelease \
-            --title "T3 Code $VERSION (atli fork, Linux x64 server and Mac arm64 app)" \
-            --notes "Linux x64 server and unsigned Mac arm64 desktop app built from $GH_REPO@$SHA. Install them with docs/operations/fork-server.md."
+            --title "T3 Code $VERSION (atli fork, Linux x64 server, Mac arm64 app, and Android APK)" \
+            --notes "Linux x64 server, unsigned Mac arm64 desktop app, and personal Android arm64-v8a APK built from $GH_REPO@$SHA. Install them with docs/operations/fork-server.md."
