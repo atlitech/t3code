@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 
 import packageJson from "../../package.json" with { type: "json" };
+import { initializeV2Database } from "../persistence/initializeV2Database.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import type * as ProcessRunner from "../processRunner.ts";
 import {
@@ -66,32 +67,49 @@ const failureMessage = (cause: Cause.Cause<unknown>): string => {
   return error instanceof Error ? error.message : String(error);
 };
 
+// The V1 database initializeV2Database imports from when the V2 database at
+// the path it is given does not exist yet; it names the same sibling.
+const LEGACY_DATABASE_NAME = "state.sqlite";
+
+const snapshotDatabase = (sourcePath: string, destinationPath: string) =>
+  Effect.tryPromise(async () => {
+    const database = new NodeSqlite.DatabaseSync(sourcePath, { readOnly: true });
+    try {
+      await NodeSqlite.backup(database, destinationPath);
+    } finally {
+      database.close();
+    }
+  });
+
 /**
- * Snapshots the database into a scratch directory with SQLite's online backup
- * and opens the snapshot, which runs this build's migrations on it. The backup
- * reads through a read-only connection, so it sees one consistent state of a
- * database the running server is still writing, including commits that so far
- * live only in its -wal, and it never writes or checkpoints the live database;
- * a failed migration leaves it as it was. A missing database is a fresh
- * install: nothing to migrate.
+ * Runs the server's database initialization on a scratch copy: snapshots the
+ * V2 database, or when there is none yet the V1 database next to it, with
+ * SQLite's online backup, then imports and opens the copy the way
+ * SqlitePersistence.layerConfig does at startup, which runs this build's
+ * migrations on it. The backup reads through a read-only connection, so it
+ * sees one consistent state of a database the running server is still
+ * writing, including commits that so far live only in its -wal, and it never
+ * writes or checkpoints the live files; a failed import or migration leaves
+ * them as they were. Neither database is a fresh install: nothing to migrate.
  */
 const migrateDatabaseCopy = Effect.fn("cloud.service_preflight.migrate_database_copy")(function* (
   databasePath: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  if (!(yield* fs.exists(databasePath))) return;
+  const legacyPath = path.join(path.dirname(databasePath), LEGACY_DATABASE_NAME);
+  const source = (yield* fs.exists(databasePath))
+    ? { path: databasePath, name: path.basename(databasePath) }
+    : (yield* fs.exists(legacyPath))
+      ? { path: legacyPath, name: LEGACY_DATABASE_NAME }
+      : undefined;
+  if (source === undefined) return;
   const scratchDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-preflight-" });
   const scratchPath = path.join(scratchDir, path.basename(databasePath));
-  yield* Effect.tryPromise(async () => {
-    const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
-    try {
-      await NodeSqlite.backup(database, scratchPath);
-    } finally {
-      database.close();
-    }
-  });
-  // Building the layer opens the snapshot and runs the migrations; the scope
+  yield* snapshotDatabase(source.path, path.join(scratchDir, source.name));
+  // Imports the V1 snapshot into the scratch V2 path; a no-op for a V2 snapshot.
+  yield* initializeV2Database(scratchPath);
+  // Building the layer opens the copy and runs the migrations; the scope
   // closes the connection before the scratch directory is removed.
   yield* Layer.build(SqlitePersistence.layerFromPath(scratchPath));
 }, Effect.scoped);
