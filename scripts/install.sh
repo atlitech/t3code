@@ -222,17 +222,27 @@ require_admission() {
     || fail "${archive} does not match the admitted archive digest; refusing. Nothing was changed."
 }
 
+# A cached fork runtime is reused only when the archive digest recorded at its
+# install (.archive-sha256) is the admitted one; otherwise it is downloaded,
+# verified, and replaced like a fresh install.
+cached=false
 if [ -f "${target_dir}/.install-complete" ] && [ "$(cat "${target_dir}/.install-complete")" = "$version" ]; then
-  step "Version ${version} is already downloaded."
   if "$fork"; then
-    # The cached runtime was unpacked from the listed archive, so admit that digest.
     check_dir="$(mktemp -d)"
     trap 'rm -rf "$check_dir"' EXIT
     fetch_sums "$check_dir"
     require_admission "$check_dir" "$expected"
     rm -rf "$check_dir"
     trap - EXIT
+    if [ -f "${target_dir}/.archive-sha256" ] && [ "$(cat "${target_dir}/.archive-sha256")" = "$expected" ]; then
+      cached=true
+    fi
+  else
+    cached=true
   fi
+fi
+if "$cached"; then
+  step "Version ${version} is already downloaded."
 else
   mkdir -p "$versions_dir"
   staging="$(mktemp -d "${versions_dir}/.staging-XXXXXX")"
@@ -257,6 +267,7 @@ else
   rm -f "${staging}/${archive}" "${staging}/SHA256SUMS" "${staging}/ADMISSION.json"
   "${staging}/t3" --version >/dev/null || fail "the downloaded executable does not run"
   printf '%s\n' "$version" > "${staging}/.install-complete"
+  printf '%s\n' "$actual" > "${staging}/.archive-sha256"
 
   rm -rf "$target_dir"
   mv "$staging" "$target_dir"

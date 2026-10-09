@@ -33,6 +33,9 @@ import * as ProcessRunner from "../processRunner.ts";
 const PINNED_RUNTIME_DIR = "runtime";
 const PINNED_RUNTIME_INSTALL_TIMEOUT = Duration.minutes(10);
 const PINNED_RUNTIME_ARCHIVE_FILE = "t3-runtime-archive";
+// The sha256 of the verified archive a runtime was unpacked from, written
+// beside the sentinel so an admitted install can prove which archive it is.
+const PINNED_RUNTIME_ARCHIVE_DIGEST_FILE = ".archive-sha256";
 // Boot-service setup and remote update can construct separate layers. Serialize
 // the complete install transaction across every caller in this process.
 const pinnedRuntimeInstallLock = Semaphore.makeUnsafe(1);
@@ -113,7 +116,8 @@ export type PinnedRuntimeProgress =
  * paths. The sentinel is written only after extraction and validation
  * succeed; checking the entry file alone is not enough, since tar writes the
  * executable before the last native package and a killed install leaves a
- * plausible-looking but broken tree behind.
+ * plausible-looking but broken tree behind. With an admitted archive digest, a
+ * cached install also has to record that digest, or it is installed afresh.
  */
 
 interface PinnedRuntimeInstallInput {
@@ -280,24 +284,77 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
       ),
     );
   yield* fs.remove(archivePath, { force: true }).pipe(Effect.ignore);
+  return archiveSha256;
 });
+
+/**
+ * Whether `paths` holds a complete install of `version`. With an admitted
+ * digest it must also record that it was unpacked from exactly that archive;
+ * a runtime installed before admission, or from any other archive, is not the
+ * admitted one however complete it looks.
+ */
+const isCompleteInstall = (input: {
+  readonly fs: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly paths: PinnedRuntimePaths;
+  readonly version: string;
+  readonly admittedArchiveSha256?: string | undefined;
+}) =>
+  Effect.all([
+    input.fs.exists(input.paths.entryPath),
+    input.fs.readFileString(input.paths.sentinelPath).pipe(Effect.option),
+    input.admittedArchiveSha256 === undefined
+      ? Effect.succeed(Option.none<string>())
+      : input.fs
+          .readFileString(
+            input.path.join(input.paths.versionDir, PINNED_RUNTIME_ARCHIVE_DIGEST_FILE),
+          )
+          .pipe(Effect.option),
+  ]).pipe(
+    Effect.map(
+      ([entryExists, sentinel, recordedDigest]) =>
+        entryExists &&
+        Option.isSome(sentinel) &&
+        sentinel.value.trim() === input.version &&
+        (input.admittedArchiveSha256 === undefined ||
+          (Option.isSome(recordedDigest) &&
+            recordedDigest.value.trim().toLowerCase() ===
+              input.admittedArchiveSha256.toLowerCase())),
+    ),
+  );
+
+/**
+ * Whether `version` is already installed and needs no download. Reading
+ * nothing counts as not installed.
+ */
+export const isPinnedRuntimeInstalled = (input: {
+  readonly fs: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly baseDir: string;
+  readonly version: string;
+  readonly platform: NodeJS.Platform;
+  readonly admittedArchiveSha256?: string | undefined;
+}): Effect.Effect<boolean> =>
+  isCompleteInstall({
+    ...input,
+    paths: pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform),
+  }).pipe(Effect.orElseSucceed(() => false));
 
 const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(function* (
   input: PinnedRuntimeInstallInput,
 ) {
   const { fs } = input;
   const paths = pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform);
-  const [versionDirExists, entryExists, sentinel] = yield* Effect.all([
+  const [versionDirExists, alreadyPinned] = yield* Effect.all([
     fs.exists(paths.versionDir),
-    fs.exists(paths.entryPath),
-    fs.readFileString(paths.sentinelPath).pipe(Effect.option),
+    isCompleteInstall({ ...input, paths }),
   ]).pipe(
     Effect.mapError(
       (cause) => new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause }),
     ),
   );
-  const alreadyPinned =
-    entryExists && Option.isSome(sentinel) && sentinel.value.trim() === input.version;
+  // A cached runtime that cannot show it came from the admitted archive is
+  // replaced like an incomplete one, never switched to.
   if (alreadyPinned) {
     input.onProgress?.({ stage: "cached" });
     yield* input.validate(paths);
@@ -308,7 +365,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
       Effect.mapError(
         (cause) =>
           new PinnedRuntimeInstallError({
-            step: "removing an incomplete pinned runtime",
+            step: "removing an incomplete or unadmitted pinned runtime",
             cause,
           }),
       ),
@@ -346,10 +403,22 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   };
 
   return yield* Effect.gen(function* () {
-    yield* installFromArchive(input, stagingDir);
+    const archiveSha256 = yield* installFromArchive(input, stagingDir);
 
     input.onProgress?.({ stage: "validate" });
     yield* input.validate(stagingPaths);
+    // Recorded before the sentinel, so a sentinel always has its digest beside it.
+    yield* fs
+      .writeFileString(
+        input.path.join(stagingDir, PINNED_RUNTIME_ARCHIVE_DIGEST_FILE),
+        `${archiveSha256}\n`,
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({ step: "recording the installed archive", cause }),
+        ),
+      );
     yield* fs
       .writeFileString(stagingPaths.sentinelPath, `${input.version}\n`)
       .pipe(
@@ -361,10 +430,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
     const published = yield* fs.rename(stagingDir, paths.versionDir).pipe(
       Effect.as(true),
       Effect.catch((cause) =>
-        Effect.all([
-          fs.exists(paths.entryPath),
-          fs.readFileString(paths.sentinelPath).pipe(Effect.option),
-        ]).pipe(
+        isCompleteInstall({ ...input, paths }).pipe(
           Effect.mapError(
             (checkCause) =>
               new PinnedRuntimeInstallError({
@@ -372,10 +438,8 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
                 cause: checkCause,
               }),
           ),
-          Effect.flatMap(([publishedEntryExists, publishedSentinel]) =>
-            publishedEntryExists &&
-            Option.isSome(publishedSentinel) &&
-            publishedSentinel.value.trim() === input.version
+          Effect.flatMap((publishedComplete) =>
+            publishedComplete
               ? Effect.succeed(false)
               : Effect.fail(
                   new PinnedRuntimeInstallError({

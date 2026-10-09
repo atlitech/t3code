@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeSqlite from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -37,6 +38,19 @@ const latestMigration = (databasePath: string) =>
     }>`SELECT MAX(migration_id) AS id FROM effect_sql_migrations`;
     return rows[0]?.id;
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: databasePath, readonly: true })));
+
+// The running server's connection: WAL mode with checkpoints off, so what it
+// commits stays in -wal until it closes with the scope.
+const openLiveWriter = (databasePath: string, statements: string) =>
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const database = new NodeSqlite.DatabaseSync(databasePath);
+      database.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;");
+      database.exec(statements);
+      return database;
+    }),
+    (database) => Effect.sync(() => database.close()),
+  );
 
 it.layer(NodeServices.layer)("runServicePreflight", (it) => {
   it.effect.each([1, 2])("blocks legacy launcher protocol %i", (launcherProtocol) =>
@@ -126,6 +140,52 @@ it.layer(NodeServices.layer)("runServicePreflight", (it) => {
       assert.equal(fileSha256(databasePath), before);
       assert.deepEqual(yield* fs.readDirectory(directory), ["statev2.sqlite"]);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    [
+      "migrates a snapshot that includes",
+      "CREATE TABLE wal_marker (value TEXT); INSERT INTO wal_marker VALUES ('wal only');",
+      "ready",
+    ],
+    // Dropping a table migration 54 needs, in -wal only: a copy that missed
+    // the -wal would migrate cleanly, so blocking proves the snapshot read it.
+    ["sees, and blocks on,", "DROP TABLE projection_threads", "blocked"],
+  ] as const)(
+    "%s commits a running server holds only in its -wal, without writing the live files",
+    ([, statement, status]) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-preflight-wal-" });
+        const databasePath = path.join(directory, "statev2.sqlite");
+        yield* seedOlderDatabase(databasePath, Effect.void);
+        const writer = yield* openLiveWriter(databasePath, statement);
+        const walPath = `${databasePath}-wal`;
+        assert.isAbove(NodeFS.statSync(walPath).size, 0);
+        const mainBefore = fileSha256(databasePath);
+        const walBefore = fileSha256(walPath);
+
+        const result = yield* runServicePreflight({
+          databasePath,
+          launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+          version: "1.2.3",
+        });
+
+        assert.equal(result.status, status, result.status === "blocked" ? result.reason : "");
+        assert.equal(fileSha256(databasePath), mainBefore);
+        assert.equal(fileSha256(walPath), walBefore);
+        if (result.status === "blocked") {
+          assert.include(result.reason, `Migration "54_`);
+        }
+        // The writer still sees its own commits: nothing was rolled back or lost.
+        if (status === "ready") {
+          assert.deepEqual(
+            { ...writer.prepare("SELECT value FROM wal_marker").get() },
+            { value: "wal only" },
+          );
+        }
+      }).pipe(Effect.scoped),
   );
 
   it.effect("blocks on a database file it cannot open", () =>

@@ -30,12 +30,15 @@ import * as BootService from "../cloud/bootService.ts";
 import {
   ADMITTED_ARCHIVE_MISMATCH_STEP,
   ensurePinnedRuntimeInstalled,
+  isPinnedRuntimeInstalled,
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
-  pinnedRuntimePaths,
 } from "../cloud/pinnedRuntime.ts";
 import { PRE_ADMISSION_FORK_VERSIONS, verifyReleaseAdmission } from "../cloud/releaseAdmission.ts";
-import { runStagedServicePreflight } from "../cloud/servicePreflight.ts";
+import {
+  runStagedServicePreflight,
+  SERVICE_PREFLIGHT_UNSUPPORTED_STEP,
+} from "../cloud/servicePreflight.ts";
 import { compareExactServiceVersions, isExactServiceVersion } from "../cloud/serviceProtocol.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
@@ -507,15 +510,21 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     allowUnadmitted: input.allowUnadmitted,
   });
   // Releases before the update preflight existed do not know the command; a
-  // rollback to one still has to work, so only then is its failure tolerated.
+  // rollback to one still has to work, so on a downgrade, and only when the
+  // target plainly does not know the command, is its failure tolerated. A
+  // preflight that runs and fails or answers blocked refuses either way.
   const isDowngrade = compareExactServiceVersions(targetVersion, currentVersion) < 0;
 
-  const alreadyOnDisk = yield* fs
-    .readFileString(pinnedRuntimePaths(path, input.baseDir, targetVersion, platform).sentinelPath)
-    .pipe(
-      Effect.map((sentinel) => sentinel.trim() === targetVersion),
-      Effect.orElseSucceed(() => false),
-    );
+  // A cached runtime counts only when it is the admitted archive; otherwise
+  // the install below replaces it, so this is an update, not a switch.
+  const alreadyOnDisk = yield* isPinnedRuntimeInstalled({
+    fs,
+    path,
+    baseDir: input.baseDir,
+    version: targetVersion,
+    platform,
+    admittedArchiveSha256,
+  });
 
   progress.heading(
     executableCurrent && restartPending
@@ -597,7 +606,7 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
                 (error) =>
                   isDowngrade &&
                   error._tag === "PinnedRuntimeInstallError" &&
-                  error.exitCode !== undefined,
+                  error.step === SERVICE_PREFLIGHT_UNSUPPORTED_STEP,
                 () =>
                   Effect.logWarning(
                     "The downgrade target has no update preflight; its database check was skipped.",

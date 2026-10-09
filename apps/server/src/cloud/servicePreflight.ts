@@ -1,3 +1,5 @@
+import * as NodeSqlite from "node:sqlite";
+
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -32,16 +34,46 @@ export type ServicePreflightResult =
       readonly reason: string;
     };
 
+/**
+ * The install step a staged runtime fails with when it is a release from
+ * before the update preflight and so does not know `__service-preflight`.
+ */
+export const SERVICE_PREFLIGHT_UNSUPPORTED_STEP =
+  "running the staged service preflight (the runtime has no such command)";
+
+// eslint-disable-next-line no-control-regex -- matches the ANSI colour codes a CLI may print.
+const ANSI_ESCAPE = /\u001b\[[0-9;]*m/g;
+
+/**
+ * Whether a failed preflight run is a CLI that does not know the command. The
+ * root `t3` command takes an optional `cwd` argument, so such a CLI reads
+ * `__service-preflight` as that directory and rejects the first preflight
+ * flag as unknown to the root command; a CLI that knows the command would
+ * name it in the command path. A CLI whose root takes no argument reports the
+ * subcommand itself as unknown.
+ */
+const isUnknownPreflightCommand = (result: { readonly code: number; readonly stderr: string }) => {
+  if (result.code !== 1) return false;
+  const stderr = result.stderr.replace(ANSI_ESCAPE, "");
+  return (
+    /^\s*Unrecognized flag: --database-path(?: in command t3)?\s*$/m.test(stderr) ||
+    /^\s*Unknown subcommand "__service-preflight"/m.test(stderr)
+  );
+};
+
 const failureMessage = (cause: Cause.Cause<unknown>): string => {
   const error = Cause.squash(cause);
   return error instanceof Error ? error.message : String(error);
 };
 
 /**
- * Copies the database (with its -wal and -shm, when present) into a scratch
- * directory and opens the copy, which runs this build's migrations on it. The
- * live database is only read, never opened, so a failed migration leaves it
- * byte-identical. A missing database is a fresh install: nothing to migrate.
+ * Snapshots the database into a scratch directory with SQLite's online backup
+ * and opens the snapshot, which runs this build's migrations on it. The backup
+ * reads through a read-only connection, so it sees one consistent state of a
+ * database the running server is still writing, including commits that so far
+ * live only in its -wal, and it never writes or checkpoints the live database;
+ * a failed migration leaves it as it was. A missing database is a fresh
+ * install: nothing to migrate.
  */
 const migrateDatabaseCopy = Effect.fn("cloud.service_preflight.migrate_database_copy")(function* (
   databasePath: string,
@@ -51,13 +83,15 @@ const migrateDatabaseCopy = Effect.fn("cloud.service_preflight.migrate_database_
   if (!(yield* fs.exists(databasePath))) return;
   const scratchDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-preflight-" });
   const scratchPath = path.join(scratchDir, path.basename(databasePath));
-  yield* fs.copyFile(databasePath, scratchPath);
-  for (const suffix of ["-wal", "-shm"]) {
-    if (yield* fs.exists(`${databasePath}${suffix}`)) {
-      yield* fs.copyFile(`${databasePath}${suffix}`, `${scratchPath}${suffix}`);
+  yield* Effect.tryPromise(async () => {
+    const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+    try {
+      await NodeSqlite.backup(database, scratchPath);
+    } finally {
+      database.close();
     }
-  }
-  // Building the layer opens the copy and runs the migrations; the scope
+  });
+  // Building the layer opens the snapshot and runs the migrations; the scope
   // closes the connection before the scratch directory is removed.
   yield* Layer.build(SqlitePersistence.layerFromPath(scratchPath));
 }, Effect.scoped);
@@ -159,10 +193,13 @@ export const runStagedServicePreflight = (input: {
           result,
         ): Effect.Effect<void, PinnedRuntimeInstallError | PinnedRuntimePreflightBlockedError> => {
           if (result.code !== 0) {
+            const code = Number(result.code);
             return Effect.fail(
               new PinnedRuntimeInstallError({
-                step: "running the staged service preflight",
-                exitCode: Number(result.code),
+                step: isUnknownPreflightCommand({ code, stderr: result.stderr })
+                  ? SERVICE_PREFLIGHT_UNSUPPORTED_STEP
+                  : "running the staged service preflight",
+                exitCode: code,
                 stdoutLength: result.stdout.length,
                 stderrLength: result.stderr.length,
               }),

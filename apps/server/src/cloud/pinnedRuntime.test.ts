@@ -95,8 +95,147 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
       ]);
       assert.deepEqual(commands, ["tar"]);
       assert.equal(yield* fs.readFileString(paths.sentinelPath), `${version}\n`);
+      assert.equal(
+        yield* fs.readFileString(path.join(paths.versionDir, ".archive-sha256")),
+        `${yield* archiveHex(archiveBytes)}\n`,
+      );
       assert.isFalse(yield* fs.exists(path.join(paths.versionDir, "t3-runtime-archive")));
     }),
+  );
+
+  // A complete runtime already on disk, optionally recording the archive digest
+  // it was unpacked from. Its executable is marked so a reinstall is visible.
+  const seedCachedRuntime = (
+    fs: FileSystem.FileSystem,
+    path: Path.Path,
+    baseDir: string,
+    recordedDigest: string | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const paths = pinnedRuntimePaths(path, baseDir, version, "linux");
+      yield* fs.makeDirectory(paths.versionDir, { recursive: true });
+      yield* fs.writeFileString(paths.entryPath, "cached\n");
+      yield* fs.writeFileString(paths.sentinelPath, `${version}\n`);
+      if (recordedDigest !== undefined) {
+        yield* fs.writeFileString(
+          path.join(paths.versionDir, ".archive-sha256"),
+          `${recordedDigest}\n`,
+        );
+      }
+      return paths;
+    });
+
+  it.effect.each([
+    ["the admitted digest", true],
+    ["no digest, for an official version", false],
+  ] as const)("reuses a cached runtime that records %s", ([, admitted]) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-cached-" });
+      const digest = yield* archiveHex(archiveBytes);
+      const finalPaths = yield* seedCachedRuntime(
+        fs,
+        path,
+        baseDir,
+        admitted ? digest.toUpperCase() : undefined,
+      );
+      const requests: string[] = [];
+      const progress: PinnedRuntimeProgress[] = [];
+      const validated: string[] = [];
+
+      const installed = yield* ensurePinnedRuntimeInstalled({
+        baseDir,
+        version,
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        httpClient: releaseHttpClient(yield* validChecksums, requests),
+        admittedArchiveSha256: admitted ? digest : undefined,
+        runner: extractingRunner(fs, path),
+        validate: (paths) => Effect.sync(() => validated.push(paths.versionDir)),
+        onProgress: (event) => progress.push(event),
+      });
+
+      assert.deepEqual(installed, finalPaths);
+      assert.deepEqual(requests, []);
+      assert.deepEqual(progress, [{ stage: "cached" }]);
+      assert.deepEqual(validated, [finalPaths.versionDir]);
+      assert.equal(yield* fs.readFileString(finalPaths.entryPath), "cached\n");
+    }),
+  );
+
+  it.effect.each([
+    ["records no digest", undefined],
+    ["records another digest", "0".repeat(64)],
+  ] as const)(
+    "reinstalls from the admitted archive when the cached runtime %s",
+    ([, recordedDigest]) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-unadmitted-" });
+        const digest = yield* archiveHex(archiveBytes);
+        const finalPaths = yield* seedCachedRuntime(fs, path, baseDir, recordedDigest);
+        const requests: string[] = [];
+        const validated: string[] = [];
+
+        const installed = yield* ensurePinnedRuntimeInstalled({
+          baseDir,
+          version,
+          fs,
+          path,
+          platform: "linux",
+          arch: "x64",
+          httpClient: releaseHttpClient(yield* validChecksums, requests),
+          releaseBaseUrl: "https://releases.example/download",
+          admittedArchiveSha256: digest,
+          runner: extractingRunner(fs, path),
+          validate: (paths) => Effect.sync(() => validated.push(paths.versionDir)),
+        });
+
+        assert.deepEqual(installed, finalPaths);
+        assert.deepEqual(requests, [
+          `https://releases.example/download/v${version}/SHA256SUMS`,
+          `https://releases.example/download/v${version}/${archiveName}`,
+        ]);
+        // Only the freshly unpacked staging tree was validated, never the cache.
+        assert.lengthOf(validated, 1);
+        assert.notEqual(validated[0], finalPaths.versionDir);
+        assert.equal(yield* fs.readFileString(finalPaths.entryPath), "#!/bin/sh\n");
+        assert.equal(
+          yield* fs.readFileString(path.join(finalPaths.versionDir, ".archive-sha256")),
+          `${digest}\n`,
+        );
+      }),
+  );
+
+  it.effect(
+    "refuses, and does not switch to, a cached runtime the admitted archive does not match",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-unadmitted-" });
+        yield* seedCachedRuntime(fs, path, baseDir, yield* archiveHex(archiveBytes));
+
+        const error = yield* ensurePinnedRuntimeInstalled({
+          baseDir,
+          version,
+          fs,
+          path,
+          platform: "linux",
+          arch: "x64",
+          httpClient: releaseHttpClient(yield* validChecksums),
+          admittedArchiveSha256: "1".repeat(64),
+          runner: extractingRunner(fs, path),
+          validate: () => Effect.die("must not validate an unadmitted runtime"),
+        }).pipe(Effect.flip);
+
+        assert.instanceOf(error, PinnedRuntimeInstallError);
+        assert.equal(error.step, ADMITTED_ARCHIVE_MISMATCH_STEP);
+      }),
   );
 
   it.effect.each([true, false])(

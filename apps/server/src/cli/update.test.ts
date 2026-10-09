@@ -123,9 +123,9 @@ const archiveSha256 = Effect.promise(() => crypto.subtle.digest("SHA-256", archi
     Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(""),
   ),
 );
-const processOutput = (stdout: string, code = 0) => ({
+const processOutput = (stdout: string, code = 0, stderr = "") => ({
   stdout,
-  stderr: "",
+  stderr,
   code: ChildProcessSpawner.ExitCode(code),
   timedOut: false,
   stdoutTruncated: false,
@@ -133,6 +133,20 @@ const processOutput = (stdout: string, code = 0) => ({
   stdoutInvalidUtf8: false,
   stderrInvalidUtf8: false,
 });
+
+// What a t3 CLI that has no `__service-preflight` prints, exit code 1: its
+// root command reads the unknown name as its optional `cwd` argument and
+// rejects the preflight flags (as captured from this repository's CLI).
+const unknownPreflightStderr =
+  "\n\u001b[1m\u001b[31mERROR\u001b[0m\n  Unrecognized flag: --database-path in command t3\u001b[0m\n  Unrecognized flag: --launcher-protocol in command t3\u001b[0m\n";
+// The same CLI if its root took no argument: the framework names the command.
+const unknownSubcommandStderr = '\nERROR\n  Unknown subcommand "__service-preflight" for "t3"\n';
+const preflightFailures = {
+  unknown: unknownPreflightStderr,
+  "unknown-subcommand": unknownSubcommandStderr,
+  // A release that knows the command but crashes running it.
+  failed: "\nERROR\n  Error: SQLITE_CORRUPT: database disk image is malformed\n",
+} as const;
 
 /**
  * Runs `t3 update <version>` against a fake release (ADMISSION.json served
@@ -142,8 +156,16 @@ const processOutput = (stdout: string, code = 0) => ({
 const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
   readonly version: string;
   readonly admission?: { readonly archiveSha256: string } | undefined;
-  /** "unknown" is a release from before the update preflight existed. */
-  readonly preflight?: "ready" | "blocked" | "unknown";
+  /**
+   * "unknown" and "unknown-subcommand" are releases from before the update
+   * preflight existed; "failed" is one whose preflight exits non-zero.
+   */
+  readonly preflight?: "ready" | "blocked" | keyof typeof preflightFailures;
+  /**
+   * Seeds a complete runtime for the version before updating, recording this
+   * archive digest, or none when null.
+   */
+  readonly cachedDigest?: string | null;
   readonly allowUnadmitted?: boolean;
   readonly allowDowngrade?: boolean;
 }) {
@@ -151,6 +173,18 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
   const path = yield* Path.Path;
   const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-run-" });
   const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
+  const versionDir = path.join(baseDir, "runtime", "versions", options.version);
+  if (options.cachedDigest !== undefined) {
+    yield* fs.makeDirectory(versionDir, { recursive: true });
+    yield* fs.writeFileString(path.join(versionDir, "t3"), "cached\n");
+    yield* fs.writeFileString(path.join(versionDir, ".install-complete"), `${options.version}\n`);
+    if (options.cachedDigest !== null) {
+      yield* fs.writeFileString(
+        path.join(versionDir, ".archive-sha256"),
+        `${options.cachedDigest}\n`,
+      );
+    }
+  }
   const requests: string[] = [];
   const commands: string[][] = [];
   const warnings: unknown[] = [];
@@ -165,7 +199,13 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
           return processOutput("");
         }
         if (input.args.includes("--version")) return processOutput(`t3 v${options.version}\n`);
-        if (options.preflight === "unknown") return processOutput("", 1);
+        if (
+          options.preflight !== undefined &&
+          options.preflight !== "ready" &&
+          options.preflight !== "blocked"
+        ) {
+          return processOutput("", 1, preflightFailures[options.preflight]);
+        }
         return processOutput(
           JSON.stringify(
             options.preflight === "blocked"
@@ -251,7 +291,11 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
   const published = (yield* fs.exists(versionsDir))
     ? (yield* fs.readDirectory(versionsDir)).filter((entry) => !entry.startsWith("."))
     : [];
-  return { exit, requests, commands, warnings, published, dbPath };
+  const recordedDigest = yield* fs
+    .readFileString(path.join(versionDir, ".archive-sha256"))
+    .pipe(Effect.option);
+  const entry = yield* fs.readFileString(path.join(versionDir, "t3")).pipe(Effect.option);
+  return { exit, requests, commands, warnings, published, dbPath, recordedDigest, entry };
 });
 
 const failureReason = (exit: Exit.Exit<unknown, unknown>) =>
@@ -342,22 +386,82 @@ it.layer(NodeServices.layer)("t3 update admission and preflight", (it) => {
     }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 
-  it.effect("tolerates a missing preflight only when rolling back to an older release", () =>
-    Effect.gen(function* () {
-      const rollback = yield* runFakeUpdate({
-        version: "0.0.44",
-        preflight: "unknown",
-        allowDowngrade: true,
-      });
-      assert.equal(rollback.exit._tag, "Success");
-      assert.deepEqual(rollback.published, ["0.0.44"]);
-      assert.isTrue(
-        rollback.warnings.some((message) => String(message).includes("no update preflight")),
-      );
+  it.effect.each(["unknown", "unknown-subcommand"] as const)(
+    "tolerates a rollback target that does not know the preflight (%s), and logs it",
+    (preflight) =>
+      Effect.gen(function* () {
+        const rollback = yield* runFakeUpdate({
+          version: "0.0.44",
+          preflight,
+          allowDowngrade: true,
+        });
+        assert.equal(rollback.exit._tag, "Success");
+        assert.deepEqual(rollback.published, ["0.0.44"]);
+        assert.isTrue(
+          rollback.warnings.some((message) => String(message).includes("no update preflight")),
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
 
-      const upgrade = yield* runFakeUpdate({ version: "0.0.47", preflight: "unknown" });
-      assert.equal(upgrade.exit._tag, "Failure");
-      assert.deepEqual(upgrade.published, []);
+  it.effect("refuses a rollback whose preflight fails for any other reason", () =>
+    Effect.gen(function* () {
+      for (const preflight of ["failed", "blocked"] as const) {
+        const rollback = yield* runFakeUpdate({
+          version: "0.0.44",
+          preflight,
+          allowDowngrade: true,
+        });
+        assert.equal(rollback.exit._tag, "Failure", preflight);
+        assert.deepEqual(rollback.published, [], preflight);
+        assert.deepEqual(rollback.warnings, [], preflight);
+      }
     }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect.each(["unknown", "unknown-subcommand", "failed"] as const)(
+    "refuses an upgrade whose preflight does not answer (%s)",
+    (preflight) =>
+      Effect.gen(function* () {
+        const upgrade = yield* runFakeUpdate({ version: "0.0.47", preflight });
+        assert.equal(upgrade.exit._tag, "Failure");
+        assert.deepEqual(upgrade.published, []);
+        assert.deepEqual(upgrade.warnings, []);
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect("switches to a cached fork runtime that records the admitted digest", () =>
+    Effect.gen(function* () {
+      const digest = yield* archiveSha256;
+      const run = yield* runFakeUpdate({
+        version: "0.0.47-atli.1",
+        admission: { archiveSha256: digest },
+        cachedDigest: digest,
+      });
+      assert.equal(run.exit._tag, "Success");
+      assert.isFalse(run.requests.some((url) => url.endsWith(".tar.gz")));
+      assert.isFalse(run.commands.some(([command]) => command === "tar"));
+      assert.deepEqual(Option.getOrUndefined(run.entry), "cached\n");
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect.each([
+    ["no digest", null],
+    ["another digest", "0".repeat(64)],
+  ] as const)(
+    "reinstalls a cached fork runtime that records %s from the admitted archive",
+    ([, cachedDigest]) =>
+      Effect.gen(function* () {
+        const digest = yield* archiveSha256;
+        const run = yield* runFakeUpdate({
+          version: "0.0.47-atli.1",
+          admission: { archiveSha256: digest },
+          cachedDigest,
+        });
+        assert.equal(run.exit._tag, "Success");
+        assert.isTrue(run.requests.some((url) => url.endsWith("/SHA256SUMS")));
+        assert.isTrue(run.requests.some((url) => url.endsWith(".tar.gz")));
+        assert.deepEqual(Option.getOrUndefined(run.entry), "#!/bin/sh\n");
+        assert.deepEqual(Option.getOrUndefined(run.recordedDigest), `${digest}\n`);
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 });

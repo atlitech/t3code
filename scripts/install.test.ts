@@ -223,6 +223,24 @@ const binExists = (release: Release) =>
     () => false,
   );
 
+// Seeds an already downloaded runtime for the release's version whose `t3`
+// prints `stale`, optionally recording the archive digest it came from.
+const seedCachedRuntime = async (release: Release, archiveSha256: string | undefined) => {
+  const target = NodePath.join(release.root, "home/runtime/versions", release.version);
+  await NodeFSP.mkdir(target, { recursive: true });
+  await NodeFSP.writeFile(NodePath.join(target, "t3"), "#!/bin/sh\necho 'stale'\n", {
+    mode: 0o755,
+  });
+  await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), `${release.version}\n`);
+  if (archiveSha256 !== undefined) {
+    await NodeFSP.writeFile(NodePath.join(target, ".archive-sha256"), `${archiveSha256}\n`);
+  }
+};
+const linkedVersion = (release: Release) =>
+  NodeChildProcess.execFileSync(NodePath.join(release.root, "bin/t3"), ["--version"], {
+    encoding: "utf8",
+  }).trim();
+
 describe.skipIf(hostPlatform !== "linux" && hostPlatform !== "darwin")(
   "installer admission",
   () => {
@@ -267,13 +285,18 @@ describe.skipIf(hostPlatform !== "linux" && hostPlatform !== "darwin")(
     it("refuses an already downloaded fork version that is not admitted", async () => {
       const release = await makeRelease(fork);
       try {
-        const target = NodePath.join(release.root, "home/runtime/versions", fork);
-        await NodeFSP.mkdir(target, { recursive: true });
-        await NodeFSP.writeFile(NodePath.join(target, ".install-complete"), `${fork}\n`);
+        await seedCachedRuntime(release, release.checksum);
         const result = await install(release, undefined);
         expect(result.code).not.toBe(0);
         expect(result.output).toContain("no admission record");
+        expect(result.output).toContain("Nothing was changed.");
         expect(await binExists(release)).toBe(false);
+        expect(
+          await NodeFSP.readFile(
+            NodePath.join(release.root, "home/runtime/versions", fork, "t3"),
+            "utf8",
+          ),
+        ).toContain("stale");
       } finally {
         await NodeFSP.rm(release.root, { recursive: true, force: true });
       }
@@ -286,15 +309,59 @@ describe.skipIf(hostPlatform !== "linux" && hostPlatform !== "darwin")(
         expect(result.code).toBe(0);
         expect(result.output).toContain(`Installed T3 Code ${fork}`);
         expect(await installedVersions(release)).toEqual([fork]);
+        expect(linkedVersion(release)).toBe(`t3 v${fork}`);
         expect(
-          NodeChildProcess.execFileSync(NodePath.join(release.root, "bin/t3"), ["--version"], {
-            encoding: "utf8",
-          }).trim(),
-        ).toBe(`t3 v${fork}`);
+          await NodeFSP.readFile(
+            NodePath.join(release.root, "home/runtime/versions", fork, ".archive-sha256"),
+            "utf8",
+          ),
+        ).toBe(`${release.checksum}\n`);
       } finally {
         await NodeFSP.rm(release.root, { recursive: true, force: true });
       }
     });
+
+    it("reuses an already downloaded fork runtime bound to the admitted digest", async () => {
+      const release = await makeRelease(fork);
+      try {
+        await seedCachedRuntime(release, release.checksum);
+        const result = await install(release, admissionRecord(release));
+        expect(result.code).toBe(0);
+        expect(result.output).toContain("is already downloaded");
+        expect(result.requested).not.toContain(`/v${fork}/${release.archiveName}`);
+        expect(linkedVersion(release)).toBe("stale");
+      } finally {
+        await NodeFSP.rm(release.root, { recursive: true, force: true });
+      }
+    });
+
+    it.each([
+      ["no recorded archive digest", undefined],
+      ["a different recorded archive digest", "e".repeat(64)],
+    ] as const)(
+      "replaces an already downloaded fork runtime with %s by the admitted archive",
+      async (_, recorded) => {
+        const release = await makeRelease(fork);
+        try {
+          await seedCachedRuntime(release, recorded);
+          const result = await install(release, admissionRecord(release));
+          expect(result.code).toBe(0);
+          expect(result.output).not.toContain("is already downloaded");
+          expect(result.requested).toContain(`/v${fork}/${release.archiveName}`);
+          expect(result.output).toContain(`Installed T3 Code ${fork}`);
+          expect(await installedVersions(release)).toEqual([fork]);
+          expect(linkedVersion(release)).toBe(`t3 v${fork}`);
+          expect(
+            await NodeFSP.readFile(
+              NodePath.join(release.root, "home/runtime/versions", fork, ".archive-sha256"),
+              "utf8",
+            ),
+          ).toBe(`${release.checksum}\n`);
+        } finally {
+          await NodeFSP.rm(release.root, { recursive: true, force: true });
+        }
+      },
+    );
 
     it("installs an official version without asking for an admission record", async () => {
       const release = await makeRelease("1.2.3");
