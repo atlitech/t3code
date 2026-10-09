@@ -128,6 +128,12 @@ This authenticates against the same production Clerk account; it does not create
 
 Do not interpret successful Gmail email verification as fixing native Google OAuth. **Continue with Google** remains unavailable to the personal package until the Google Android client and Clerk callback registrations described above are added by their owners.
 
+## Release APKs and the versionCode
+
+The fork's release workflow builds the signed personal APK: `fork-server-release.yml`'s `build-android` job signs it with this key and checks its package, versionCode, and certificate against the SHA-256 recorded above (`scripts/fork-android-identity.ts`) before uploading it. Prefer that artifact for daily use.
+
+Android installs an update only when its versionCode is not lower than the installed one. `apps/mobile/app.config.ts` derives the personal versionCode from `T3CODE_RELEASE_VERSION` (`X.Y.Z-atli.N`) through `scripts/lib/android-version-code.ts`, so each release grows it. A personal build without a release version carries versionCode 1, the floor, and is not an update path over a CI-built APK: Android refuses the downgrade, and getting past it means uninstalling, which destroys app data. Build locally with `--release-version` set to the release the installed APK came from, or a later one, when the result must install over it.
+
 ## Build a standalone APK locally
 
 On this Mac, prefer the skill helper from the repository root. It verifies the key exists, retrieves its passwords from Keychain, regenerates the personal Android project, and builds an ARM64 release APK:
@@ -135,6 +141,8 @@ On this Mac, prefer the skill helper from the repository root. It verifies the k
 ```bash
 .agents/skills/develop-t3-personal-android/scripts/build-personal-apk.sh
 ```
+
+Pass `--release-version <X.Y.Z-atli.N>`, or set `T3CODE_RELEASE_VERSION`, to give the build that release's versionCode. Prebuild writes the versionCode, so the script refuses a release version together with `--no-prebuild`.
 
 Pass `--no-prebuild` only when the generated Android project is already personal and no native/config input changed. Pass `--universal` when the APK must support architectures beyond the Galaxy Fold's ARM64 processor.
 
@@ -152,9 +160,11 @@ Use the existing generated Android project only when its `applicationId` is `com
 
 ```bash
 cd apps/mobile
-APP_VARIANT=personal EXPO_NO_GIT_STATUS=1 vp exec expo prebuild \
-  --clean --platform android --no-install
+APP_VARIANT=personal T3CODE_RELEASE_VERSION=<X.Y.Z-atli.N> EXPO_NO_GIT_STATUS=1 \
+  vp exec expo prebuild --clean --platform android --no-install
 ```
+
+Omit `T3CODE_RELEASE_VERSION` only for a build that will not install over a release APK.
 
 Build a release APK with the personal variant present during JavaScript export. Limit native compilation to the Fold's ARM64 architecture for a phone-only artifact; omit the property when a universal APK is required.
 
@@ -182,6 +192,7 @@ Locate the actual output under `apps/mobile/android/app/build/outputs/apk/releas
 Require all of the following:
 
 - Application ID is exactly `com.elvis.t3code`.
+- The versionCode is not lower than the installed personal app's (`adb shell dumpsys package com.elvis.t3code | grep versionCode`).
 - The manifest is not debuggable.
 - The APK contains an embedded JavaScript/update bundle and required assets.
 - The signing certificate matches the previous personal build when one is installed.

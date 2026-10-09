@@ -2,7 +2,7 @@
 
 // Fork-only (atlitech/t3code). Writes the SHA256SUMS and manifest.json that
 // fork-server-release.yml publishes next to the assets its build jobs made:
-// the Linux server archive and the Mac desktop DMG.
+// the Linux server archive, the Mac desktop DMG, and the personal Android APK.
 // Runbook: docs/operations/fork-server.md.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -62,15 +62,19 @@ const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 /**
- * Reads platform and arch from a release asset's name. Only two shapes are
- * assets: the server archive `t3-<version>-<platform>-<arch>.tar.gz` and the
- * Mac desktop DMG `T3-Code-<version>-arm64.dmg`.
+ * Reads platform and arch from a release asset's name. Only three shapes are
+ * assets: the server archive `t3-<version>-<platform>-<arch>.tar.gz`, the Mac
+ * desktop DMG `T3-Code-<version>-arm64.dmg`, and the personal Android APK
+ * `T3-Code-<version>-android-arm64-v8a.apk`.
  */
 export const parseAssetName = (
   version: string,
   file: string,
 ): { readonly platform: string; readonly arch: string } | undefined => {
   if (file === `T3-Code-${version}-arm64.dmg`) return { platform: "darwin", arch: "arm64" };
+  if (file === `T3-Code-${version}-android-arm64-v8a.apk`) {
+    return { platform: "android", arch: "arm64-v8a" };
+  }
   const prefix = `t3-${version}-`;
   const suffix = ".tar.gz";
   if (!file.startsWith(prefix) || !file.endsWith(suffix)) return undefined;
@@ -102,7 +106,7 @@ export const buildReleaseManifest = (input: {
       const parsed = parseAssetName(input.version, asset.file);
       if (!parsed) {
         return yield* new ReleaseManifestError({
-          detail: `'${asset.file}' is not named t3-${input.version}-<platform>-<arch>.tar.gz or T3-Code-${input.version}-arm64.dmg.`,
+          detail: `'${asset.file}' is not named t3-${input.version}-<platform>-<arch>.tar.gz, T3-Code-${input.version}-arm64.dmg, or T3-Code-${input.version}-android-arm64-v8a.apk.`,
         });
       }
       if (!SHA256_PATTERN.test(asset.sha256)) {

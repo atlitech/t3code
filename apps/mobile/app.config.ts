@@ -1,5 +1,9 @@
 import type { ExpoConfig } from "expo/config";
 
+import {
+  ANDROID_VERSION_CODE_FLOOR,
+  androidVersionCode,
+} from "../../scripts/lib/android-version-code.ts";
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
@@ -14,6 +18,11 @@ const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
 const runtimeVersionPolicy =
   process.env.MOBILE_VERSION_POLICY ??
   (APP_VARIANT === "development" ? "appVersion" : "fingerprint");
+
+// The fork release (fork-server-release.yml build-android, or the personal
+// Android skill's build script) sets this so each release APK installs over the
+// last; an unversioned personal build carries the floor.
+const releaseVersion = repoEnv.T3CODE_RELEASE_VERSION?.trim();
 
 const personalTeamBundleIdentifier = repoEnv.T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID?.trim();
 const IOS_BUNDLE_IDENTIFIER_PATTERN = /^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/;
@@ -310,6 +319,13 @@ const config: ExpoConfig = {
   android: {
     icon: variant.assets.appIcon,
     package: variant.androidPackage,
+    ...(isPersonalBuild
+      ? {
+          versionCode: releaseVersion
+            ? androidVersionCode(releaseVersion)
+            : ANDROID_VERSION_CODE_FLOOR,
+        }
+      : {}),
     ...(repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE
       ? { googleServicesFile: repoEnv.T3CODE_ANDROID_GOOGLE_SERVICES_FILE }
       : {}),
