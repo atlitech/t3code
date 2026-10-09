@@ -235,8 +235,8 @@ it.effect("reads every fixture thread, message, and event back from the recordin
     const counts = (kind: string) => result.items.filter((item) => item.kind === kind).length;
     assert.strictEqual(counts("thread"), fixtures.length);
     assert.strictEqual(counts("message"), fixtures.flatMap((fixture) => fixture.messages).length);
-    // A thread.created and each message.updated, plus one coverage item, per thread.
-    assert.strictEqual(counts("event"), result.events + fixtures.length);
+    // A thread.created and each message.updated, plus coverage and replay items, per thread.
+    assert.strictEqual(counts("event"), result.events + 2 * fixtures.length);
   }),
 );
 
@@ -359,7 +359,11 @@ it.effect("fails when the prior's thread.created or a seeded event is missing fr
     const withoutMessage = changed((copy) => {
       copy.seededEvents = copy.seededEvents.filter((event) => event.event_id !== message!.eventId);
     });
-    assert.deepStrictEqual(failedIds(fixtures, withoutMessage), [message!.eventId]);
+    // Its replay is then an event the log does not hold.
+    assert.deepStrictEqual(failedIds(fixtures, withoutMessage), [
+      message!.eventId,
+      `${thread.thread.id}:replay`,
+    ]);
   }),
 );
 
@@ -404,11 +408,13 @@ it.effect("fails when the candidate does not replay a seeded message event intac
         if (value.event.id === fourth!.eventId) value.event.payload.creationSource = "mcp";
       }
     });
+    // The dropped and the moved event also leave the replay incomplete.
     assert.deepStrictEqual(failedIds(fixtures, observation), [
       first!.eventId,
       second!.eventId,
       third!.eventId,
       fourth!.eventId,
+      `${thread.thread.id}:replay`,
     ]);
   }),
 );
@@ -426,5 +432,86 @@ it.effect("fails when the history is not covered: an unfinished replay or a stal
       snapshotOf(copy, threadId).snapshotSequence = 0;
     });
     assert.deepStrictEqual(failedIds(fixtures, stale), [`${threadId}:history`]);
+  }),
+);
+
+it.effect("fails unless the candidate replays exactly the events the prior logged", () =>
+  Effect.gen(function* () {
+    const fixtures = yield* loadFixtures;
+    const thread = withMessages(fixtures);
+    const threadId = thread.thread.id;
+    const replayItem = `${threadId}:replay`;
+    const messageIds = new Set(messageEvents(thread).map((event) => event.eventId));
+    const lastLogged = Math.max(...recorded.seededEvents.map((event) => event.sequence));
+    const nonMessage = replayOf(recorded, threadId).values.filter(
+      (value) => !messageIds.has(value.event.id) && value.sequence <= lastLogged,
+    );
+    // The prior's own thread.settled, written on its second start, is among them.
+    assert.isTrue(
+      nonMessage.some((value) => (value.event as { type?: string }).type === "thread.settled"),
+    );
+    for (const dropped of nonMessage) {
+      const observation = changed((copy) => {
+        const replay = replayOf(copy, threadId);
+        replay.values = replay.values.filter((value) => value.sequence !== dropped.sequence);
+      });
+      assert.deepStrictEqual(failedIds(fixtures, observation), [replayItem], dropped.event.id);
+    }
+
+    // Every recorded thread.settled dropped at once.
+    const unsettled = changed((copy) => {
+      for (const replay of copy.threadReplays) {
+        replay.values = replay.values.filter(
+          (value) => (value.event as { type?: string }).type !== "thread.settled",
+        );
+      }
+    });
+    assert.deepStrictEqual(
+      failedIds(fixtures, unsettled),
+      fixtures.map((fixture) => `${fixture.thread.id}:replay`),
+    );
+
+    const retyped = changed((copy) => {
+      const value = replayOf(copy, threadId).values.find(
+        (candidate) => candidate.sequence === nonMessage[0]!.sequence,
+      )!;
+      (value.event as { type?: string }).type = "thread.archived";
+    });
+    assert.deepStrictEqual(failedIds(fixtures, retyped), [replayItem]);
+
+    const created = recorded.seededEvents.find(
+      (event) => event.command_id === threadCommandId(threadId),
+    )!;
+    // An event at or below the log's end that the prior never wrote for this thread.
+    const foreign = recorded.seededEvents.find(
+      (event) => event.stream_id !== threadId && event.sequence > created.sequence,
+    )!;
+    const extra = changed((copy) => {
+      replayOf(copy, threadId).values.push({
+        kind: "event",
+        sequence: foreign.sequence,
+        event: {
+          id: "unexpected",
+          payload: {},
+          type: "thread.archived",
+        } as RecordedReplayEvent["event"],
+      });
+    });
+    assert.deepStrictEqual(failedIds(fixtures, extra), [replayItem]);
+
+    // The candidate's own later writes are allowed, and reported.
+    const appended = changed((copy) => {
+      replayOf(copy, threadId).values.push({
+        kind: "event",
+        sequence: lastLogged + 1,
+        event: { id: "later", payload: {}, type: "thread.visited" } as RecordedReplayEvent["event"],
+      });
+    });
+    const result = compareReadback(fixtures, appended, "upgraded");
+    assert.isTrue(result.passed);
+    assert.include(
+      result.items.find((entry) => entry.id === replayItem)!.detail,
+      `${lastLogged + 1} (thread.visited)`,
+    );
   }),
 );

@@ -96,6 +96,12 @@ const ReplayedEvent = Schema.Struct({
   event: Schema.Struct({ id: Schema.String, threadId: Schema.String, payload: Fields }),
 });
 const decodeReplayedEvent = Schema.decodeUnknownOption(ReplayedEvent);
+const AnyReplayedEvent = Schema.Struct({
+  kind: Schema.Literal("event"),
+  sequence: Schema.Number,
+  event: Schema.Struct({ type: Schema.String }),
+});
+const decodeAnyReplayedEvent = Schema.decodeUnknownOption(AnyReplayedEvent);
 const ShellThreadUpdated = Schema.Struct({
   kind: Schema.Literal("thread.updated"),
   thread: Fields,
@@ -298,7 +304,66 @@ const compareEventLog = (
             : created !== undefined && replay.afterSequence !== created.sequence
               ? `the replay resumed after ${replay.afterSequence}, not ${created.sequence}`
               : "";
-  return [createdItem, ...messageItems, item("event", `${threadId}:history`, coverage)];
+  return [
+    createdItem,
+    ...messageItems,
+    item("event", `${threadId}:history`, coverage),
+    replayCompleteness(threadId, logged, created, replay),
+  ];
+};
+
+/**
+ * The candidate's thread resume must replay exactly the events the prior's
+ * log holds after the thread's creation (the seeded messages and whatever the
+ * prior appended itself, such as thread.settled), each with its type, and
+ * nothing else up to the log's last sequence. Events past it are the
+ * candidate's own writes since the upgrade: allowed, and reported.
+ */
+export const replayCompleteness = (
+  threadId: string,
+  logged: ReadonlyArray<SeededEvent>,
+  created: SeededEvent | undefined,
+  replay: ThreadReplayResponse | undefined,
+): ReadbackItem => {
+  const id = `${threadId}:replay`;
+  if (created === undefined) return item("event", id, "no thread.created to resume after");
+  if (replay === undefined) return item("event", id, "no replay");
+  const lastLogged = Math.max(created.sequence, ...logged.map((event) => event.sequence));
+  const expected = new Map(
+    logged
+      .filter((event) => event.sequence > created.sequence)
+      .map((event) => [event.sequence, event.event_type] as const),
+  );
+  const replayed = replay.values.flatMap((value) => Option.toArray(decodeAnyReplayedEvent(value)));
+  const actual = new Map(
+    replayed
+      .filter((value) => value.sequence <= lastLogged)
+      .map((value) => [value.sequence, value.event.type] as const),
+  );
+  const appended = replayed.filter((value) => value.sequence > lastLogged);
+  const problems = [
+    ...[...expected]
+      .filter(([sequence, type]) => actual.get(sequence) !== type)
+      .map(([sequence, type]) =>
+        actual.has(sequence)
+          ? `${sequence} replayed as ${actual.get(sequence)}, logged as ${type}`
+          : `${sequence} (${type}) not replayed`,
+      ),
+    ...[...actual]
+      .filter(([sequence]) => !expected.has(sequence))
+      .map(([sequence, type]) => `${sequence} (${type}) replayed but not in the prior's log`),
+  ];
+  const detail =
+    problems.length > 0
+      ? problems.join("; ")
+      : `replayed all ${expected.size} logged events after creation${
+          appended.length > 0
+            ? `; the candidate appended ${appended
+                .map((value) => `${value.sequence} (${value.event.type})`)
+                .join(", ")}`
+            : ""
+        }`;
+  return { kind: "event", id, passed: problems.length === 0, detail };
 };
 
 /**
