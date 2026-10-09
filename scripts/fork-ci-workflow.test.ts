@@ -3,8 +3,10 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
-// The fork runs upstream's CI on pull requests into atli, on GitHub-hosted
-// runners only: the fork has no Blacksmith installation.
+// The fork runs upstream's CI on pull requests into atli and pushes to atli,
+// on GitHub-hosted runners only: the fork has no Blacksmith installation. The
+// push run is the `Check` that fork-server-release.yml requires on the commit
+// it releases.
 const workflow = NodeFS.readFileSync(
   NodePath.join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"),
   "utf8",
@@ -32,8 +34,8 @@ const jobRunners = (): ReadonlyMap<string, string> => {
   return runners;
 };
 
-const pullRequestBranches = (): ReadonlyArray<string> => {
-  const start = lines.indexOf("  pull_request:");
+const triggerBranches = (event: "pull_request" | "push"): ReadonlyArray<string> => {
+  const start = lines.indexOf(`  ${event}:`);
   expect(start).toBeGreaterThan(-1);
   const block: Array<string> = [];
   for (const line of lines.slice(start + 1)) {
@@ -50,7 +52,15 @@ const pullRequestBranches = (): ReadonlyArray<string> => {
 
 describe("fork CI workflow", () => {
   it("runs on pull requests into atli only", () => {
-    expect(pullRequestBranches()).toEqual(["atli"]);
+    expect(triggerBranches("pull_request")).toEqual(["atli"]);
+  });
+
+  it("runs on pushes to atli only", () => {
+    expect(triggerBranches("push")).toEqual(["atli"]);
+  });
+
+  it("names the job fork-server-release.yml requires on a released commit Check", () => {
+    expect(workflow).toMatch(/^ {2}check:\n {4}name: Check\n/m);
   });
 
   it("names no Blacksmith runner", () => {

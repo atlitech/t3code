@@ -1,14 +1,13 @@
 name: Fork server release
 
 # Fork-only (atlitech/t3code). Builds the self-contained Linux x64 server
-# archive the official release ships and publishes it with SHA256SUMS as a
-# prerelease, in the layout scripts/install.sh and `t3 update` download from.
+# archive the official release ships and publishes it with SHA256SUMS and
+# manifest.json as a prerelease, in the layout scripts/install.sh and
+# `t3 update` download from. Releases are immutable: the guard refuses a used
+# version, and publish creates the tag and the release with every asset at once.
 # Runbook: docs/operations/fork-server.md.
 
 on:
-  push:
-    tags:
-      - "v*-atli.*"
   workflow_dispatch:
     inputs:
       version:
@@ -21,35 +20,36 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: Build and publish Linux x64 server
+  # Runs before every build: the dispatch must come from atli, the version
+  # must be unused, and the atli tip must have passed CI's Check job. Every
+  # later job checks out the commit this job approved, not the moving branch.
+  guard:
+    name: Guard release
     if: github.repository == 'atlitech/t3code'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      sha: ${{ steps.guard.outputs.sha }}
+      version: ${{ steps.guard.outputs.version }}
+      tag: ${{ steps.guard.outputs.tag }}
     env:
-      # Public T3 Connect identifiers baked into the server and web bundles.
-      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
-      T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.T3CODE_CLERK_JWT_TEMPLATE }}
-      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID }}
-      T3CODE_RELAY_URL: ${{ vars.T3CODE_RELAY_URL }}
       GH_TOKEN: ${{ github.token }}
-      GH_REPO: ${{ github.repository }}
     steps:
-      - name: Resolve version
+      - name: Require repository variables
         shell: bash
         env:
-          RAW_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+          T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
+          T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.T3CODE_CLERK_JWT_TEMPLATE }}
+          T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID }}
+          T3CODE_RELAY_URL: ${{ vars.T3CODE_RELAY_URL }}
         run: |
           set -euo pipefail
-          version="${RAW_VERSION#v}"
-          n='(0|[1-9][0-9]*)'
-          if [[ ! "$version" =~ ^$n\.$n\.$n-atli\.$n$ ]]; then
-            echo "::error::Fork versions look like 0.0.46-atli.1; got '$RAW_VERSION'."
-            exit 1
-          fi
           missing=()
           for name in T3CODE_CLERK_PUBLISHABLE_KEY T3CODE_CLERK_JWT_TEMPLATE T3CODE_CLERK_CLI_OAUTH_CLIENT_ID T3CODE_RELAY_URL; do
             [[ -n "${!name:-}" ]] || missing+=("$name")
@@ -58,32 +58,53 @@ jobs:
             echo "::error::Missing repository variables: ${missing[*]}"
             exit 1
           fi
-          # Installed runtimes are keyed by version and never re-downloaded,
-          # so a dispatch must not reuse a version (or attach to a tag that
-          # names another commit). Re-run the tag's own workflow instead.
-          # `--exit-code` exits 2 only when the tag is missing; anything else
-          # (128 for network or auth failures) must not read as "missing".
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            status=0
-            git ls-remote --exit-code --tags "$GITHUB_SERVER_URL/$GH_REPO.git" "refs/tags/v$version" >/dev/null || status=$?
-            case "$status" in
-              0)
-                echo "::error::Tag v$version already exists. Bump the atli number."
-                exit 1
-                ;;
-              2) ;;
-              *)
-                echo "::error::Could not check whether tag v$version exists (git ls-remote exited $status)."
-                exit 1
-                ;;
-            esac
-          fi
-          echo "VERSION=$version" >> "$GITHUB_ENV"
-          echo "TAG=v$version" >> "$GITHUB_ENV"
 
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - name: Check ref, version, and CI
+        id: guard
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: node scripts/fork-release-guard.ts --release-version "$RELEASE_VERSION"
+
+  build-linux:
+    name: Build Linux x64 server
+    needs: guard
+    if: github.repository == 'atlitech/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      # Public T3 Connect identifiers baked into the server and web bundles.
+      T3CODE_CLERK_PUBLISHABLE_KEY: ${{ vars.T3CODE_CLERK_PUBLISHABLE_KEY }}
+      T3CODE_CLERK_JWT_TEMPLATE: ${{ vars.T3CODE_CLERK_JWT_TEMPLATE }}
+      T3CODE_CLERK_CLI_OAUTH_CLIENT_ID: ${{ vars.T3CODE_CLERK_CLI_OAUTH_CLIENT_ID }}
+      T3CODE_RELAY_URL: ${{ vars.T3CODE_RELAY_URL }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.guard.outputs.sha }}
           sparse-checkout: |
             /*
             !/.repos/
@@ -144,23 +165,85 @@ jobs:
             --resource-monitor-dir "$monitor_dir" \
             --output-dir release-cli
           node scripts/smoke-cli-archive.ts --archive "release-cli/t3-$VERSION-linux-x64.tar.gz" --expect-version "$VERSION"
-          cd release-cli
-          sha256sum t3-*.tar.gz > SHA256SUMS
-          cat SHA256SUMS
 
-      # A dispatch creates the tag here; tags pushed with GITHUB_TOKEN start no
-      # other workflows. A re-run of a tag build replaces both assets together.
-      - name: Publish GitHub release
+      - name: Attest archive provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: release-cli/t3-${{ needs.guard.outputs.version }}-linux-x64.tar.gz
+
+      # publish downloads every `release-*` artifact into one directory.
+      - name: Upload archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-linux-x64
+          path: release-cli/t3-${{ needs.guard.outputs.version }}-linux-x64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  # Creates the tag and the release together, with every asset in one call, so
+  # a published release never changes. A failed run is retried by dispatching
+  # the next version, never by re-running this job against a used one.
+  publish:
+    name: Publish release
+    needs: [guard, build-linux]
+    if: github.repository == 'atlitech/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SHA: ${{ needs.guard.outputs.sha }}
+      VERSION: ${{ needs.guard.outputs.version }}
+      TAG: ${{ needs.guard.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.guard.outputs.sha }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - name: Download archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          path: release
+          merge-multiple: true
+
+      - name: Write SHA256SUMS and manifest.json
+        run: |
+          node scripts/fork-release-manifest.ts --dir release --commit "$SHA" --release-version "$VERSION"
+          cat release/SHA256SUMS release/manifest.json
+
+      - name: Attest SHA256SUMS and manifest.json provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            release/SHA256SUMS
+            release/manifest.json
+
+      # Tags created with GITHUB_TOKEN start no other workflows.
+      - name: Create tag and release
         shell: bash
         run: |
           set -euo pipefail
-          assets=("release-cli/t3-$VERSION-linux-x64.tar.gz" release-cli/SHA256SUMS)
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${assets[@]}" --clobber
-          else
-            gh release create "$TAG" "${assets[@]}" \
-              --target "$GITHUB_SHA" \
-              --prerelease \
-              --title "T3 Code $VERSION (atli fork, Linux x64 server)" \
-              --notes "Linux x64 server build of $GH_REPO@$GITHUB_SHA. Install and switch the background service with docs/operations/fork-server.md."
-          fi
+          gh release create "$TAG" release/* \
+            --target "$SHA" \
+            --prerelease \
+            --title "T3 Code $VERSION (atli fork, Linux x64 server)" \
+            --notes "Linux x64 server build of $GH_REPO@$SHA. Install and switch the background service with docs/operations/fork-server.md."
