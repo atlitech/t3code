@@ -19,13 +19,11 @@ import {
   displaceDatabase,
   listRecoveryPoints,
   loadRecoveryPoint,
-  readServiceActiveVersion,
   RECOVERY_POINT_STEP,
   RecoveryPointError,
   restoreSnapshot,
   verifySnapshot,
 } from "./recoveryPoint.ts";
-import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 const START = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-10-09T10:11:12.123Z"));
 
@@ -299,23 +297,6 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
         `.statev2.sqlite.recover-${point.id}`,
       );
       expect(yield* listRecoveryPoints(baseDir)).toEqual([point]);
-    }),
-  );
-
-  it.effect.each([
-    { name: "a service state", state: { activeVersion: "1.2.3" }, expected: Option.some("1.2.3") },
-    { name: "an invalid version", state: { activeVersion: "latest" }, expected: Option.none() },
-    { name: "no service state", state: undefined, expected: Option.none() },
-  ])("reads the service's active version from $name", ({ state, expected }) =>
-    Effect.gen(function* () {
-      const { fs, path, baseDir } = yield* makeHome();
-      if (state !== undefined) {
-        yield* fs.writeFileString(
-          path.join(baseDir, "runtime", "service-state.json"),
-          `${JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, ...state })}\n`,
-        );
-      }
-      expect(yield* readServiceActiveVersion(baseDir)).toEqual(expected);
     }),
   );
 });

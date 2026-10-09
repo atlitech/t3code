@@ -11,7 +11,6 @@ import * as Stream from "effect/Stream";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 
 import { PinnedRuntimeInstallError, pinnedRuntimeVersionsDir } from "./pinnedRuntime.ts";
-import { SERVICE_STATE_FILE, serviceStateActiveVersion } from "./serviceProtocol.ts";
 import { snapshotDatabase } from "./servicePreflight.ts";
 
 /**
@@ -415,17 +414,3 @@ export const restoreSnapshot = Effect.fn("cloud.recovery_point.restore_snapshot"
     Effect.mapError(fail),
   );
 });
-
-/** The version this home's boot service runs, from its launcher state file. */
-export const readServiceActiveVersion = Effect.fn("cloud.recovery_point.read_service_version")(
-  function* (baseDir: string) {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const stateText = yield* fs
-      .readFileString(path.join(baseDir, "runtime", SERVICE_STATE_FILE))
-      .pipe(Effect.option);
-    return Option.flatMap(stateText, (text) =>
-      Option.fromNullishOr(serviceStateActiveVersion(text)),
-    );
-  },
-);

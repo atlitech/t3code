@@ -186,7 +186,12 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
   /** An existing T3 home to update; a fresh one without a database by default. */
   readonly baseDir?: string;
   /** A background service serving this home on this version. */
-  readonly service?: { readonly version: string };
+  readonly service?: {
+    readonly version: string;
+    readonly problems?: BootService.BootServiceStatus["problems"];
+  };
+  /** Contents served for these paths instead of the disk, such as a `/proc` file. */
+  readonly files?: Readonly<Record<string, string>>;
   /** Runs `t3` as an executable started through this launcher symlink. */
   readonly launcherPath?: string;
   /** Called before every rename the update makes, so a test can observe or fail one. */
@@ -295,7 +300,7 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
             current: false,
             installedVersion: options.service.version,
             installedBaseDir: baseDir,
-            problems: [],
+            problems: options.service.problems ?? [],
             unitPath: "",
             logPath: "",
           },
@@ -305,17 +310,21 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
     Layer.succeed(BootService.BootService, bootService),
   );
   const onRename = options.onRename;
-  const updateFs: FileSystem.FileSystem =
-    onRename === undefined
-      ? fs
-      : {
-          ...fs,
-          rename: (from, to) =>
-            onRename(from, to).pipe(
-              Effect.provideService(FileSystem.FileSystem, fs),
-              Effect.andThen(fs.rename(from, to)),
-            ),
-        };
+  const files = options.files ?? {};
+  const updateFs: FileSystem.FileSystem = {
+    ...fs,
+    readFileString: (filePath, encoding) =>
+      files[filePath] === undefined
+        ? fs.readFileString(filePath, encoding)
+        : Effect.succeed(files[filePath]),
+    rename: (from, to) =>
+      onRename === undefined
+        ? fs.rename(from, to)
+        : onRename(from, to).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.andThen(fs.rename(from, to)),
+          ),
+  };
   const exit = yield* runUpdate({
     baseDir,
     logsDir: path.join(baseDir, "logs"),
@@ -661,6 +670,59 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       assert.equal(yield* fs.readLink(home.launcherPath), path.join(targetDir, "t3"));
       assert.deepEqual(run.serviceCalls, withService ? ["install start=true"] : []);
     }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect(
+    "keeps a point from the live server's version while a deferred restart already names the target",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        // An earlier update moved t3 and the service's state to this build and
+        // declined the restart, so the service still runs the version before.
+        const runningVersion = "0.0.44";
+        const home = yield* makeHomeWithDatabase({
+          fromVersion: runningVersion,
+          fromArchiveSha256: SERVICE_ARCHIVE_SHA256,
+        });
+        yield* fs.writeFileString(
+          path.join(home.baseDir, "server-runtime.json"),
+          JSON.stringify({
+            version: 1,
+            // A pid that is certainly alive: this test's own process.
+            pid: process.pid,
+            port: 3773,
+            origin: "http://127.0.0.1:3773",
+            startedAt: "1970-01-01T00:00:00.000Z",
+            serviceManaged: true,
+          }),
+        );
+
+        const run = yield* runFakeUpdate({
+          version: packageJson.version,
+          baseDir: home.baseDir,
+          service: { version: packageJson.version, problems: ["restart-pending"] },
+          files: {
+            [`/proc/${process.pid}/cmdline`]: `${path.join(home.fromRuntime, "t3")}\0serve\0`,
+          },
+        });
+
+        assert.equal(run.exit._tag, "Success", failureReason(run.exit));
+        const points = yield* fs.readDirectory(pointsDirOf(path, home.baseDir));
+        assert.deepEqual(points, [
+          `19700101T000000000Z-${runningVersion}-to-${packageJson.version}`,
+        ]);
+        const record: { readonly from: unknown } = JSON.parse(
+          yield* fs.readFileString(
+            path.join(pointsDirOf(path, home.baseDir), points[0] ?? "", "recovery.json"),
+          ),
+        );
+        assert.deepEqual(record.from, {
+          version: runningVersion,
+          runtimePath: home.fromRuntime,
+          archiveSha256: SERVICE_ARCHIVE_SHA256,
+        });
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 
   it.effect("keeps a single point when a concurrent publish makes validation run twice", () =>

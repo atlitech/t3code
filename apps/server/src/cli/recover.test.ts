@@ -334,6 +334,30 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
     }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 
+  it.effect("refuses before any move when a server is still alive after the service stop", () =>
+    Effect.gen(function* () {
+      const home = yield* makeUpdatedHome();
+      yield* home.fs.writeFileString(
+        home.path.join(home.baseDir, "server-runtime.json"),
+        JSON.stringify({
+          version: 1,
+          // A pid that is certainly alive: this test's own process.
+          pid: process.pid,
+          port: 3773,
+          origin: "http://127.0.0.1:3773",
+          startedAt: "2026-10-09T10:00:00.000Z",
+          serviceManaged: true,
+        }),
+      );
+      const { exit, events } = yield* recover(home, { service: "serves-this-home" });
+
+      assert.equal(exit._tag, "Failure");
+      assert.include(failureReason(exit), `still running on this T3 home (pid ${process.pid})`);
+      assert.deepEqual(events, ["stop (database in place: true)"]);
+      yield* assertUntouched(home);
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
   it.effect.each([
     { name: "no service installed", service: "none" },
     { name: "a service serving another home", service: "serves-another-home" },

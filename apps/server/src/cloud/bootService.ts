@@ -224,6 +224,12 @@ export interface BootServiceManager {
   readonly render: (plan: BootServicePlan) => string;
   /** Before rewriting files, when a unit is already installed. */
   readonly stop: ReadonlyArray<BootServiceStep>;
+  /**
+   * Exits 0 while the service is still loaded. `stop` consults it when an
+   * optional stop step fails, so a stop that did not take is never reported
+   * as stopped.
+   */
+  readonly loaded: { readonly command: string; readonly args: ReadonlyArray<string> };
   /** After files are written. The last entry starts the service. */
   readonly activate: ReadonlyArray<BootServiceStep>;
   /** Best-effort recovery after a failed repair of an installed service. */
@@ -257,6 +263,10 @@ function systemdManager(input: {
         timeout: STOP_STEP_TIMEOUT,
       },
     ],
+    loaded: {
+      command: "systemctl",
+      args: ["--user", "is-active", BOOT_SERVICE_UNIT_FILE],
+    },
     activate: [
       {
         step: "reloading systemd user units",
@@ -342,6 +352,11 @@ function launchdManager(input: {
         timeout: STOP_STEP_TIMEOUT,
       },
     ],
+    // `print` fails once the job is no longer in the domain.
+    loaded: {
+      command: "launchctl",
+      args: ["print", serviceTarget],
+    },
     activate: [
       // A persisted `launchctl disable` override refuses bootstrap; clear it.
       {
@@ -950,7 +965,33 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     if (Option.isSome(stateText) && serviceStateHasPendingUpdate(stateText.value)) {
       return yield* new BootServiceUpdatePendingError();
     }
-    yield* runSteps(manager.stop);
+    // `t3 recover` moves the database once this resolves true, so an optional
+    // stop step that failed (a launchd bootout) only counts when the service
+    // manager confirms the job is gone; unknown is treated as still running.
+    yield* Effect.forEach(
+      manager.stop,
+      (entry) =>
+        runStep(
+          entry.step,
+          entry.command,
+          entry.args,
+          entry.timeout === undefined ? undefined : { timeout: entry.timeout },
+        ).pipe(
+          Effect.asVoid,
+          Effect.catch((error) =>
+            entry.optional === true
+              ? probe(manager.loaded.command, manager.loaded.args).pipe(
+                  Effect.flatMap((loaded) =>
+                    Option.isSome(loaded) && loaded.value.code !== 0
+                      ? Effect.void
+                      : Effect.fail(error),
+                  ),
+                )
+              : Effect.fail(error),
+          ),
+        ),
+      { discard: true },
+    );
     return true;
   }).pipe(Effect.withSpan("cloud.boot_service.stop"));
 

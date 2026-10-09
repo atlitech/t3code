@@ -26,11 +26,7 @@ import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { ADMITTED_ARCHIVE_MISMATCH_STEP, ensurePinnedRuntimeInstalled } from "./pinnedRuntime.ts";
-import {
-  createRecoveryPoint,
-  readServiceActiveVersion,
-  RECOVERY_POINT_STEP,
-} from "./recoveryPoint.ts";
+import { createRecoveryPoint, RECOVERY_POINT_STEP } from "./recoveryPoint.ts";
 import { verifyReleaseAdmission } from "./releaseAdmission.ts";
 import { runStagedServicePreflight } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
@@ -225,18 +221,15 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
       // now, kept inside validation after the preflight so a failed backup
       // means the new runtime is never published. Cached so a second
       // validation in this update reuses the point instead of taking another.
+      // This process is the service's running server, so its own version is
+      // the one running; service-state.json can already name a version that
+      // `t3 update` installed with its restart deferred.
       const keepRecoveryPoint = yield* Effect.cached(
-        Effect.gen(function* () {
-          const fromVersion = Option.getOrElse(
-            yield* readServiceActiveVersion(serverConfig.baseDir),
-            () => packageJson.version,
-          );
-          return yield* createRecoveryPoint({
-            baseDir: serverConfig.baseDir,
-            dbPath: serverConfig.dbPath,
-            fromVersion,
-            toVersion: targetVersion,
-          });
+        createRecoveryPoint({
+          baseDir: serverConfig.baseDir,
+          dbPath: serverConfig.dbPath,
+          fromVersion: packageJson.version,
+          toVersion: targetVersion,
         }).pipe(
           Effect.tap((point) =>
             Option.isSome(point)

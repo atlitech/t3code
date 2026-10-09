@@ -231,6 +231,14 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
         "Not recovering: the background service for this T3 home could not be stopped; nothing was changed.",
       );
     }
+    // The service manager reporting a stop is not proof the server let go of
+    // the database; a server still recorded alive here would keep it open.
+    const afterStop = yield* readPersistedServerRuntimeState(input.serverRuntimeStatePath);
+    if (Option.isSome(afterStop) && isProcessAlive(afterStop.value.pid)) {
+      return yield* refuse(
+        `Not recovering: the background service reported stopped but a server is still running on this T3 home (pid ${afterStop.value.pid}); the database was not moved. Stop that process, then run t3 recover again.`,
+      );
+    }
     yield* record("stopped the background service");
   }
 

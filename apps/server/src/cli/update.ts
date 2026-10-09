@@ -33,6 +33,7 @@ import {
   isPinnedRuntimeInstalled,
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
+  pinnedRuntimeVersionsDir,
 } from "../cloud/pinnedRuntime.ts";
 import {
   createRecoveryPoint,
@@ -393,6 +394,45 @@ const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(fun
   return false;
 });
 
+/**
+ * The version the live service-managed server on this home runs, read from
+ * its command line: the launcher starts `<versions>/<version>/t3 serve`.
+ * Undefined when no such server is alive or its command line does not say.
+ */
+const runningServiceServerVersion = Effect.fn("cli.update.running_service_server_version")(
+  function* (input: { readonly serverRuntimeStatePath: string; readonly versionsDir: string }) {
+    const platform = yield* HostProcessPlatform;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const runner = yield* ProcessRunner.ProcessRunner;
+    const state = yield* readPersistedServerRuntimeState(input.serverRuntimeStatePath);
+    if (Option.isNone(state) || !state.value.serviceManaged || !isProcessAlive(state.value.pid)) {
+      return undefined;
+    }
+    const pid = String(state.value.pid);
+    const commandLine =
+      platform === "linux"
+        ? yield* fs.readFileString(`/proc/${pid}/cmdline`).pipe(Effect.orElseSucceed(() => ""))
+        : platform === "darwin"
+          ? yield* runner
+              .run({
+                command: "ps",
+                args: ["-o", "command=", "-p", pid],
+                timeout: Duration.seconds(5),
+              })
+              .pipe(
+                Effect.map((result) => (result.code === 0 ? result.stdout : "")),
+                Effect.orElseSucceed(() => ""),
+              )
+          : "";
+    const prefix = `${input.versionsDir}${path.sep}`;
+    const start = commandLine.indexOf(prefix);
+    if (start < 0) return undefined;
+    const version = commandLine.slice(start + prefix.length).split(path.sep)[0];
+    return version !== undefined && isExactServiceVersion(version) ? version : undefined;
+  },
+);
+
 export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   readonly baseDir: string;
   readonly logsDir: string;
@@ -571,12 +611,24 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
   // preflight, so a failed backup means the new runtime is never published;
   // cached so a second validation in this run (a concurrent publish) reuses
   // the point rather than taking another and evicting an older good one.
+  // The service's recorded version is what it runs unless a restart is
+  // pending: an earlier update declined the restart, so service-state.json
+  // already names the newer version while the old server keeps the database.
+  // Then the live server's own command line is the truthful source, and the
+  // running t3 the fallback when that cannot be read.
+  const fromVersion =
+    serviceInstalled && restartPending
+      ? ((yield* runningServiceServerVersion({
+          serverRuntimeStatePath: input.serverRuntimeStatePath,
+          versionsDir: pinnedRuntimeVersionsDir(path, input.baseDir),
+        })) ?? currentVersion)
+      : (serviceVersion ?? currentVersion);
   let keptPoint: RecoveryPoint | undefined;
   const keepRecoveryPoint = yield* Effect.cached(
     createRecoveryPoint({
       baseDir: input.baseDir,
       dbPath: input.dbPath,
-      fromVersion: serviceVersion ?? currentVersion,
+      fromVersion,
       toVersion: targetVersion,
     }).pipe(
       Effect.tap((point) =>

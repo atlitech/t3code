@@ -24,7 +24,7 @@ import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
-import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+import { SERVICE_LAUNCHER_PROTOCOL, SERVICE_RESTART_PENDING_FILE } from "./serviceProtocol.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
 
 interface HarnessOptions {
@@ -514,18 +514,22 @@ it.layer(NodeServices.layer)("server self update", (it) => {
 
 const fileSha256 = (filePath: string) =>
   NodeCrypto.createHash("sha256").update(NodeFS.readFileSync(filePath)).digest("hex");
-const SERVICE_VERSION = "1.0.5";
+// The in-app update runs inside the service's server, so the running version is this build's.
+const SERVICE_VERSION = packageJson.version;
 const SERVICE_ARCHIVE_SHA256 = "cd".repeat(32);
 const SERVICE_STATE = `${JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: SERVICE_VERSION })}\n`;
 
 /**
  * A T3 home with a database (or bytes that are not one), the runtime it runs
  * now, the service state naming it when `serviceState` is set, and a
- * database an earlier recover set aside.
+ * database an earlier recover set aside. `restartPendingVersion` models a
+ * `t3 update` that installed that version with its restart deferred: the
+ * service state already names it while the server keeps running the old one.
  */
 const makeHomeWithDatabase = Effect.fn("test.make_self_update_home")(function* (options: {
   readonly serviceState: boolean;
   readonly database?: "sqlite" | "garbage";
+  readonly restartPendingVersion?: string;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -539,7 +543,7 @@ const makeHomeWithDatabase = Effect.fn("test.make_self_update_home")(function* (
     database.exec("create table notes (value text); insert into notes values ('kept');");
     database.close();
   }
-  const fromVersion = options.serviceState ? SERVICE_VERSION : packageJson.version;
+  const fromVersion = SERVICE_VERSION;
   const fromRuntime = path.join(baseDir, "runtime", "versions", fromVersion);
   yield* fs.makeDirectory(fromRuntime, { recursive: true });
   yield* fs.writeFileString(path.join(fromRuntime, "t3"), "#!/bin/sh\n");
@@ -549,7 +553,18 @@ const makeHomeWithDatabase = Effect.fn("test.make_self_update_home")(function* (
       path.join(fromRuntime, ".archive-sha256"),
       `${SERVICE_ARCHIVE_SHA256}\n`,
     );
-    yield* fs.writeFileString(serviceStatePath, SERVICE_STATE);
+    yield* fs.writeFileString(
+      serviceStatePath,
+      options.restartPendingVersion === undefined
+        ? SERVICE_STATE
+        : `${JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: options.restartPendingVersion })}\n`,
+    );
+    if (options.restartPendingVersion !== undefined) {
+      yield* fs.writeFileString(
+        path.join(baseDir, "runtime", SERVICE_RESTART_PENDING_FILE),
+        `${options.restartPendingVersion}\n`,
+      );
+    }
   }
   const displacedPath = path.join(
     baseDir,
@@ -570,7 +585,7 @@ const makeHomeWithDatabase = Effect.fn("test.make_self_update_home")(function* (
 
 it.layer(NodeServices.layer)("server self update recovery point", (it) => {
   it.effect.each([
-    ["the version the service state records", true],
+    ["the running version with a service state", true],
     ["the running version without a service state", false],
   ] as const)("keeps one recovery point from %s before publishing", ([, serviceState]) =>
     Effect.gen(function* () {
@@ -618,6 +633,32 @@ it.layer(NodeServices.layer)("server self update recovery point", (it) => {
         actions: [],
       });
     }),
+  );
+
+  it.effect(
+    "keeps a point from the running version while a deferred restart already names the target",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* makeHomeWithDatabase({
+          serviceState: true,
+          restartPendingVersion: "1.1.0",
+        });
+        const { selfUpdate } = yield* makeHarness({ baseDir: home.baseDir });
+
+        yield* selfUpdate.update({ targetVersion: "1.1.0" });
+        const points = yield* fs.readDirectory(home.pointsDir);
+        expect(points).toEqual([`19700101T000000000Z-${SERVICE_VERSION}-to-1.1.0`]);
+        const record: { readonly from: unknown } = JSON.parse(
+          yield* fs.readFileString(path.join(home.pointsDir, points[0] ?? "", "recovery.json")),
+        );
+        expect(record.from).toEqual({
+          version: SERVICE_VERSION,
+          runtimePath: home.fromRuntime,
+          archiveSha256: SERVICE_ARCHIVE_SHA256,
+        });
+      }),
   );
 
   it.effect("keeps a single point when a concurrent publish makes validation run twice", () =>
