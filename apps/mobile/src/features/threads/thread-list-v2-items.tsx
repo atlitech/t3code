@@ -19,7 +19,6 @@ import type {
 import type { EnvironmentThreadSearchMatch } from "@t3tools/client-runtime/state/thread-search";
 import { AuthOrchestrationOperateScope, type EnvironmentMachineKind } from "@t3tools/contracts";
 import { canSnooze, resolveSnoozePresets } from "@t3tools/client-runtime/state/thread-settled";
-import { pendingBackgroundWorkStatusLabel } from "@t3tools/client-runtime/state/thread-execution";
 import type { MenuAction } from "@react-native-menu/menu";
 import { memo, useCallback, useEffect, useMemo, useState, type ComponentProps } from "react";
 import { Alert, Pressable, useWindowDimensions, View } from "react-native";
@@ -49,6 +48,7 @@ import {
   resolveThreadListV2Status,
   resolveThreadListV2ProviderDrivers,
   resolveThreadListV2SwipeActions,
+  withPendingBackgroundWorkLabel,
   type ThreadListV2Status,
 } from "./threadListV2";
 import { QueuedMessageIcon } from "./queued-message-icon";
@@ -626,12 +626,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   // label as the web sidebar, sourced from the server-side visited watermark
   // so checking a thread on any device clears it everywhere.
   const isUnread = status === "ready" && threadHasUnseenCompletion(thread);
+  // Background work outliving the turn reads as working, named by what it waits on.
+  const waitingBaseLabel = status === "waiting" ? STATUS_LABEL_BY_STATUS.working : undefined;
   const workingLabel =
-    status === "waiting"
-      ? {
-          label: pendingBackgroundWorkStatusLabel(thread.pendingBackgroundTasks),
-          className: "text-foreground-muted",
-        }
+    waitingBaseLabel !== undefined
+      ? withPendingBackgroundWorkLabel(waitingBaseLabel, thread.pendingBackgroundTasks)
       : STATUS_LABEL_BY_STATUS[status];
   const statusLabel =
     // A native /goal keeps the agent going across turns until it is met.

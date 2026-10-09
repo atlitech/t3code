@@ -23,7 +23,12 @@ import {
   sortPinnedThreadsByOrderKey,
   sortSettledThreads,
 } from "@t3tools/client-runtime/state/thread-sort";
-import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import { pendingBackgroundWorkStatusLabel } from "@t3tools/client-runtime/state/thread-execution";
+import type {
+  EnvironmentId,
+  OrchestrationV2PendingBackgroundTask,
+  ProjectId,
+} from "@t3tools/contracts";
 
 import type { ThreadListProvider } from "../../state/thread-list-environments";
 import type { ThreadMoveAvailability } from "./threadOrder";
@@ -180,6 +185,14 @@ export function threadHasUnseenCompletion(
   const lastVisitedAtMs = Date.parse(thread.lastVisitedAt);
   if (Number.isNaN(lastVisitedAtMs)) return true;
   return completedAtMs > lastVisitedAtMs;
+}
+
+/** Keeps a status label's icon, tint, and class but names the thread's pending background work. */
+export function withPendingBackgroundWorkLabel<T extends { readonly label: string }>(
+  statusLabel: T,
+  pendingBackgroundTasks: ReadonlyArray<OrchestrationV2PendingBackgroundTask>,
+): Omit<T, "label"> & { readonly label: ReturnType<typeof pendingBackgroundWorkStatusLabel> } {
+  return { ...statusLabel, label: pendingBackgroundWorkStatusLabel(pendingBackgroundTasks) };
 }
 
 export function resolveThreadListV2Status(

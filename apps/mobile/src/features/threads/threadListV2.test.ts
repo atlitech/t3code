@@ -21,6 +21,7 @@ import {
   ProviderInstanceId,
   RunId,
   ThreadId,
+  type OrchestrationV2PendingBackgroundTask,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
@@ -39,6 +40,7 @@ import {
   sortThreadsForListV2,
   threadListV2ListItemsAreEqual,
   threadHasUnseenCompletion,
+  withPendingBackgroundWorkLabel,
   type ThreadListV2ListItem,
 } from "./threadListV2";
 
@@ -245,6 +247,36 @@ describe("queued messages keep a settled thread active", () => {
         (thread) => thread.id,
       ),
     ).toEqual(["active"]);
+  });
+});
+
+describe("withPendingBackgroundWorkLabel", () => {
+  const statusLabel = {
+    label: "Working",
+    icon: "circle.dashed",
+    className: "text-adaptive-sky-600-400",
+    iconTintClassName: "accent-adaptive-sky-600-400",
+  } as const;
+  const command = (taskId: string): OrchestrationV2PendingBackgroundTask => ({
+    taskId,
+    kind: "command",
+  });
+
+  it.each<[string, ReadonlyArray<OrchestrationV2PendingBackgroundTask>]>([
+    ["Waiting on command", [command("build")]],
+    ["Waiting on commands", [command("build"), command("test")]],
+    ["Waiting", []],
+    [
+      "Waiting",
+      [command("build"), { taskId: "watch", description: "Watch build", kind: "monitor" }],
+    ],
+  ])("replaces only the label with %s", (expected, tasks) => {
+    const input = { ...statusLabel };
+
+    const result = withPendingBackgroundWorkLabel(input, tasks);
+
+    expect(result).toEqual({ ...statusLabel, label: expected });
+    expect(input).toEqual(statusLabel);
   });
 });
 
