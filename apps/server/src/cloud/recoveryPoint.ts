@@ -334,10 +334,32 @@ export const appendRecoveryAction = Effect.fn("cloud.recovery_point.append_actio
 });
 
 /**
+ * A database that could not be moved aside. `rolledBack` says every file that
+ * moved was put back at its live path; otherwise `leftDisplaced` names the
+ * files still in `displacedDir` and `atLivePath` the ones at the live path.
+ */
+export class DatabaseDisplaceError extends Schema.TaggedError<DatabaseDisplaceError>()(
+  "DatabaseDisplaceError",
+  {
+    detail: Schema.String,
+    displacedDir: Schema.String,
+    rolledBack: Schema.Boolean,
+    leftDisplaced: Schema.Array(Schema.String),
+    atLivePath: Schema.Array(Schema.String),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
+/**
  * Moves the live database at `dbPath`, with its -wal and -shm when present,
  * into recovery/displaced/<UTC>-<id>/ and returns that directory. A failed
  * move puts back what was already moved, so the live database is never left
- * split from its journal.
+ * split from its journal; when putting a file back fails too, the error names
+ * where each file is.
  */
 export const displaceDatabase = Effect.fn("cloud.recovery_point.displace_database")(function* (
   baseDir: string,
@@ -352,34 +374,51 @@ export const displaceDatabase = Effect.fn("cloud.recovery_point.displace_databas
   const now = yield* DateTime.now;
   const { recoveryDir, displacedDir } = recoveryPaths(path, baseDir);
   const targetDir = path.join(displacedDir, `${compactUtc(now)}-${id}`);
+  const present: Array<string> = [];
   const moved: Array<{ readonly from: string; readonly to: string }> = [];
-  yield* Effect.gen(function* () {
+  const moveAside = Effect.gen(function* () {
     yield* makePrivateDirectory(recoveryDir);
     yield* makePrivateDirectory(displacedDir);
     yield* makePrivateDirectory(targetDir);
     for (const suffix of DATABASE_COMPANION_SUFFIXES) {
-      const from = `${dbPath}${suffix}`;
-      if (!(yield* fs.exists(from))) continue;
-      const to = path.join(targetDir, `${path.basename(dbPath)}${suffix}`);
+      if (yield* fs.exists(`${dbPath}${suffix}`)) present.push(`${dbPath}${suffix}`);
+    }
+    for (const from of present) {
+      const to = path.join(targetDir, path.basename(from));
       yield* fs.rename(from, to);
       moved.push({ from, to });
     }
-  }).pipe(
-    Effect.tapError(() =>
-      Effect.forEach(
-        moved.toReversed(),
-        ({ from, to }) => fs.rename(to, from).pipe(Effect.ignore),
-        {
-          discard: true,
-        },
-      ),
-    ),
-    Effect.mapError(
-      (cause) =>
-        new RecoveryPointError({ detail: "Could not move the current database aside.", cause }),
-    ),
+  });
+  const failed = yield* moveAside.pipe(
+    Effect.as(undefined),
+    Effect.catch((cause) => Effect.succeed({ cause })),
   );
-  return targetDir;
+  if (failed === undefined) return targetDir;
+
+  // Put back newest first; a file whose move back fails stays in targetDir.
+  const stranded: Array<{ readonly from: string; readonly to: string }> = [];
+  for (const entry of moved.toReversed()) {
+    const back = yield* fs.rename(entry.to, entry.from).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+    if (!back) stranded.push(entry);
+  }
+  const leftDisplaced = stranded.map((entry) => entry.to).toReversed();
+  const atLivePath = present.filter((file) => !stranded.some((entry) => entry.from === file));
+  return yield* new DatabaseDisplaceError({
+    detail:
+      stranded.length === 0
+        ? "Could not move the current database aside; nothing was moved."
+        : `Could not move the current database aside, and moving it back failed too. Still in ${targetDir}: ${leftDisplaced.join(", ")}. At ${path.dirname(dbPath)}: ${
+            atLivePath.length === 0 ? "none of its files" : atLivePath.join(", ")
+          }.`,
+    displacedDir: targetDir,
+    rolledBack: stranded.length === 0,
+    leftDisplaced,
+    atLivePath,
+    cause: failed.cause,
+  });
 });
 
 /**

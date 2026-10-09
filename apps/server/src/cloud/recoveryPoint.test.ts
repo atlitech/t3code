@@ -11,11 +11,14 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
   appendRecoveryAction,
   createRecoveryPoint,
+  DatabaseDisplaceError,
   displaceDatabase,
   listRecoveryPoints,
   loadRecoveryPoint,
@@ -68,6 +71,27 @@ const pointsDirOf = (path: Path.Path, baseDir: string) => path.join(baseDir, "re
 
 const createPoint = (baseDir: string, dbPath: string, fromVersion = "1.2.3", toVersion = "1.2.4") =>
   createRecoveryPoint({ baseDir, dbPath, fromVersion, toVersion });
+
+const isDatabaseDisplaceError = Schema.is(DatabaseDisplaceError);
+
+const refusedBy = (method: string, pathOrDescriptor: string) =>
+  Effect.fail(
+    PlatformError.systemError({
+      _tag: "PermissionDenied",
+      module: "FileSystem",
+      method,
+      pathOrDescriptor,
+    }),
+  );
+
+// Fails the rename of `failFrom` to anywhere, on the file system displaceDatabase runs on.
+const withFailingRenames =
+  (failFrom: ReadonlyArray<string>) =>
+  (fs: FileSystem.FileSystem): FileSystem.FileSystem => ({
+    ...fs,
+    rename: (from, to) =>
+      failFrom.includes(from) ? refusedBy("rename", from) : fs.rename(from, to),
+  });
 
 it.layer(NodeServices.layer)("recovery point", (it) => {
   it.effect("keeps only an online backup and its record before an update", () =>
@@ -330,6 +354,79 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
       expect(yield* fs.readFileString(`${dbPath}-shm`)).toBe("shm");
       expect(yield* fs.readDirectory(displacedDir)).toEqual([]);
       expect(path.dirname(displacedDir)).toBe(path.join(baseDir, "recovery", "displaced"));
+    }),
+  );
+
+  it.effect("puts back what moved and says nothing was moved when a move fails", () =>
+    Effect.gen(function* () {
+      const { fs, path, baseDir, dbPath } = yield* makeHome();
+      const point = Option.getOrThrow(yield* createPoint(baseDir, dbPath));
+      yield* fs.writeFileString(`${dbPath}-wal`, "wal");
+      yield* fs.writeFileString(`${dbPath}-shm`, "shm");
+      const liveSha256 = fileSha256(dbPath);
+
+      // The database moves, then its -wal cannot.
+      const error = yield* displaceDatabase(baseDir, dbPath, point.id).pipe(
+        Effect.provideService(FileSystem.FileSystem, withFailingRenames([`${dbPath}-wal`])(fs)),
+        Effect.flip,
+      );
+
+      if (!isDatabaseDisplaceError(error)) return expect.unreachable(error.message);
+      const displaced = error;
+      expect(displaced.message).toBe(
+        "Could not move the current database aside; nothing was moved.",
+      );
+      expect(displaced.rolledBack).toBe(true);
+      expect(displaced.leftDisplaced).toEqual([]);
+      expect(displaced.atLivePath).toEqual([dbPath, `${dbPath}-wal`, `${dbPath}-shm`]);
+      expect(fileSha256(dbPath)).toBe(liveSha256);
+      expect(yield* fs.readFileString(`${dbPath}-wal`)).toBe("wal");
+      expect(yield* fs.readFileString(`${dbPath}-shm`)).toBe("shm");
+      expect(yield* fs.readDirectory(displaced.displacedDir)).toEqual([]);
+      expect(path.dirname(displaced.displacedDir)).toBe(
+        path.join(baseDir, "recovery", "displaced"),
+      );
+    }),
+  );
+
+  it.effect("names the files left aside when moving them back fails too", () =>
+    Effect.gen(function* () {
+      const { fs, path, baseDir, dbPath } = yield* makeHome();
+      const point = Option.getOrThrow(yield* createPoint(baseDir, dbPath));
+      yield* fs.writeFileString(`${dbPath}-wal`, "wal");
+      yield* fs.writeFileString(`${dbPath}-shm`, "shm");
+      const liveSha256 = fileSha256(dbPath);
+      const targetDir = path.join(
+        baseDir,
+        "recovery",
+        "displaced",
+        `20261009T101112123Z-${point.id}`,
+      );
+      const strandedPath = path.join(targetDir, "statev2.sqlite");
+
+      // The database moves, its -wal cannot, and the database cannot move back.
+      const error = yield* displaceDatabase(baseDir, dbPath, point.id).pipe(
+        Effect.provideService(
+          FileSystem.FileSystem,
+          withFailingRenames([`${dbPath}-wal`, strandedPath])(fs),
+        ),
+        Effect.flip,
+      );
+
+      if (!isDatabaseDisplaceError(error)) return expect.unreachable(error.message);
+      const displaced = error;
+      expect(displaced.rolledBack).toBe(false);
+      expect(displaced.displacedDir).toBe(targetDir);
+      expect(displaced.leftDisplaced).toEqual([strandedPath]);
+      expect(displaced.atLivePath).toEqual([`${dbPath}-wal`, `${dbPath}-shm`]);
+      expect(displaced.message).toContain(`Still in ${targetDir}: ${strandedPath}.`);
+      expect(displaced.message).toContain(
+        `At ${path.dirname(dbPath)}: ${dbPath}-wal, ${dbPath}-shm.`,
+      );
+      expect(displaced.message).not.toContain("nothing was moved");
+      expect(fileSha256(strandedPath)).toBe(liveSha256);
+      expect(yield* fs.exists(dbPath)).toBe(false);
+      expect(yield* fs.readFileString(`${dbPath}-wal`)).toBe("wal");
     }),
   );
 });

@@ -32,6 +32,10 @@ const START = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-10-09T10:11:12.12
 const POINT_ID = "20261009T101112123Z-1.2.3-to-1.2.4";
 const FROM_DIGEST = "abcdef0123";
 
+// The point was kept at START, before the session changes this warns about.
+const SESSIONS_WARNING =
+  "  Warning: sessions revoked or signed out after 2026-10-09T10:11:12.123Z (UTC), when this point was kept, are valid again; revoke them again.";
+
 const readRows = (databasePath: string) => {
   const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
   try {
@@ -139,6 +143,9 @@ const recover = Effect.fn("test.recover")(function* (
   },
 ) {
   const events: string[] = [];
+  // The console's lines outlive one test, so only this run's are returned.
+  const logsBefore = (yield* TestConsole.logLines).length;
+  const errorsBefore = (yield* TestConsole.errorLines).length;
   const unexpected = (name: string) => Effect.die(`unexpected ${name}`);
   const service = BootService.BootService.of({
     install: () => unexpected("install on the running version's service"),
@@ -198,7 +205,9 @@ const recover = Effect.fn("test.recover")(function* (
     Effect.provideService(HostProcessEnvironment, { PATH: "" }),
     Effect.exit,
   );
-  return { exit, events };
+  const logs = (yield* TestConsole.logLines).slice(logsBefore);
+  const errors = (yield* TestConsole.errorLines).slice(errorsBefore);
+  return { exit, events, logs, errors };
 });
 
 const refusedBy = (method: string, pathOrDescriptor: string) =>
@@ -298,7 +307,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
     () =>
       Effect.gen(function* () {
         const home = yield* makeUpdatedHome();
-        const { exit, events } = yield* recover(home, { service: "serves-this-home" });
+        const { exit, events, errors } = yield* recover(home, { service: "serves-this-home" });
 
         assert.equal(exit._tag, "Success", failureReason(exit));
         assert.deepEqual(events, [
@@ -322,6 +331,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         const lines = yield* TestConsole.logLines;
         assert.include(lines, "  stopped the background service");
         assert.include(lines, "  restarted the background service on t3@1.2.3");
+        assert.deepEqual(errors, [SESSIONS_WARNING]);
       }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 
@@ -503,7 +513,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         // Writes to recovery.json fail only once the snapshot is renamed into
         // place, so the record before the swap still lands.
         let swapped = false;
-        const { exit, events } = yield* recover(home, {
+        const { exit, events, errors } = yield* recover(home, {
           service: "serves-this-home",
           fs: (fs) => ({
             ...fs,
@@ -541,7 +551,8 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         const lines = yield* TestConsole.logLines;
         assert.include(lines, `  restored the database from recovery point ${POINT_ID}`);
         assert.include(lines, "Recovered to t3@1.2.3.");
-        const warnings = yield* TestConsole.errorLines;
+        const warnings = errors.filter((warning) => warning !== SESSIONS_WARNING);
+        assert.include(errors, SESSIONS_WARNING);
         assert.lengthOf(warnings, 5);
         for (const warning of warnings) {
           assert.include(
@@ -592,6 +603,100 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
           ),
           ["stopped the background service"],
         );
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect(
+    "still points the service at and restarts it on the prior runtime when the launcher cannot be repointed",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeUpdatedHome();
+        // The launcher is repointed through a temporary symlink next to it.
+        const { exit, events, logs, errors } = yield* recover(home, {
+          service: "serves-this-home",
+          fs: (fs) => ({
+            ...fs,
+            symlink: (target, linkPath) =>
+              linkPath.startsWith(`${home.launcher}.`)
+                ? refusedBy("symlink", linkPath)
+                : fs.symlink(target, linkPath),
+          }),
+        });
+
+        assert.equal(exit._tag, "Failure");
+        const reason = failureReason(exit);
+        assert.include(reason, "The database and the background service are on t3@1.2.3");
+        assert.include(reason, `Could not repoint the t3 launcher at ${home.launcher}.`);
+        assert.include(reason, `Run ${home.fromEntry} to start t3@1.2.3.`);
+        assert.deepEqual(events, [
+          "stop (database in place: true)",
+          "service for 1.2.3",
+          "install (allowDowngrade: true, start: false)",
+          "restart",
+        ]);
+        // The swap stands; only the launcher still names the newer runtime.
+        assert.deepEqual(
+          yield* home.fs.readFile(home.dbPath),
+          yield* home.fs.readFile(home.point.snapshotPath),
+        );
+        assert.deepEqual(readRows(home.dbPath), [{ value: "before" }]);
+        assert.isFalse(yield* home.fs.exists(`${home.dbPath}-wal`));
+        assert.equal(yield* home.fs.readLink(home.launcher), home.toEntry);
+        const record = yield* readRecord(home);
+        assert.deepEqual(
+          (record["actions"] as ReadonlyArray<{ readonly action: string }>).map(
+            (entry) => entry.action,
+          ),
+          [
+            "stopped the background service",
+            `moved the current database to ${displacedDir(home)}`,
+            `restored the database from recovery point ${POINT_ID}`,
+            "pointed the background service at t3@1.2.3",
+            "restarted the background service on t3@1.2.3",
+          ],
+        );
+        assert.include(errors, SESSIONS_WARNING);
+        assert.isTrue(
+          errors.some((warning) =>
+            String(warning).startsWith("  Warning: the launcher was not pointed at t3@1.2.3"),
+          ),
+        );
+        assert.notInclude(logs, "Recovered to t3@1.2.3.");
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect(
+    "names the files to move back and suggests no restart when the database cannot be moved aside or back",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeUpdatedHome();
+        const stranded = home.path.join(displacedDir(home), "statev2.sqlite");
+        // The database moves aside, its -wal cannot, and the database cannot move back.
+        const { exit, events, errors } = yield* recover(home, {
+          service: "serves-this-home",
+          fs: (fs) => ({
+            ...fs,
+            rename: (from, to) =>
+              from === `${home.dbPath}-wal` || from === stranded
+                ? refusedBy("rename", from)
+                : fs.rename(from, to),
+          }),
+        });
+
+        assert.equal(exit._tag, "Failure");
+        const reason = failureReason(exit);
+        assert.include(reason, `Still in ${displacedDir(home)}: ${stranded}.`);
+        assert.include(
+          reason,
+          `Move statev2.sqlite from ${displacedDir(home)} back to ${home.path.dirname(home.dbPath)} before starting any server.`,
+        );
+        assert.notInclude(reason, "t3 service restart");
+        assert.deepEqual(events, ["stop (database in place: true)"]);
+        assert.deepEqual(yield* home.fs.readFile(stranded), home.liveBytes);
+        assert.isFalse(yield* home.fs.exists(home.dbPath));
+        assert.equal(yield* home.fs.readFileString(`${home.dbPath}-wal`), "wal");
+        assert.equal(yield* home.fs.readLink(home.launcher), home.toEntry);
+        assert.notInclude(errors, SESSIONS_WARNING);
       }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 });

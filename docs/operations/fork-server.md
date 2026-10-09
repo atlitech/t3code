@@ -333,6 +333,10 @@ hand runs on this home. A prior runtime installed without a recorded archive
 sha256 is restored only with `--allow-unverified-runtime`, which the point's
 `recovery.json` records.
 
+The restored database includes its auth sessions, so a session revoked or
+signed out after the point was kept is valid again. Recover warns with the
+point's UTC time; revoke those sessions again.
+
 ## Updating `atli` from upstream
 
 `atli` takes upstream changes only through a merge, so it keeps upstream's

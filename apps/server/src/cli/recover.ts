@@ -272,7 +272,18 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
   const displacedDir = yield* Effect.uninterruptible(
     Effect.gen(function* () {
       const target = yield* displaceDatabase(input.baseDir, input.dbPath, id).pipe(
-        Effect.mapError((error) => refuse(`${error.message}${stoppedNote}`)),
+        Effect.mapError((error) =>
+          // Only a database fully back in place may be served again.
+          error._tag === "DatabaseDisplaceError" && !error.rolledBack
+            ? refuse(
+                `${error.message} Move ${error.leftDisplaced.map((file) => path.basename(file)).join(", ")} from ${error.displacedDir} back to ${path.dirname(input.dbPath)} before starting any server.${
+                  servesThisHome
+                    ? " The background service is stopped; leave it stopped until then."
+                    : ""
+                }`,
+              )
+            : refuse(`${error.message}${stoppedNote}`),
+        ),
       );
       yield* restoreSnapshot(input.baseDir, id, input.dbPath).pipe(
         Effect.catch((restoreError) =>
@@ -303,45 +314,92 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
   );
   yield* recordAfterSwap(`moved the current database to ${displacedDir}`);
   yield* recordAfterSwap(`restored the database from recovery point ${id}`);
+  // Auth sessions are part of the restored database, so sign-outs and
+  // revocations made after the point are undone.
+  yield* Console.error(
+    `  Warning: sessions revoked or signed out after ${point.record.createdAt} (UTC), when this point was kept, are valid again; revoke them again.`,
+  );
 
+  // From here on the restored database stays: a step that fails is reported
+  // and the remaining steps still run, so the home is never left with the
+  // service stopped on the newer runtime.
   const runtime = pinnedRuntimePaths(path, input.baseDir, from.version, platform);
-  const launchedAs = (yield* HostProcessIsExecutable) ? yield* resolveLauncherPath : undefined;
-  const repointed = yield* repointLauncher({
-    launchedAs,
-    versionsDir: pinnedRuntimeVersionsDir(path, input.baseDir),
-    targetEntryPath: runtime.entryPath,
-  }).pipe(Effect.mapError((error) => refuse(error.message)));
-  if (Option.isSome(repointed)) {
-    yield* recordAfterSwap(`pointed the launcher ${repointed.value} at t3@${from.version}`);
-  } else {
-    yield* Console.log(`  Run ${runtime.entryPath} to start t3@${from.version}.`);
-  }
+  const launcherFailure = yield* Effect.gen(function* () {
+    const launchedAs = (yield* HostProcessIsExecutable) ? yield* resolveLauncherPath : undefined;
+    return yield* repointLauncher({
+      launchedAs,
+      versionsDir: pinnedRuntimeVersionsDir(path, input.baseDir),
+      targetEntryPath: runtime.entryPath,
+    });
+  }).pipe(
+    Effect.matchEffect({
+      onSuccess: (repointed) =>
+        (Option.isSome(repointed)
+          ? recordAfterSwap(`pointed the launcher ${repointed.value} at t3@${from.version}`)
+          : Console.log(`  Run ${runtime.entryPath} to start t3@${from.version}.`)
+        ).pipe(Effect.as(undefined)),
+      onFailure: (error) =>
+        Console.error(
+          `  Warning: the launcher was not pointed at t3@${from.version}: ${error.message} Run ${runtime.entryPath} to start t3@${from.version}.`,
+        ).pipe(Effect.as(error.message)),
+    }),
+  );
 
+  let serviceFailure: string | undefined;
   if (servesThisHome) {
-    const restarted = yield* BootService.BootService.pipe(
+    const restored = `The database is restored from recovery point ${id} (the replaced one is kept in ${displacedDir}),`;
+    serviceFailure = yield* BootService.BootService.pipe(
       Effect.flatMap((target) =>
         target.install({ allowDowngrade: true, start: false }).pipe(
+          Effect.mapError(
+            (error) =>
+              `${restored} but the background service could not be pointed at t3@${from.version}: ${error.message} It is stopped and still runs the newer version; do not restart it until \`${runtime.entryPath} service install --allow-downgrade --base-dir ${input.baseDir}\` succeeds.`,
+          ),
           Effect.tap(() => recordAfterSwap(`pointed the background service at t3@${from.version}`)),
-          Effect.andThen(target.restart),
+          Effect.andThen(
+            target.restart.pipe(
+              Effect.mapError(
+                (error) =>
+                  `${restored} and the background service points at t3@${from.version}, but it could not be restarted: ${error.message} Run \`t3 service restart\`.`,
+              ),
+            ),
+          ),
         ),
       ),
       Effect.provide(input.serviceForVersion(from.version)),
-      Effect.mapError((error) =>
-        refuse(
-          `The database is restored but the background service could not be moved to t3@${from.version}: ${error.message}`,
+      Effect.flatMap((restarted) =>
+        restarted
+          ? recordAfterSwap(`restarted the background service on t3@${from.version}`).pipe(
+              Effect.as(undefined),
+            )
+          : Effect.succeed(
+              `${restored} and the background service points at t3@${from.version}, but it was not restarted. Run \`t3 service restart\`.`,
+            ),
+      ),
+      Effect.catch((reason) =>
+        Effect.succeed(
+          typeof reason === "string"
+            ? reason
+            : `${restored} but the background service could not be moved to t3@${from.version}: ${reason.message}`,
         ),
       ),
     );
-    if (!restarted) {
-      return yield* refuse(
-        `The database is restored but the background service was not restarted on t3@${from.version}. Run \`t3 service restart\`.`,
-      );
-    }
-    yield* recordAfterSwap(`restarted the background service on t3@${from.version}`);
   } else if (status.installed && status.installedBaseDir !== undefined) {
     yield* Console.log(
       `  The background service serves ${status.installedBaseDir} and was left unchanged.`,
     );
   }
+
+  if (launcherFailure !== undefined) {
+    const launcherNote = `the launcher could not be pointed at t3@${from.version}: ${launcherFailure} Run ${runtime.entryPath} to start t3@${from.version}.`;
+    return yield* refuse(
+      serviceFailure !== undefined
+        ? `${serviceFailure} Also, ${launcherNote}`
+        : servesThisHome
+          ? `The database and the background service are on t3@${from.version}, but ${launcherNote}`
+          : `The database is restored from recovery point ${id}, but ${launcherNote}`,
+    );
+  }
+  if (serviceFailure !== undefined) return yield* refuse(serviceFailure);
   yield* Console.log(`Recovered to t3@${from.version}.`);
 });
