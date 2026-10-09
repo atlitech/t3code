@@ -25,6 +25,7 @@ const here = import.meta.dirname;
 const read = (file: string) => NodeFS.readFileSync(NodePath.join(here, file), "utf8");
 const recorded = JSON.parse(read("snapshot-response.json")) as {
   seededEvents: Array<unknown>;
+  candidateEvents: Array<unknown>;
   snapshots: Array<{ threadId: string; body: unknown }>;
   threadReplays: Array<{ threadId: string; values: Array<unknown> }>;
   shellReplay: { values: Array<unknown> };
@@ -91,6 +92,10 @@ it.layer(NodeServices.layer)("readback", (it) => {
       const file = (name: string) => path.join(dir, name);
       yield* fs.writeFileString(file("token"), `${TOKEN}\n`);
       yield* fs.writeFileString(file("seeded-events.json"), JSON.stringify(recorded.seededEvents));
+      yield* fs.writeFileString(
+        file("candidate-events.json"),
+        JSON.stringify(recorded.candidateEvents),
+      );
 
       const server = yield* HttpServer.HttpServer;
       const address = server.address;
@@ -102,6 +107,7 @@ it.layer(NodeServices.layer)("readback", (it) => {
         tokenFile: file("token"),
         fixtures: path.join(here, "fixtures.json"),
         seededEvents: file("seeded-events.json"),
+        candidateEvents: Option.some(file("candidate-events.json")),
         out: file("readback.json"),
         responsesOut: Option.some(file("responses.json")),
       }).pipe(

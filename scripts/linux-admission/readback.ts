@@ -9,12 +9,13 @@
 // - `seeded`: the prior again, after the messages were seeded: the threads
 //   and every message, so the prior has read the full upgrade input.
 // - `upgraded`: the candidate, on the same home: the snapshots again, plus
-//   the event log. The candidate decodes every seeded event: the shell
-//   resume (`orchestration.subscribeShell` from sequence 0) reads and decodes
-//   each thread.created from the log, and the thread it then serves must be
-//   the one the log records; the thread resume (`orchestration.subscribeThread`
-//   after the creation) replays every later event the log holds for the
-//   thread, each compared with its logged row.
+//   the event log. The candidate's own store, read once it has started and
+//   migrated, still holds each thread.created row exactly as the prior wrote
+//   it; the shell resume (`orchestration.subscribeShell` from sequence 0)
+//   decodes the log, and the thread it then serves must be the one the log
+//   records; the thread resume (`orchestration.subscribeThread` after the
+//   creation) replays every later event the log holds for the thread, each
+//   compared with its logged row.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -64,6 +65,8 @@ export interface ThreadReplayResponse extends ReplayResponse {
 
 export interface ReadbackObservation {
   readonly seededEvents: ReadonlyArray<SeededEvent>;
+  /** The same rows, read from the candidate's own store once it has started and migrated. */
+  readonly candidateEvents: ReadonlyArray<SeededEvent>;
   readonly snapshots: ReadonlyArray<ReadbackResponse>;
   readonly threadReplays: ReadonlyArray<ThreadReplayResponse>;
   readonly shellReplay: ReplayResponse | null;
@@ -290,11 +293,13 @@ const messageOrder = (
     .map((message) => message.id);
   const ids = received.map((message) => String(message.id));
   const actual = ids.filter((messageId) => fixtureIds.has(messageId));
+  const foreign = ids.filter((messageId) => !fixtureIds.has(messageId));
   const repeated = ids.filter((messageId, index) => ids.indexOf(messageId) !== index);
   return item(
     "message",
     `${thread.id}:message-order`,
     [
+      foreign.length > 0 ? `lists messages fixtures.json does not hold: ${foreign.join(", ")}` : "",
       repeated.length > 0 ? `listed more than once: ${repeated.join(", ")}` : "",
       sameJson(actual, expected)
         ? ""
@@ -344,8 +349,55 @@ const compareSnapshot = (
         actual === undefined ? "message missing" : fieldMismatches(message.fields, actual),
       );
     }),
+    // Every listed message must be one this stage expects.
+    ...projection.messages
+      .map((message) => String(message.id))
+      .filter((messageId) => !expectedMessages.some((message) => message.id === messageId))
+      .map((messageId) =>
+        item(
+          "message",
+          messageId,
+          stage === "created"
+            ? "listed before any message was seeded"
+            : "not a message fixtures.json holds",
+        ),
+      ),
     ...(stage === "created" ? [] : [messageOrder(fixture, projection.messages)]),
   ];
+};
+
+/**
+ * How the candidate's own store differs from the prior's log at the prior's
+ * thread.created row: the row must still be there, at the same sequence,
+ * with the same id, thread, type, command, and payload.
+ */
+const candidateCreationMismatches = (
+  created: SeededEvent,
+  candidateEvents: ReadonlyArray<SeededEvent>,
+): string => {
+  const row = candidateEvents.find((event) => event.sequence === created.sequence);
+  if (row === undefined) {
+    return `the candidate's event store has no event at sequence ${created.sequence}`;
+  }
+  const column = (name: keyof SeededEvent) =>
+    row[name] === created[name]
+      ? ""
+      : `the candidate's store holds ${name} ${showJson(row[name])}, the prior's log ${showJson(created[name])}`;
+  const payload = decodePayloadJson(row.payload_json);
+  const priorPayload = decodePayloadJson(created.payload_json);
+  return [
+    column("event_id"),
+    column("stream_id"),
+    column("event_type"),
+    column("command_id"),
+    Option.isNone(payload) || Option.isNone(priorPayload)
+      ? "a thread.created payload is unreadable"
+      : sameJson(payload.value, priorPayload.value)
+        ? ""
+        : `the candidate's store holds payload ${row.payload_json}, the prior's log ${created.payload_json}`,
+  ]
+    .filter((problem) => problem !== "")
+    .join("; ");
 };
 
 const compareEventLog = (
@@ -359,9 +411,10 @@ const compareEventLog = (
     observation.snapshots.find((response) => response.threadId === threadId),
   );
 
-  // thread.created: the candidate decoded it on the shell resume, and both
-  // the shell and the snapshot it then served carry the thread as the prior
-  // created it, and as the log records it.
+  // thread.created: the candidate's own store still holds the prior's row
+  // unchanged after its migrations, the candidate decoded the log on the
+  // shell resume, and both the shell and the snapshot it then served carry
+  // the thread as the prior created it, and as the log records it.
   const shell = observation.shellReplay;
   const shellThread = (shell?.values ?? [])
     .flatMap((value) => Option.toArray(decodeShellThreadUpdated(value)))
@@ -372,16 +425,23 @@ const compareEventLog = (
     `${threadId}:thread.created`,
     typeof expected === "string"
       ? expected
-      : shell === null || !shell.synchronized
-        ? "the candidate did not finish decoding the event log on the shell resume"
-        : shellThread === undefined
-          ? "the candidate's shell resume did not return the thread"
-          : threadMismatches(
-              expected,
-              loggedThread(logged),
-              shellThread,
-              Option.getOrUndefined(snapshot)?.projection.thread,
-            ),
+      : created === undefined
+        ? "the prior's log has no thread.created for it"
+        : [
+            candidateCreationMismatches(created, observation.candidateEvents),
+            shell === null || !shell.synchronized
+              ? "the candidate did not finish decoding the event log on the shell resume"
+              : shellThread === undefined
+                ? "the candidate's shell resume did not return the thread"
+                : threadMismatches(
+                    expected,
+                    loggedThread(logged),
+                    shellThread,
+                    Option.getOrUndefined(snapshot)?.projection.thread,
+                  ),
+          ]
+            .filter((problem) => problem !== "")
+            .join("; "),
   );
 
   // message.updated: replayed from the log with its sequence and content.
@@ -643,6 +703,7 @@ export const readback = Effect.fn("readback")(function* (options: {
   readonly tokenFile: string;
   readonly fixtures: string;
   readonly seededEvents: string;
+  readonly candidateEvents: Option.Option<string>;
   readonly out: string;
   readonly responsesOut: Option.Option<string>;
 }) {
@@ -651,11 +712,22 @@ export const readback = Effect.fn("readback")(function* (options: {
   const token = (yield* fs.readFileString(options.tokenFile)).trim();
   if (token.length === 0) return yield* new ReadbackError({ detail: "the token file is empty." });
   // `sqlite3 -json` prints nothing at all for an empty result.
-  const seededText = (yield* fs.readFileString(options.seededEvents)).trim();
-  const seededEvents = seededText === "" ? [] : yield* decodeSeededEvents(seededText);
+  const readEvents = Effect.fn("readEvents")(function* (file: string) {
+    const text = (yield* fs.readFileString(file)).trim();
+    return text === "" ? [] : yield* decodeSeededEvents(text);
+  });
+  const seededEvents = yield* readEvents(options.seededEvents);
+  const upgraded = options.stage === "upgraded";
+  if (upgraded && Option.isNone(options.candidateEvents)) {
+    return yield* new ReadbackError({
+      detail: "the upgraded stage needs --candidate-events, the candidate's own event rows.",
+    });
+  }
+  const candidateEvents = Option.isSome(options.candidateEvents)
+    ? yield* readEvents(options.candidateEvents.value)
+    : [];
 
   const snapshots = yield* fetchSnapshots({ baseUrl: options.baseUrl, token, fixtures });
-  const upgraded = options.stage === "upgraded";
   const threadReplays: Array<ThreadReplayResponse> = [];
   let shellReplay: ReplayResponse | null = null;
   if (upgraded) {
@@ -689,7 +761,13 @@ export const readback = Effect.fn("readback")(function* (options: {
     });
   }
 
-  const observation: ReadbackObservation = { seededEvents, snapshots, threadReplays, shellReplay };
+  const observation: ReadbackObservation = {
+    seededEvents,
+    candidateEvents,
+    snapshots,
+    threadReplays,
+    shellReplay,
+  };
   if (Option.isSome(options.responsesOut)) {
     yield* fs.writeFileString(options.responsesOut.value, `${yield* encodeJson(observation)}\n`);
   }
@@ -723,6 +801,12 @@ const command = Command.make(
     fixtures: Flag.String("fixtures").pipe(Flag.withDescription("Path to fixtures.json.")),
     seededEvents: Flag.String("seeded-events").pipe(
       Flag.withDescription("`sqlite3 -json` rows of the thread event log the prior left."),
+    ),
+    candidateEvents: Flag.String("candidate-events").pipe(
+      Flag.withDescription(
+        "`sqlite3 -json` rows of the thread event log in the candidate's store, read after it started (`upgraded` only).",
+      ),
+      Flag.optional,
     ),
     out: Flag.String("out").pipe(Flag.withDescription("Where to write the comparison result.")),
     responsesOut: Flag.String("responses-out").pipe(

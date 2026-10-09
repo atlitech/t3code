@@ -187,6 +187,7 @@ interface RecordedReplayEvent {
 // The recording, mutable so a test can change a copy of it.
 interface RecordedObservation {
   seededEvents: Array<SeededEvent>;
+  candidateEvents: Array<SeededEvent>;
   snapshots: Array<ReadbackResponse>;
   threadReplays: Array<{
     threadId: string;
@@ -262,6 +263,36 @@ it.effect("expects messages from the seeded stage on, and the event log only aft
       ]),
     );
     assert.strictEqual(compareReadback(fixtures, recorded, "seeded").events, 0);
+  }),
+);
+
+it.effect("fails when a snapshot lists a message fixtures.json does not hold", () =>
+  Effect.gen(function* () {
+    const fixtures = yield* loadFixtures;
+    const thread = withMessages(fixtures);
+    const foreign = changed((copy) => {
+      const messages = snapshotOf(copy, thread.thread.id).projection.messages;
+      messages.push({ ...messages[0]!, id: "foreign-message" });
+    });
+    assert.deepStrictEqual(failedIds(fixtures, foreign), [
+      "foreign-message",
+      `${thread.thread.id}:message-order`,
+    ]);
+    assert.deepStrictEqual(failedIds(fixtures, foreign, "seeded"), [
+      "foreign-message",
+      `${thread.thread.id}:message-order`,
+    ]);
+
+    // Before seeding, any message at all is one too many.
+    const early = changed((copy) => {
+      for (const response of copy.snapshots) {
+        (response.body as RecordedSnapshot).projection.messages = [];
+      }
+      snapshotOf(copy, thread.thread.id).projection.messages = [
+        { ...snapshotOf(recorded, thread.thread.id).projection.messages[0]! },
+      ];
+    });
+    assert.deepStrictEqual(failedIds(fixtures, early, "created"), [thread.messages[0]!.id]);
   }),
 );
 
@@ -383,6 +414,65 @@ it.effect("fails when the prior's thread.created or a seeded event is missing fr
       message!.eventId,
       `${thread.thread.id}:replay`,
     ]);
+  }),
+);
+
+it.effect("fails unless the candidate's own store holds the prior's thread.created row", () =>
+  Effect.gen(function* () {
+    const fixtures = yield* loadFixtures;
+    const threadId = fixtures[1]!.thread.id;
+    const created = `${threadId}:thread.created`;
+    const isCreation = (event: SeededEvent) =>
+      event.stream_id === threadId && event.event_type === "thread.created";
+    const withCandidateCreation = (change: (row: SeededEvent) => SeededEvent | undefined) =>
+      changed((copy) => {
+        copy.candidateEvents = copy.candidateEvents.flatMap((event) => {
+          if (!isCreation(event)) return [event];
+          const replaced = change(event);
+          return replaced === undefined ? [] : [replaced];
+        });
+      });
+    const rewritten = (row: SeededEvent, fields: Row) => ({
+      ...row,
+      payload_json: JSON.stringify({ ...JSON.parse(row.payload_json), ...fields }),
+    });
+
+    const cases: ReadonlyArray<readonly [string, (row: SeededEvent) => SeededEvent | undefined]> = [
+      ["missing", () => undefined],
+      ["moved", (row) => ({ ...row, sequence: row.sequence + 100 })],
+      ["another id", (row) => ({ ...row, event_id: "another-event" })],
+      ["another command", (row) => ({ ...row, command_id: "another-command" })],
+      ["retitled", (row) => rewritten(row, { title: "Renamed" })],
+      ["reconfigured", (row) => rewritten(row, { branch: "another-branch" })],
+      ["an extra field", (row) => rewritten(row, { unexpected: true })],
+      [
+        "a dropped field",
+        (row) => {
+          const { lastVisitedAt: _, ...payload } = JSON.parse(row.payload_json);
+          return { ...row, payload_json: JSON.stringify(payload) };
+        },
+      ],
+    ];
+    for (const [name, change] of cases) {
+      assert.deepStrictEqual(failedIds(fixtures, withCandidateCreation(change)), [created], name);
+    }
+
+    // The same payload in another key order is the same row.
+    const reordered = withCandidateCreation((row) => ({
+      ...row,
+      payload_json: JSON.stringify(
+        Object.fromEntries(Object.entries(JSON.parse(row.payload_json)).toReversed()),
+      ),
+    }));
+    assert.deepStrictEqual(failedIds(fixtures, reordered), []);
+
+    const unread = changed((copy) => {
+      copy.candidateEvents = [];
+    });
+    assert.deepStrictEqual(
+      failedIds(fixtures, unread),
+      fixtures.map((fixture) => `${fixture.thread.id}:thread.created`),
+    );
   }),
 );
 

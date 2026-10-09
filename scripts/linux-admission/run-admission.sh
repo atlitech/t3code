@@ -13,8 +13,9 @@
 #   4. The candidate starts on the same home (running its own migrations).
 #   5. probe.ts: GET / is 200 and the environment reports RELEASE_VERSION.
 #   6. readback.ts: every fixture thread and message reads back through the
-#      candidate's snapshot API, and the candidate decodes every event the
-#      prior's log holds for them, with a token from its own
+#      candidate's snapshot API, the candidate's own store still holds each
+#      thread.created row as the prior wrote it, and the candidate decodes
+#      every event the prior's log holds for them, with a token from its own
 #      `t3 auth session issue`.
 #   7. admission-record.ts writes OUT_DIR/ADMISSION.json, or nothing.
 #
@@ -76,8 +77,11 @@ node "$here/probe.ts" --base-url "$base_url" --release-version "$RELEASE_VERSION
   run_t3 "$candidate_t3" "$home" auth session issue --base-dir "$home" \
     --scope orchestration:read --ttl 15m --token-only >"$work/token"
 )
+# The candidate's own store, now that it has started and migrated the home.
+dump_thread_events "$home/userdata/statev2.sqlite" "$work/candidate-events.json"
 node "$here/readback.ts" --stage upgraded --base-url "$base_url" --token-file "$work/token" \
-  --fixtures "$fixtures" --seeded-events "$work/seeded-events.json" --out "$work/readback.json"
+  --fixtures "$fixtures" --seeded-events "$work/seeded-events.json" \
+  --candidate-events "$work/candidate-events.json" --out "$work/readback.json"
 rm -f "$work/token"
 stop_server
 echo "::endgroup::"

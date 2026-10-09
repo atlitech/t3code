@@ -10,8 +10,8 @@
 # The archive writes the fixture history as the prior does in an admission
 # (server.sh write_prior_history); that database is pre-upgrade.sqlite. It
 # then starts again on the same home as the candidate would, and what
-# readback.ts reads at the `upgraded` stage (the logged event rows, the thread
-# snapshots, and the resumes) is snapshot-response.json.
+# readback.ts reads at the `upgraded` stage (the logged event rows, the
+# candidate's own rows, the thread snapshots, and the resumes) is snapshot-response.json.
 set -euo pipefail
 
 archive="${1:?usage: record-fixture.sh <t3-VERSION-linux-x64.tar.gz>}"
@@ -43,9 +43,11 @@ port="$(free_port)"
 start_server "$t3" "$home" "$port" "$work/serve.log"
 run_t3 "$t3" "$home" auth session issue --base-dir "$home" --scope orchestration:read \
   --token-only >"$work/token"
+dump_thread_events "$db" "$work/candidate-events.json"
 node "$here/readback.ts" --stage upgraded --base-url "http://127.0.0.1:$port" \
   --token-file "$work/token" \
   --fixtures "$here/fixtures.json" --seeded-events "$work/seeded-events.json" \
+  --candidate-events "$work/candidate-events.json" \
   --out "$work/readback.json" \
   --responses-out "$work/snapshot-response.json"
 stop_server
