@@ -1,0 +1,776 @@
+{
+  "seededEvents": [
+    {
+      "sequence": 1,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Athread.create%3Aadmission-thread-upgrade-notes:bf92c663-c822-45e1-a775-1efcb80e7ba8",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "thread.created",
+      "command_id": "admission:thread.create:admission-thread-upgrade-notes",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"web\",\"id\":\"admission-thread-upgrade-notes\",\"projectId\":\"admission-project\",\"title\":\"Upgrade notes\",\"providerInstanceId\":\"codex\",\"modelSelection\":{\"instanceId\":\"codex\",\"model\":\"gpt-5-codex\"},\"runtimeMode\":\"full-access\",\"interactionMode\":\"default\",\"branch\":null,\"worktreePath\":null,\"activeProviderThreadId\":null,\"lineage\":{\"parentThreadId\":null,\"relationshipToParent\":null,\"rootThreadId\":\"admission-thread-upgrade-notes\"},\"forkedFrom\":null,\"createdAt\":\"2026-10-09T16:24:19.488Z\",\"updatedAt\":\"2026-10-09T16:24:19.488Z\",\"archivedAt\":null,\"settledOverride\":null,\"settledAt\":null,\"snoozedUntil\":null,\"snoozedAt\":null,\"lastVisitedAt\":null,\"deletedAt\":null}"
+    },
+    {
+      "sequence": 2,
+      "event_id": "event:thread:admission-thread-plan-review:command:admission%3Athread.create%3Aadmission-thread-plan-review:90508d75-6489-4703-b174-6be8a9763559",
+      "stream_id": "admission-thread-plan-review",
+      "event_type": "thread.created",
+      "command_id": "admission:thread.create:admission-thread-plan-review",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"mobile\",\"id\":\"admission-thread-plan-review\",\"projectId\":\"admission-project\",\"title\":\"Plan review\",\"providerInstanceId\":\"claudeAgent\",\"modelSelection\":{\"instanceId\":\"claudeAgent\",\"model\":\"claude-sonnet-4-5\"},\"runtimeMode\":\"approval-required\",\"interactionMode\":\"plan\",\"branch\":\"admission/plan-review\",\"worktreePath\":null,\"activeProviderThreadId\":null,\"lineage\":{\"parentThreadId\":null,\"relationshipToParent\":null,\"rootThreadId\":\"admission-thread-plan-review\"},\"forkedFrom\":null,\"createdAt\":\"2026-10-09T16:24:19.599Z\",\"updatedAt\":\"2026-10-09T16:24:19.599Z\",\"archivedAt\":null,\"settledOverride\":null,\"settledAt\":null,\"snoozedUntil\":null,\"snoozedAt\":null,\"lastVisitedAt\":null,\"deletedAt\":null}"
+    },
+    {
+      "sequence": 3,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-1:0",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-notes-1",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"web\",\"id\":\"admission-message-notes-1\",\"threadId\":\"admission-thread-upgrade-notes\",\"runId\":null,\"nodeId\":null,\"role\":\"user\",\"text\":\"Summarize what changed in the last release.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-01T09:00:00.000Z\",\"updatedAt\":\"2026-10-01T09:00:00.000Z\"}"
+    },
+    {
+      "sequence": 4,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-2:0",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-notes-2",
+      "payload_json": "{\"createdBy\":\"agent\",\"creationSource\":\"provider\",\"id\":\"admission-message-notes-2\",\"threadId\":\"admission-thread-upgrade-notes\",\"runId\":null,\"nodeId\":null,\"role\":\"assistant\",\"text\":\"The release adds a settings page and fixes the server's startup order.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-01T09:01:00.000Z\",\"updatedAt\":\"2026-10-01T09:01:00.000Z\"}"
+    },
+    {
+      "sequence": 5,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-3:0",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-notes-3",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"web\",\"id\":\"admission-message-notes-3\",\"threadId\":\"admission-thread-upgrade-notes\",\"runId\":null,\"nodeId\":null,\"role\":\"user\",\"text\":\"Quote it as \\\"server's\\\" and keep the line break:\\nsecond line.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-01T09:02:00.000Z\",\"updatedAt\":\"2026-10-01T09:02:00.000Z\"}"
+    },
+    {
+      "sequence": 6,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-4:0",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-notes-4",
+      "payload_json": "{\"createdBy\":\"agent\",\"creationSource\":\"provider\",\"id\":\"admission-message-notes-4\",\"threadId\":\"admission-thread-upgrade-notes\",\"runId\":null,\"nodeId\":null,\"role\":\"assistant\",\"text\":\"Done: \\\"server's\\\" quoted, line break kept.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-01T09:03:00.000Z\",\"updatedAt\":\"2026-10-01T09:03:00.000Z\"}"
+    },
+    {
+      "sequence": 7,
+      "event_id": "event:thread:admission-thread-plan-review:command:admission%3Amessage.updated%3Aadmission-message-plan-1:0",
+      "stream_id": "admission-thread-plan-review",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-plan-1",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"mobile\",\"id\":\"admission-message-plan-1\",\"threadId\":\"admission-thread-plan-review\",\"runId\":null,\"nodeId\":null,\"role\":\"user\",\"text\":\"Review the migration plan before we ship it.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-02T14:30:00.000Z\",\"updatedAt\":\"2026-10-02T14:30:00.000Z\"}"
+    },
+    {
+      "sequence": 8,
+      "event_id": "event:thread:admission-thread-plan-review:command:admission%3Amessage.updated%3Aadmission-message-plan-2:0",
+      "stream_id": "admission-thread-plan-review",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-plan-2",
+      "payload_json": "{\"createdBy\":\"agent\",\"creationSource\":\"provider\",\"id\":\"admission-message-plan-2\",\"threadId\":\"admission-thread-plan-review\",\"runId\":null,\"nodeId\":null,\"role\":\"assistant\",\"text\":\"The plan is sound; run the backfill before the column drop.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-02T14:31:00.000Z\",\"updatedAt\":\"2026-10-02T14:31:00.000Z\"}"
+    },
+    {
+      "sequence": 9,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:server%3Aauto-settle%3Aadmission-thread-upgrade-notes%3Ab16a6d92-1ec0-4a1c-9b8a-c4842d12f0c2:f93edc88-3ef6-47cd-a083-39a93e11d07f",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "thread.settled",
+      "command_id": "server:auto-settle:admission-thread-upgrade-notes:b16a6d92-1ec0-4a1c-9b8a-c4842d12f0c2",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"web\",\"id\":\"admission-thread-upgrade-notes\",\"projectId\":\"admission-project\",\"title\":\"Upgrade notes\",\"providerInstanceId\":\"codex\",\"modelSelection\":{\"instanceId\":\"codex\",\"model\":\"gpt-5-codex\"},\"runtimeMode\":\"full-access\",\"interactionMode\":\"default\",\"branch\":null,\"worktreePath\":null,\"activeProviderThreadId\":null,\"lineage\":{\"parentThreadId\":null,\"relationshipToParent\":null,\"rootThreadId\":\"admission-thread-upgrade-notes\"},\"forkedFrom\":null,\"createdAt\":\"2026-10-09T16:24:19.488Z\",\"updatedAt\":\"2026-10-09T16:24:30.341Z\",\"archivedAt\":null,\"settledOverride\":\"settled\",\"settledAt\":\"2026-10-01T09:02:00.000Z\",\"unsettledAt\":null,\"snoozedUntil\":null,\"snoozedAt\":null,\"pinnedAt\":null,\"pinOrderKey\":null,\"activeOrderKey\":null,\"lastVisitedAt\":null,\"deletedAt\":null}"
+    },
+    {
+      "sequence": 10,
+      "event_id": "event:thread:admission-thread-plan-review:command:server%3Aauto-settle%3Aadmission-thread-plan-review%3A9ad6b238-1519-4ecd-a0ef-95f437962fd6:cd6cacce-8e3d-4fe8-820b-92f913d93b87",
+      "stream_id": "admission-thread-plan-review",
+      "event_type": "thread.settled",
+      "command_id": "server:auto-settle:admission-thread-plan-review:9ad6b238-1519-4ecd-a0ef-95f437962fd6",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"mobile\",\"id\":\"admission-thread-plan-review\",\"projectId\":\"admission-project\",\"title\":\"Plan review\",\"providerInstanceId\":\"claudeAgent\",\"modelSelection\":{\"instanceId\":\"claudeAgent\",\"model\":\"claude-sonnet-4-5\"},\"runtimeMode\":\"approval-required\",\"interactionMode\":\"plan\",\"branch\":\"admission/plan-review\",\"worktreePath\":null,\"activeProviderThreadId\":null,\"lineage\":{\"parentThreadId\":null,\"relationshipToParent\":null,\"rootThreadId\":\"admission-thread-plan-review\"},\"forkedFrom\":null,\"createdAt\":\"2026-10-09T16:24:19.599Z\",\"updatedAt\":\"2026-10-09T16:24:30.384Z\",\"archivedAt\":null,\"settledOverride\":\"settled\",\"settledAt\":\"2026-10-02T14:30:00.000Z\",\"unsettledAt\":null,\"snoozedUntil\":null,\"snoozedAt\":null,\"pinnedAt\":null,\"pinOrderKey\":null,\"activeOrderKey\":null,\"lastVisitedAt\":null,\"deletedAt\":null}"
+    }
+  ],
+  "candidateEvents": [
+    {
+      "sequence": 1,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Athread.create%3Aadmission-thread-upgrade-notes:bf92c663-c822-45e1-a775-1efcb80e7ba8",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "thread.created",
+      "command_id": "admission:thread.create:admission-thread-upgrade-notes",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"web\",\"id\":\"admission-thread-upgrade-notes\",\"projectId\":\"admission-project\",\"title\":\"Upgrade notes\",\"providerInstanceId\":\"codex\",\"modelSelection\":{\"instanceId\":\"codex\",\"model\":\"gpt-5-codex\"},\"runtimeMode\":\"full-access\",\"interactionMode\":\"default\",\"branch\":null,\"worktreePath\":null,\"activeProviderThreadId\":null,\"lineage\":{\"parentThreadId\":null,\"relationshipToParent\":null,\"rootThreadId\":\"admission-thread-upgrade-notes\"},\"forkedFrom\":null,\"createdAt\":\"2026-10-09T16:24:19.488Z\",\"updatedAt\":\"2026-10-09T16:24:19.488Z\",\"archivedAt\":null,\"settledOverride\":null,\"settledAt\":null,\"snoozedUntil\":null,\"snoozedAt\":null,\"lastVisitedAt\":null,\"deletedAt\":null}"
+    },
+    {
+      "sequence": 2,
+      "event_id": "event:thread:admission-thread-plan-review:command:admission%3Athread.create%3Aadmission-thread-plan-review:90508d75-6489-4703-b174-6be8a9763559",
+      "stream_id": "admission-thread-plan-review",
+      "event_type": "thread.created",
+      "command_id": "admission:thread.create:admission-thread-plan-review",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"mobile\",\"id\":\"admission-thread-plan-review\",\"projectId\":\"admission-project\",\"title\":\"Plan review\",\"providerInstanceId\":\"claudeAgent\",\"modelSelection\":{\"instanceId\":\"claudeAgent\",\"model\":\"claude-sonnet-4-5\"},\"runtimeMode\":\"approval-required\",\"interactionMode\":\"plan\",\"branch\":\"admission/plan-review\",\"worktreePath\":null,\"activeProviderThreadId\":null,\"lineage\":{\"parentThreadId\":null,\"relationshipToParent\":null,\"rootThreadId\":\"admission-thread-plan-review\"},\"forkedFrom\":null,\"createdAt\":\"2026-10-09T16:24:19.599Z\",\"updatedAt\":\"2026-10-09T16:24:19.599Z\",\"archivedAt\":null,\"settledOverride\":null,\"settledAt\":null,\"snoozedUntil\":null,\"snoozedAt\":null,\"lastVisitedAt\":null,\"deletedAt\":null}"
+    },
+    {
+      "sequence": 3,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-1:0",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-notes-1",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"web\",\"id\":\"admission-message-notes-1\",\"threadId\":\"admission-thread-upgrade-notes\",\"runId\":null,\"nodeId\":null,\"role\":\"user\",\"text\":\"Summarize what changed in the last release.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-01T09:00:00.000Z\",\"updatedAt\":\"2026-10-01T09:00:00.000Z\"}"
+    },
+    {
+      "sequence": 4,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-2:0",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-notes-2",
+      "payload_json": "{\"createdBy\":\"agent\",\"creationSource\":\"provider\",\"id\":\"admission-message-notes-2\",\"threadId\":\"admission-thread-upgrade-notes\",\"runId\":null,\"nodeId\":null,\"role\":\"assistant\",\"text\":\"The release adds a settings page and fixes the server's startup order.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-01T09:01:00.000Z\",\"updatedAt\":\"2026-10-01T09:01:00.000Z\"}"
+    },
+    {
+      "sequence": 5,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-3:0",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-notes-3",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"web\",\"id\":\"admission-message-notes-3\",\"threadId\":\"admission-thread-upgrade-notes\",\"runId\":null,\"nodeId\":null,\"role\":\"user\",\"text\":\"Quote it as \\\"server's\\\" and keep the line break:\\nsecond line.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-01T09:02:00.000Z\",\"updatedAt\":\"2026-10-01T09:02:00.000Z\"}"
+    },
+    {
+      "sequence": 6,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-4:0",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-notes-4",
+      "payload_json": "{\"createdBy\":\"agent\",\"creationSource\":\"provider\",\"id\":\"admission-message-notes-4\",\"threadId\":\"admission-thread-upgrade-notes\",\"runId\":null,\"nodeId\":null,\"role\":\"assistant\",\"text\":\"Done: \\\"server's\\\" quoted, line break kept.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-01T09:03:00.000Z\",\"updatedAt\":\"2026-10-01T09:03:00.000Z\"}"
+    },
+    {
+      "sequence": 7,
+      "event_id": "event:thread:admission-thread-plan-review:command:admission%3Amessage.updated%3Aadmission-message-plan-1:0",
+      "stream_id": "admission-thread-plan-review",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-plan-1",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"mobile\",\"id\":\"admission-message-plan-1\",\"threadId\":\"admission-thread-plan-review\",\"runId\":null,\"nodeId\":null,\"role\":\"user\",\"text\":\"Review the migration plan before we ship it.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-02T14:30:00.000Z\",\"updatedAt\":\"2026-10-02T14:30:00.000Z\"}"
+    },
+    {
+      "sequence": 8,
+      "event_id": "event:thread:admission-thread-plan-review:command:admission%3Amessage.updated%3Aadmission-message-plan-2:0",
+      "stream_id": "admission-thread-plan-review",
+      "event_type": "message.updated",
+      "command_id": "admission:message.updated:admission-message-plan-2",
+      "payload_json": "{\"createdBy\":\"agent\",\"creationSource\":\"provider\",\"id\":\"admission-message-plan-2\",\"threadId\":\"admission-thread-plan-review\",\"runId\":null,\"nodeId\":null,\"role\":\"assistant\",\"text\":\"The plan is sound; run the backfill before the column drop.\",\"attachments\":[],\"streaming\":false,\"createdAt\":\"2026-10-02T14:31:00.000Z\",\"updatedAt\":\"2026-10-02T14:31:00.000Z\"}"
+    },
+    {
+      "sequence": 9,
+      "event_id": "event:thread:admission-thread-upgrade-notes:command:server%3Aauto-settle%3Aadmission-thread-upgrade-notes%3Ab16a6d92-1ec0-4a1c-9b8a-c4842d12f0c2:f93edc88-3ef6-47cd-a083-39a93e11d07f",
+      "stream_id": "admission-thread-upgrade-notes",
+      "event_type": "thread.settled",
+      "command_id": "server:auto-settle:admission-thread-upgrade-notes:b16a6d92-1ec0-4a1c-9b8a-c4842d12f0c2",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"web\",\"id\":\"admission-thread-upgrade-notes\",\"projectId\":\"admission-project\",\"title\":\"Upgrade notes\",\"providerInstanceId\":\"codex\",\"modelSelection\":{\"instanceId\":\"codex\",\"model\":\"gpt-5-codex\"},\"runtimeMode\":\"full-access\",\"interactionMode\":\"default\",\"branch\":null,\"worktreePath\":null,\"activeProviderThreadId\":null,\"lineage\":{\"parentThreadId\":null,\"relationshipToParent\":null,\"rootThreadId\":\"admission-thread-upgrade-notes\"},\"forkedFrom\":null,\"createdAt\":\"2026-10-09T16:24:19.488Z\",\"updatedAt\":\"2026-10-09T16:24:30.341Z\",\"archivedAt\":null,\"settledOverride\":\"settled\",\"settledAt\":\"2026-10-01T09:02:00.000Z\",\"unsettledAt\":null,\"snoozedUntil\":null,\"snoozedAt\":null,\"pinnedAt\":null,\"pinOrderKey\":null,\"activeOrderKey\":null,\"lastVisitedAt\":null,\"deletedAt\":null}"
+    },
+    {
+      "sequence": 10,
+      "event_id": "event:thread:admission-thread-plan-review:command:server%3Aauto-settle%3Aadmission-thread-plan-review%3A9ad6b238-1519-4ecd-a0ef-95f437962fd6:cd6cacce-8e3d-4fe8-820b-92f913d93b87",
+      "stream_id": "admission-thread-plan-review",
+      "event_type": "thread.settled",
+      "command_id": "server:auto-settle:admission-thread-plan-review:9ad6b238-1519-4ecd-a0ef-95f437962fd6",
+      "payload_json": "{\"createdBy\":\"user\",\"creationSource\":\"mobile\",\"id\":\"admission-thread-plan-review\",\"projectId\":\"admission-project\",\"title\":\"Plan review\",\"providerInstanceId\":\"claudeAgent\",\"modelSelection\":{\"instanceId\":\"claudeAgent\",\"model\":\"claude-sonnet-4-5\"},\"runtimeMode\":\"approval-required\",\"interactionMode\":\"plan\",\"branch\":\"admission/plan-review\",\"worktreePath\":null,\"activeProviderThreadId\":null,\"lineage\":{\"parentThreadId\":null,\"relationshipToParent\":null,\"rootThreadId\":\"admission-thread-plan-review\"},\"forkedFrom\":null,\"createdAt\":\"2026-10-09T16:24:19.599Z\",\"updatedAt\":\"2026-10-09T16:24:30.384Z\",\"archivedAt\":null,\"settledOverride\":\"settled\",\"settledAt\":\"2026-10-02T14:30:00.000Z\",\"unsettledAt\":null,\"snoozedUntil\":null,\"snoozedAt\":null,\"pinnedAt\":null,\"pinOrderKey\":null,\"activeOrderKey\":null,\"lastVisitedAt\":null,\"deletedAt\":null}"
+    }
+  ],
+  "snapshots": [
+    {
+      "threadId": "admission-thread-upgrade-notes",
+      "status": 200,
+      "body": {
+        "snapshotSequence": 9,
+        "projection": {
+          "thread": {
+            "createdBy": "user",
+            "creationSource": "web",
+            "id": "admission-thread-upgrade-notes",
+            "projectId": "admission-project",
+            "title": "Upgrade notes",
+            "providerInstanceId": "codex",
+            "modelSelection": {
+              "instanceId": "codex",
+              "model": "gpt-5-codex"
+            },
+            "runtimeMode": "full-access",
+            "interactionMode": "default",
+            "branch": null,
+            "worktreePath": null,
+            "activeProviderThreadId": null,
+            "lineage": {
+              "parentThreadId": null,
+              "relationshipToParent": null,
+              "rootThreadId": "admission-thread-upgrade-notes"
+            },
+            "forkedFrom": null,
+            "createdAt": "2026-10-09T16:24:19.488Z",
+            "updatedAt": "2026-10-09T16:24:30.341Z",
+            "archivedAt": null,
+            "settledOverride": "settled",
+            "settledAt": "2026-10-01T09:02:00.000Z",
+            "unsettledAt": null,
+            "snoozedUntil": null,
+            "snoozedAt": null,
+            "pinnedAt": null,
+            "pinOrderKey": null,
+            "activeOrderKey": null,
+            "lastVisitedAt": null,
+            "deletedAt": null
+          },
+          "runs": [],
+          "attempts": [],
+          "nodes": [],
+          "subagents": [],
+          "providerSessions": [],
+          "providerThreads": [],
+          "providerTurns": [],
+          "runtimeRequests": [],
+          "messages": [
+            {
+              "createdBy": "user",
+              "creationSource": "web",
+              "id": "admission-message-notes-1",
+              "threadId": "admission-thread-upgrade-notes",
+              "runId": null,
+              "nodeId": null,
+              "role": "user",
+              "text": "Summarize what changed in the last release.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-01T09:00:00.000Z",
+              "updatedAt": "2026-10-01T09:00:00.000Z"
+            },
+            {
+              "createdBy": "agent",
+              "creationSource": "provider",
+              "id": "admission-message-notes-2",
+              "threadId": "admission-thread-upgrade-notes",
+              "runId": null,
+              "nodeId": null,
+              "role": "assistant",
+              "text": "The release adds a settings page and fixes the server's startup order.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-01T09:01:00.000Z",
+              "updatedAt": "2026-10-01T09:01:00.000Z"
+            },
+            {
+              "createdBy": "user",
+              "creationSource": "web",
+              "id": "admission-message-notes-3",
+              "threadId": "admission-thread-upgrade-notes",
+              "runId": null,
+              "nodeId": null,
+              "role": "user",
+              "text": "Quote it as \"server's\" and keep the line break:\nsecond line.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-01T09:02:00.000Z",
+              "updatedAt": "2026-10-01T09:02:00.000Z"
+            },
+            {
+              "createdBy": "agent",
+              "creationSource": "provider",
+              "id": "admission-message-notes-4",
+              "threadId": "admission-thread-upgrade-notes",
+              "runId": null,
+              "nodeId": null,
+              "role": "assistant",
+              "text": "Done: \"server's\" quoted, line break kept.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-01T09:03:00.000Z",
+              "updatedAt": "2026-10-01T09:03:00.000Z"
+            }
+          ],
+          "plans": [],
+          "turnItems": [],
+          "checkpointScopes": [],
+          "checkpoints": [],
+          "contextHandoffs": [],
+          "contextTransfers": [],
+          "visibleTurnItems": [],
+          "updatedAt": "2026-10-09T16:24:30.341Z"
+        }
+      }
+    },
+    {
+      "threadId": "admission-thread-plan-review",
+      "status": 200,
+      "body": {
+        "snapshotSequence": 10,
+        "projection": {
+          "thread": {
+            "createdBy": "user",
+            "creationSource": "mobile",
+            "id": "admission-thread-plan-review",
+            "projectId": "admission-project",
+            "title": "Plan review",
+            "providerInstanceId": "claudeAgent",
+            "modelSelection": {
+              "instanceId": "claudeAgent",
+              "model": "claude-sonnet-4-5"
+            },
+            "runtimeMode": "approval-required",
+            "interactionMode": "plan",
+            "branch": "admission/plan-review",
+            "worktreePath": null,
+            "activeProviderThreadId": null,
+            "lineage": {
+              "parentThreadId": null,
+              "relationshipToParent": null,
+              "rootThreadId": "admission-thread-plan-review"
+            },
+            "forkedFrom": null,
+            "createdAt": "2026-10-09T16:24:19.599Z",
+            "updatedAt": "2026-10-09T16:24:30.384Z",
+            "archivedAt": null,
+            "settledOverride": "settled",
+            "settledAt": "2026-10-02T14:30:00.000Z",
+            "unsettledAt": null,
+            "snoozedUntil": null,
+            "snoozedAt": null,
+            "pinnedAt": null,
+            "pinOrderKey": null,
+            "activeOrderKey": null,
+            "lastVisitedAt": null,
+            "deletedAt": null
+          },
+          "runs": [],
+          "attempts": [],
+          "nodes": [],
+          "subagents": [],
+          "providerSessions": [],
+          "providerThreads": [],
+          "providerTurns": [],
+          "runtimeRequests": [],
+          "messages": [
+            {
+              "createdBy": "user",
+              "creationSource": "mobile",
+              "id": "admission-message-plan-1",
+              "threadId": "admission-thread-plan-review",
+              "runId": null,
+              "nodeId": null,
+              "role": "user",
+              "text": "Review the migration plan before we ship it.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-02T14:30:00.000Z",
+              "updatedAt": "2026-10-02T14:30:00.000Z"
+            },
+            {
+              "createdBy": "agent",
+              "creationSource": "provider",
+              "id": "admission-message-plan-2",
+              "threadId": "admission-thread-plan-review",
+              "runId": null,
+              "nodeId": null,
+              "role": "assistant",
+              "text": "The plan is sound; run the backfill before the column drop.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-02T14:31:00.000Z",
+              "updatedAt": "2026-10-02T14:31:00.000Z"
+            }
+          ],
+          "plans": [],
+          "turnItems": [],
+          "checkpointScopes": [],
+          "checkpoints": [],
+          "contextHandoffs": [],
+          "contextTransfers": [],
+          "visibleTurnItems": [],
+          "updatedAt": "2026-10-09T16:24:30.384Z"
+        }
+      }
+    }
+  ],
+  "threadReplays": [
+    {
+      "threadId": "admission-thread-upgrade-notes",
+      "afterSequence": 1,
+      "values": [
+        {
+          "kind": "event",
+          "sequence": 3,
+          "event": {
+            "id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-1:0",
+            "threadId": "admission-thread-upgrade-notes",
+            "providerInstanceId": "codex",
+            "occurredAt": "2026-10-01T09:00:00.000Z",
+            "type": "message.updated",
+            "payload": {
+              "createdBy": "user",
+              "creationSource": "web",
+              "id": "admission-message-notes-1",
+              "threadId": "admission-thread-upgrade-notes",
+              "runId": null,
+              "nodeId": null,
+              "role": "user",
+              "text": "Summarize what changed in the last release.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-01T09:00:00.000Z",
+              "updatedAt": "2026-10-01T09:00:00.000Z"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "sequence": 4,
+          "event": {
+            "id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-2:0",
+            "threadId": "admission-thread-upgrade-notes",
+            "providerInstanceId": "codex",
+            "occurredAt": "2026-10-01T09:01:00.000Z",
+            "type": "message.updated",
+            "payload": {
+              "createdBy": "agent",
+              "creationSource": "provider",
+              "id": "admission-message-notes-2",
+              "threadId": "admission-thread-upgrade-notes",
+              "runId": null,
+              "nodeId": null,
+              "role": "assistant",
+              "text": "The release adds a settings page and fixes the server's startup order.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-01T09:01:00.000Z",
+              "updatedAt": "2026-10-01T09:01:00.000Z"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "sequence": 5,
+          "event": {
+            "id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-3:0",
+            "threadId": "admission-thread-upgrade-notes",
+            "providerInstanceId": "codex",
+            "occurredAt": "2026-10-01T09:02:00.000Z",
+            "type": "message.updated",
+            "payload": {
+              "createdBy": "user",
+              "creationSource": "web",
+              "id": "admission-message-notes-3",
+              "threadId": "admission-thread-upgrade-notes",
+              "runId": null,
+              "nodeId": null,
+              "role": "user",
+              "text": "Quote it as \"server's\" and keep the line break:\nsecond line.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-01T09:02:00.000Z",
+              "updatedAt": "2026-10-01T09:02:00.000Z"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "sequence": 6,
+          "event": {
+            "id": "event:thread:admission-thread-upgrade-notes:command:admission%3Amessage.updated%3Aadmission-message-notes-4:0",
+            "threadId": "admission-thread-upgrade-notes",
+            "providerInstanceId": "codex",
+            "occurredAt": "2026-10-01T09:03:00.000Z",
+            "type": "message.updated",
+            "payload": {
+              "createdBy": "agent",
+              "creationSource": "provider",
+              "id": "admission-message-notes-4",
+              "threadId": "admission-thread-upgrade-notes",
+              "runId": null,
+              "nodeId": null,
+              "role": "assistant",
+              "text": "Done: \"server's\" quoted, line break kept.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-01T09:03:00.000Z",
+              "updatedAt": "2026-10-01T09:03:00.000Z"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "sequence": 9,
+          "event": {
+            "id": "event:thread:admission-thread-upgrade-notes:command:server%3Aauto-settle%3Aadmission-thread-upgrade-notes%3Ab16a6d92-1ec0-4a1c-9b8a-c4842d12f0c2:f93edc88-3ef6-47cd-a083-39a93e11d07f",
+            "threadId": "admission-thread-upgrade-notes",
+            "providerInstanceId": "codex",
+            "occurredAt": "2026-10-09T16:24:30.341Z",
+            "type": "thread.settled",
+            "payload": {
+              "createdBy": "user",
+              "creationSource": "web",
+              "id": "admission-thread-upgrade-notes",
+              "projectId": "admission-project",
+              "title": "Upgrade notes",
+              "providerInstanceId": "codex",
+              "modelSelection": {
+                "instanceId": "codex",
+                "model": "gpt-5-codex"
+              },
+              "runtimeMode": "full-access",
+              "interactionMode": "default",
+              "branch": null,
+              "worktreePath": null,
+              "activeProviderThreadId": null,
+              "lineage": {
+                "parentThreadId": null,
+                "relationshipToParent": null,
+                "rootThreadId": "admission-thread-upgrade-notes"
+              },
+              "forkedFrom": null,
+              "createdAt": "2026-10-09T16:24:19.488Z",
+              "updatedAt": "2026-10-09T16:24:30.341Z",
+              "archivedAt": null,
+              "settledOverride": "settled",
+              "settledAt": "2026-10-01T09:02:00.000Z",
+              "unsettledAt": null,
+              "snoozedUntil": null,
+              "snoozedAt": null,
+              "pinnedAt": null,
+              "pinOrderKey": null,
+              "activeOrderKey": null,
+              "lastVisitedAt": null,
+              "deletedAt": null
+            }
+          }
+        }
+      ],
+      "synchronized": true
+    },
+    {
+      "threadId": "admission-thread-plan-review",
+      "afterSequence": 2,
+      "values": [
+        {
+          "kind": "event",
+          "sequence": 7,
+          "event": {
+            "id": "event:thread:admission-thread-plan-review:command:admission%3Amessage.updated%3Aadmission-message-plan-1:0",
+            "threadId": "admission-thread-plan-review",
+            "providerInstanceId": "claudeAgent",
+            "occurredAt": "2026-10-02T14:30:00.000Z",
+            "type": "message.updated",
+            "payload": {
+              "createdBy": "user",
+              "creationSource": "mobile",
+              "id": "admission-message-plan-1",
+              "threadId": "admission-thread-plan-review",
+              "runId": null,
+              "nodeId": null,
+              "role": "user",
+              "text": "Review the migration plan before we ship it.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-02T14:30:00.000Z",
+              "updatedAt": "2026-10-02T14:30:00.000Z"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "sequence": 8,
+          "event": {
+            "id": "event:thread:admission-thread-plan-review:command:admission%3Amessage.updated%3Aadmission-message-plan-2:0",
+            "threadId": "admission-thread-plan-review",
+            "providerInstanceId": "claudeAgent",
+            "occurredAt": "2026-10-02T14:31:00.000Z",
+            "type": "message.updated",
+            "payload": {
+              "createdBy": "agent",
+              "creationSource": "provider",
+              "id": "admission-message-plan-2",
+              "threadId": "admission-thread-plan-review",
+              "runId": null,
+              "nodeId": null,
+              "role": "assistant",
+              "text": "The plan is sound; run the backfill before the column drop.",
+              "attachments": [],
+              "streaming": false,
+              "createdAt": "2026-10-02T14:31:00.000Z",
+              "updatedAt": "2026-10-02T14:31:00.000Z"
+            }
+          }
+        },
+        {
+          "kind": "event",
+          "sequence": 10,
+          "event": {
+            "id": "event:thread:admission-thread-plan-review:command:server%3Aauto-settle%3Aadmission-thread-plan-review%3A9ad6b238-1519-4ecd-a0ef-95f437962fd6:cd6cacce-8e3d-4fe8-820b-92f913d93b87",
+            "threadId": "admission-thread-plan-review",
+            "providerInstanceId": "claudeAgent",
+            "occurredAt": "2026-10-09T16:24:30.384Z",
+            "type": "thread.settled",
+            "payload": {
+              "createdBy": "user",
+              "creationSource": "mobile",
+              "id": "admission-thread-plan-review",
+              "projectId": "admission-project",
+              "title": "Plan review",
+              "providerInstanceId": "claudeAgent",
+              "modelSelection": {
+                "instanceId": "claudeAgent",
+                "model": "claude-sonnet-4-5"
+              },
+              "runtimeMode": "approval-required",
+              "interactionMode": "plan",
+              "branch": "admission/plan-review",
+              "worktreePath": null,
+              "activeProviderThreadId": null,
+              "lineage": {
+                "parentThreadId": null,
+                "relationshipToParent": null,
+                "rootThreadId": "admission-thread-plan-review"
+              },
+              "forkedFrom": null,
+              "createdAt": "2026-10-09T16:24:19.599Z",
+              "updatedAt": "2026-10-09T16:24:30.384Z",
+              "archivedAt": null,
+              "settledOverride": "settled",
+              "settledAt": "2026-10-02T14:30:00.000Z",
+              "unsettledAt": null,
+              "snoozedUntil": null,
+              "snoozedAt": null,
+              "pinnedAt": null,
+              "pinOrderKey": null,
+              "activeOrderKey": null,
+              "lastVisitedAt": null,
+              "deletedAt": null
+            }
+          }
+        }
+      ],
+      "synchronized": true
+    }
+  ],
+  "shellReplay": {
+    "afterSequence": 0,
+    "values": [
+      {
+        "kind": "thread.updated",
+        "sequence": 9,
+        "location": "active",
+        "thread": {
+          "createdBy": "user",
+          "creationSource": "web",
+          "id": "admission-thread-upgrade-notes",
+          "projectId": "admission-project",
+          "title": "Upgrade notes",
+          "providerInstanceId": "codex",
+          "modelSelection": {
+            "instanceId": "codex",
+            "model": "gpt-5-codex"
+          },
+          "runtimeMode": "full-access",
+          "interactionMode": "default",
+          "branch": null,
+          "worktreePath": null,
+          "pullRequests": [],
+          "lineage": {
+            "parentThreadId": null,
+            "relationshipToParent": null,
+            "rootThreadId": "admission-thread-upgrade-notes"
+          },
+          "forkedFrom": null,
+          "activeProviderThreadId": null,
+          "latestRunId": null,
+          "latestRunRequestedAt": null,
+          "latestRunStartedAt": null,
+          "latestRunCompletedAt": null,
+          "activeRunId": null,
+          "activityRunStartedAt": null,
+          "activityRunStatus": null,
+          "status": "idle",
+          "lastError": null,
+          "lastErrorClass": null,
+          "usageLimitResetAt": null,
+          "pendingRuntimeRequest": null,
+          "latestVisibleMessage": null,
+          "latestUserMessageAt": "2026-10-01T09:02:00.000Z",
+          "latestUserAuthoredMessageAt": "2026-10-01T09:02:00.000Z",
+          "hasActionableProposedPlan": false,
+          "pendingBackgroundTasks": [],
+          "providerInstanceHistory": [],
+          "goal": null,
+          "itemCount": 0,
+          "visibleItemCount": 0,
+          "createdAt": "2026-10-09T16:24:19.488Z",
+          "updatedAt": "2026-10-09T16:24:30.341Z",
+          "archivedAt": null,
+          "settledOverride": "settled",
+          "settledAt": "2026-10-01T09:02:00.000Z",
+          "unsettledAt": null,
+          "snoozedUntil": null,
+          "snoozedAt": null,
+          "limitRecovery": null,
+          "pinnedAt": null,
+          "autoSettleDisabledAt": null,
+          "pinOrderKey": null,
+          "activeOrderKey": null,
+          "lastVisitedAt": null,
+          "titleRegeneration": null,
+          "deletedAt": null
+        }
+      },
+      {
+        "kind": "thread.updated",
+        "sequence": 10,
+        "location": "active",
+        "thread": {
+          "createdBy": "user",
+          "creationSource": "mobile",
+          "id": "admission-thread-plan-review",
+          "projectId": "admission-project",
+          "title": "Plan review",
+          "providerInstanceId": "claudeAgent",
+          "modelSelection": {
+            "instanceId": "claudeAgent",
+            "model": "claude-sonnet-4-5"
+          },
+          "runtimeMode": "approval-required",
+          "interactionMode": "plan",
+          "branch": "admission/plan-review",
+          "worktreePath": null,
+          "pullRequests": [],
+          "lineage": {
+            "parentThreadId": null,
+            "relationshipToParent": null,
+            "rootThreadId": "admission-thread-plan-review"
+          },
+          "forkedFrom": null,
+          "activeProviderThreadId": null,
+          "latestRunId": null,
+          "latestRunRequestedAt": null,
+          "latestRunStartedAt": null,
+          "latestRunCompletedAt": null,
+          "activeRunId": null,
+          "activityRunStartedAt": null,
+          "activityRunStatus": null,
+          "status": "idle",
+          "lastError": null,
+          "lastErrorClass": null,
+          "usageLimitResetAt": null,
+          "pendingRuntimeRequest": null,
+          "latestVisibleMessage": null,
+          "latestUserMessageAt": "2026-10-02T14:30:00.000Z",
+          "latestUserAuthoredMessageAt": "2026-10-02T14:30:00.000Z",
+          "hasActionableProposedPlan": false,
+          "pendingBackgroundTasks": [],
+          "providerInstanceHistory": [],
+          "goal": null,
+          "itemCount": 0,
+          "visibleItemCount": 0,
+          "createdAt": "2026-10-09T16:24:19.599Z",
+          "updatedAt": "2026-10-09T16:24:30.384Z",
+          "archivedAt": null,
+          "settledOverride": "settled",
+          "settledAt": "2026-10-02T14:30:00.000Z",
+          "unsettledAt": null,
+          "snoozedUntil": null,
+          "snoozedAt": null,
+          "limitRecovery": null,
+          "pinnedAt": null,
+          "autoSettleDisabledAt": null,
+          "pinOrderKey": null,
+          "activeOrderKey": null,
+          "lastVisitedAt": null,
+          "titleRegeneration": null,
+          "deletedAt": null
+        }
+      }
+    ],
+    "synchronized": true
+  }
+}

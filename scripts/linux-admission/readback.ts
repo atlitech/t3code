@@ -1,0 +1,831 @@
+#!/usr/bin/env node
+
+// Fork-only (atlitech/t3code). Reads every fixture thread back through a
+// running server and compares it with fixtures.json and with the event log
+// as the prior release left it. run-admission.sh runs it three times:
+//
+// - `created`: the prior, right after its own thread.create: every fixture
+//   thread, with its configuration, through its thread snapshot API.
+// - `seeded`: the prior again, after the messages were seeded: the threads
+//   and every message, so the prior has read the full upgrade input.
+// - `upgraded`: the candidate, on the same home: the snapshots again, plus
+//   the event log. The candidate's own store, read once it has started and
+//   migrated, still holds each thread.created row exactly as the prior wrote
+//   it; the shell resume (`orchestration.subscribeShell` from sequence 0)
+//   decodes the log, and the thread it then serves must be the one the log
+//   records; the thread resume (`orchestration.subscribeThread` after the
+//   creation) replays every later event the log holds for the thread, each
+//   compared with its logged row.
+
+import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { Command, Flag } from "effect/cli";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { Socket } from "effect/socket";
+
+import { decodeFixtures, expectedThread, type FixtureThread, threadCommandId } from "./fixtures.ts";
+import { messageEvents } from "./seed.ts";
+import { callRpc } from "./ws-rpc.ts";
+
+export type ReadbackStage = "created" | "seeded" | "upgraded";
+
+/** One GET /api/orchestration/threads/:threadId, as the server answered it. */
+export interface ReadbackResponse {
+  readonly threadId: string;
+  readonly status: number;
+  readonly body: unknown;
+}
+
+/** One thread event row, as `sqlite3 -json` read it from the log the prior left. */
+export interface SeededEvent {
+  readonly sequence: number;
+  readonly event_id: string;
+  readonly stream_id: string;
+  readonly event_type: string;
+  readonly command_id: string | null;
+  readonly payload_json: string;
+}
+
+/** The values one resume streamed before its catch-up marker. */
+export interface ReplayResponse {
+  readonly afterSequence: number;
+  readonly values: ReadonlyArray<unknown>;
+  readonly synchronized: boolean;
+}
+
+export interface ThreadReplayResponse extends ReplayResponse {
+  readonly threadId: string;
+}
+
+export interface ReadbackObservation {
+  readonly seededEvents: ReadonlyArray<SeededEvent>;
+  /** The same rows, read from the candidate's own store once it has started and migrated. */
+  readonly candidateEvents: ReadonlyArray<SeededEvent>;
+  readonly snapshots: ReadonlyArray<ReadbackResponse>;
+  readonly threadReplays: ReadonlyArray<ThreadReplayResponse>;
+  readonly shellReplay: ReplayResponse | null;
+}
+
+export interface ReadbackItem {
+  readonly kind: "thread" | "message" | "event";
+  readonly id: string;
+  readonly passed: boolean;
+  readonly detail: string;
+}
+
+export interface ReadbackResult {
+  readonly stage: ReadbackStage;
+  readonly passed: boolean;
+  readonly threads: number;
+  readonly messages: number;
+  readonly events: number;
+  readonly items: ReadonlyArray<ReadbackItem>;
+}
+
+const Fields = Schema.Record(Schema.String, Schema.Unknown);
+const SnapshotBody = Schema.Struct({
+  snapshotSequence: Schema.Number,
+  projection: Schema.Struct({ thread: Fields, messages: Schema.Array(Fields) }),
+});
+const decodeSnapshotBody = Schema.decodeUnknownOption(SnapshotBody);
+const ReplayedEvent = Schema.Struct({
+  kind: Schema.Literal("event"),
+  sequence: Schema.Number,
+  event: Schema.Struct({
+    id: Schema.String,
+    type: Schema.String,
+    threadId: Schema.String,
+    payload: Fields,
+  }),
+});
+type ReplayedEvent = typeof ReplayedEvent.Type;
+const decodeReplayedEvent = Schema.decodeUnknownOption(ReplayedEvent);
+const AnyReplayedEvent = Schema.Struct({
+  kind: Schema.Literal("event"),
+  sequence: Schema.Number,
+  event: Schema.Struct({ id: Schema.String, type: Schema.String }),
+});
+const decodeAnyReplayedEvent = Schema.decodeUnknownOption(AnyReplayedEvent);
+const ShellThreadUpdated = Schema.Struct({
+  kind: Schema.Literal("thread.updated"),
+  thread: Fields,
+});
+const decodeShellThreadUpdated = Schema.decodeUnknownOption(ShellThreadUpdated);
+const decodePayloadJson = Schema.decodeUnknownOption(Schema.fromJsonString(Fields));
+const showJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
+/** Structural equality over JSON values. */
+export const sameJson = (left: unknown, right: unknown): boolean => {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameJson(value, right[index]))
+    );
+  }
+  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) {
+    return false;
+  }
+  const leftKeys = Object.keys(left);
+  return (
+    leftKeys.length === Object.keys(right).length &&
+    leftKeys.every((key) =>
+      sameJson((left as Record<string, unknown>)[key], (right as Record<string, unknown>)[key]),
+    )
+  );
+};
+
+/** Every field of `expected` that `actual` does not carry with the same value. */
+const fieldMismatches = (
+  expected: Readonly<Record<string, unknown>>,
+  actual: Readonly<Record<string, unknown>>,
+): string =>
+  Object.entries(expected)
+    .filter(([key, value]) => !(key in actual) || !sameJson(value, actual[key]))
+    .map(([key, value]) =>
+      key in actual
+        ? `${key} is ${showJson(actual[key])}, expected ${showJson(value)}`
+        : `${key} is missing, expected ${showJson(value)}`,
+    )
+    .join("; ");
+
+const item = (kind: ReadbackItem["kind"], id: string, problem: string): ReadbackItem => ({
+  kind,
+  id,
+  passed: problem === "",
+  detail: problem === "" ? "read back" : problem,
+});
+
+/** The thread.created row the prior wrote for a fixture thread, by its command id. */
+const createdEventOf = (observation: ReadbackObservation, threadId: string) =>
+  observation.seededEvents.find(
+    (event) =>
+      event.stream_id === threadId &&
+      event.event_type === "thread.created" &&
+      event.command_id === threadCommandId(threadId),
+  );
+
+/** The fixture's thread, with the creation time the prior's own event recorded. */
+const expectedThreadAsCreated = (
+  fixture: FixtureThread,
+  observation: ReadbackObservation,
+): Readonly<Record<string, unknown>> | string => {
+  const created = createdEventOf(observation, fixture.thread.id);
+  if (created === undefined) return "the prior's log has no thread.created for it";
+  const payload = decodePayloadJson(created.payload_json);
+  if (Option.isNone(payload)) return "the prior's thread.created payload is unreadable";
+  return { ...expectedThread(fixture.thread), createdAt: payload.value.createdAt };
+};
+
+/**
+ * How a replayed event differs from the row the prior logged at its
+ * sequence: its id, type, thread, and every payload field, both ways.
+ */
+const eventMismatches = (row: SeededEvent, replayed: ReplayedEvent): string => {
+  const { event } = replayed;
+  const payload = decodePayloadJson(row.payload_json);
+  return [
+    event.id === row.event_id ? "" : `id is '${event.id}', the log holds '${row.event_id}'`,
+    event.type === row.event_type ? "" : `type is ${event.type}, the log holds ${row.event_type}`,
+    event.threadId === row.stream_id ? "" : `threadId is '${event.threadId}'`,
+    Option.isNone(payload)
+      ? "the logged payload is unreadable"
+      : [
+          fieldMismatches(payload.value, event.payload),
+          ...Object.keys(event.payload)
+            .filter((key) => !(key in payload.value))
+            .map((key) => `payload.${key} is not in the log`),
+        ]
+          .filter((problem) => problem !== "")
+          .join("; "),
+  ]
+    .filter((problem) => problem !== "")
+    .join("; ");
+};
+
+/**
+ * The thread the prior's log records: its thread.created payload, with each
+ * later thread event's thread record (thread.settled carries the whole
+ * thread) laid over it in log order. Message events carry messages, not the
+ * thread, and are left out.
+ */
+const loggedThread = (
+  logged: ReadonlyArray<SeededEvent>,
+): Readonly<Record<string, unknown>> | string => {
+  const records = logged.filter((event) => event.event_type.startsWith("thread."));
+  if (records[0]?.event_type !== "thread.created") {
+    return "the log does not start with its thread.created";
+  }
+  const thread: Record<string, unknown> = {};
+  for (const record of records) {
+    const payload = decodePayloadJson(record.payload_json);
+    if (Option.isNone(payload)) return `the logged ${record.event_type} payload is unreadable`;
+    Object.assign(thread, payload.value);
+  }
+  return thread;
+};
+
+/**
+ * How the candidate's shell and snapshot thread differ from the fixture's
+ * thread as created and from the thread its log records.
+ */
+const threadMismatches = (
+  expected: Readonly<Record<string, unknown>>,
+  logged: Readonly<Record<string, unknown>> | string,
+  shellThread: Readonly<Record<string, unknown>>,
+  snapshotThread: Readonly<Record<string, unknown>> | undefined,
+): string => {
+  // A shell (OrchestrationV2ThreadShell) has no deletedAt: deleted threads leave it.
+  const withoutDeletedAt = (fields: Readonly<Record<string, unknown>>) =>
+    Object.fromEntries(Object.entries(fields).filter(([key]) => key !== "deletedAt"));
+  return [
+    fieldMismatches(withoutDeletedAt(expected), shellThread),
+    typeof logged === "string"
+      ? logged
+      : [
+          prefixed("shell", fieldMismatches(withoutDeletedAt(logged), shellThread)),
+          snapshotThread === undefined
+            ? "no snapshot to compare with the log"
+            : prefixed("snapshot", fieldMismatches(logged, snapshotThread)),
+        ]
+          .filter((problem) => problem !== "")
+          .join("; "),
+  ]
+    .filter((problem) => problem !== "")
+    .join("; ");
+};
+
+const prefixed = (where: string, problem: string) =>
+  problem === "" ? "" : `${where} differs from the log: ${problem}`;
+
+const snapshotBodyOf = (response: ReadbackResponse | undefined) =>
+  response?.status === 200 ? decodeSnapshotBody(response.body) : Option.none();
+
+/**
+ * The snapshot lists messages in the server's order, created_at then
+ * message_id (ProjectionStore getThreadRecords, `ORDER BY created_at ASC,
+ * message_id ASC`), and each once: the fixture's messages, as received, must
+ * come in that order.
+ */
+const messageOrder = (
+  { thread, messages }: FixtureThread,
+  received: ReadonlyArray<Readonly<Record<string, unknown>>>,
+): ReadbackItem => {
+  const fixtureIds = new Set(messages.map((message) => message.id));
+  const expected = messages
+    .toSorted((left, right) =>
+      left.createdAt === right.createdAt
+        ? left.id < right.id
+          ? -1
+          : 1
+        : left.createdAt < right.createdAt
+          ? -1
+          : 1,
+    )
+    .map((message) => message.id);
+  const ids = received.map((message) => String(message.id));
+  const actual = ids.filter((messageId) => fixtureIds.has(messageId));
+  const foreign = ids.filter((messageId) => !fixtureIds.has(messageId));
+  const repeated = ids.filter((messageId, index) => ids.indexOf(messageId) !== index);
+  return item(
+    "message",
+    `${thread.id}:message-order`,
+    [
+      foreign.length > 0 ? `lists messages fixtures.json does not hold: ${foreign.join(", ")}` : "",
+      repeated.length > 0 ? `listed more than once: ${repeated.join(", ")}` : "",
+      sameJson(actual, expected)
+        ? ""
+        : `listed [${actual.join(", ")}], expected [${expected.join(", ")}]`,
+    ]
+      .filter((problem) => problem !== "")
+      .join("; "),
+  );
+};
+
+const compareSnapshot = (
+  fixture: FixtureThread,
+  observation: ReadbackObservation,
+  stage: ReadbackStage,
+): ReadonlyArray<ReadbackItem> => {
+  const { thread, messages } = fixture;
+  const expectedMessages = stage === "created" ? [] : messages;
+  const response = observation.snapshots.find((candidate) => candidate.threadId === thread.id);
+  const snapshot = snapshotBodyOf(response);
+  if (Option.isNone(snapshot)) {
+    const detail = `thread missing: ${
+      response === undefined
+        ? "no response"
+        : response.status !== 200
+          ? `HTTP ${response.status}`
+          : "the response is not a thread snapshot"
+    }`;
+    return [
+      item("thread", thread.id, detail),
+      ...expectedMessages.map((message) => item("message", message.id, detail)),
+      ...(stage === "created" ? [] : [item("message", `${thread.id}:message-order`, detail)]),
+    ];
+  }
+  const projection = snapshot.value.projection;
+  const expected = expectedThreadAsCreated(fixture, observation);
+  return [
+    item(
+      "thread",
+      thread.id,
+      typeof expected === "string" ? expected : fieldMismatches(expected, projection.thread),
+    ),
+    ...expectedMessages.map((message) => {
+      const actual = projection.messages.find((candidate) => candidate.id === message.id);
+      return item(
+        "message",
+        message.id,
+        actual === undefined ? "message missing" : fieldMismatches(message.fields, actual),
+      );
+    }),
+    // Every listed message must be one this stage expects.
+    ...projection.messages
+      .map((message) => String(message.id))
+      .filter((messageId) => !expectedMessages.some((message) => message.id === messageId))
+      .map((messageId) =>
+        item(
+          "message",
+          messageId,
+          stage === "created"
+            ? "listed before any message was seeded"
+            : "not a message fixtures.json holds",
+        ),
+      ),
+    ...(stage === "created" ? [] : [messageOrder(fixture, projection.messages)]),
+  ];
+};
+
+/**
+ * How the candidate's own store differs from the prior's log at the prior's
+ * thread.created row: the row must still be there, at the same sequence,
+ * with the same id, thread, type, command, and payload.
+ */
+const candidateCreationMismatches = (
+  created: SeededEvent,
+  candidateEvents: ReadonlyArray<SeededEvent>,
+): string => {
+  const row = candidateEvents.find((event) => event.sequence === created.sequence);
+  if (row === undefined) {
+    return `the candidate's event store has no event at sequence ${created.sequence}`;
+  }
+  const column = (name: keyof SeededEvent) =>
+    row[name] === created[name]
+      ? ""
+      : `the candidate's store holds ${name} ${showJson(row[name])}, the prior's log ${showJson(created[name])}`;
+  const payload = decodePayloadJson(row.payload_json);
+  const priorPayload = decodePayloadJson(created.payload_json);
+  return [
+    column("event_id"),
+    column("stream_id"),
+    column("event_type"),
+    column("command_id"),
+    Option.isNone(payload) || Option.isNone(priorPayload)
+      ? "a thread.created payload is unreadable"
+      : sameJson(payload.value, priorPayload.value)
+        ? ""
+        : `the candidate's store holds payload ${row.payload_json}, the prior's log ${created.payload_json}`,
+  ]
+    .filter((problem) => problem !== "")
+    .join("; ");
+};
+
+const compareEventLog = (
+  fixture: FixtureThread,
+  observation: ReadbackObservation,
+): ReadonlyArray<ReadbackItem> => {
+  const threadId = fixture.thread.id;
+  const logged = observation.seededEvents.filter((event) => event.stream_id === threadId);
+  const created = createdEventOf(observation, threadId);
+  const snapshot = snapshotBodyOf(
+    observation.snapshots.find((response) => response.threadId === threadId),
+  );
+
+  // thread.created: the candidate's own store still holds the prior's row
+  // unchanged after its migrations, the candidate decoded the log on the
+  // shell resume, and both the shell and the snapshot it then served carry
+  // the thread as the prior created it, and as the log records it.
+  const shell = observation.shellReplay;
+  const shellThread = (shell?.values ?? [])
+    .flatMap((value) => Option.toArray(decodeShellThreadUpdated(value)))
+    .findLast((value) => value.thread.id === threadId)?.thread;
+  const expected = expectedThreadAsCreated(fixture, observation);
+  const createdItem = item(
+    "event",
+    `${threadId}:thread.created`,
+    typeof expected === "string"
+      ? expected
+      : created === undefined
+        ? "the prior's log has no thread.created for it"
+        : [
+            candidateCreationMismatches(created, observation.candidateEvents),
+            shell === null || !shell.synchronized
+              ? "the candidate did not finish decoding the event log on the shell resume"
+              : shellThread === undefined
+                ? "the candidate's shell resume did not return the thread"
+                : threadMismatches(
+                    expected,
+                    loggedThread(logged),
+                    shellThread,
+                    Option.getOrUndefined(snapshot)?.projection.thread,
+                  ),
+          ]
+            .filter((problem) => problem !== "")
+            .join("; "),
+  );
+
+  // message.updated: replayed from the log with its sequence and content.
+  const replay = observation.threadReplays.find((candidate) => candidate.threadId === threadId);
+  const replayed = (replay?.values ?? []).flatMap((value) =>
+    Option.toArray(decodeReplayedEvent(value)),
+  );
+  const messageItems = messageEvents(fixture).map((expectedEvent) => {
+    const row = logged.find((event) => event.event_id === expectedEvent.eventId);
+    if (row === undefined || row.event_type !== "message.updated") {
+      return item("event", expectedEvent.eventId, "not a message.updated in the seeded event log");
+    }
+    const actual = replayed.find((value) => value.event.id === expectedEvent.eventId);
+    if (actual === undefined) {
+      return item(
+        "event",
+        expectedEvent.eventId,
+        "the candidate did not replay it from the event log",
+      );
+    }
+    return item(
+      "event",
+      expectedEvent.eventId,
+      [
+        actual.sequence === row.sequence
+          ? ""
+          : `sequence is ${actual.sequence}, expected ${row.sequence}`,
+        actual.event.threadId === threadId ? "" : `threadId is '${actual.event.threadId}'`,
+        fieldMismatches(expectedEvent.message.fields, actual.event.payload),
+      ]
+        .filter((problem) => problem !== "")
+        .join("; "),
+    );
+  });
+
+  // The snapshot must cover the logged history, and the replay must have
+  // resumed right after creation and finished its catch-up.
+  const lastLogged = Math.max(0, ...logged.map((event) => event.sequence));
+  const snapshotSequence = Option.getOrUndefined(snapshot)?.snapshotSequence;
+  const coverage =
+    snapshotSequence === undefined
+      ? "no snapshot"
+      : logged.length === 0 || snapshotSequence < lastLogged
+        ? `snapshotSequence ${snapshotSequence} is behind the logged history's ${lastLogged}`
+        : replay === undefined
+          ? "no replay"
+          : !replay.synchronized
+            ? "the replay did not finish its catch-up"
+            : created !== undefined && replay.afterSequence !== created.sequence
+              ? `the replay resumed after ${replay.afterSequence}, not ${created.sequence}`
+              : "";
+  return [
+    createdItem,
+    ...messageItems,
+    item("event", `${threadId}:history`, coverage),
+    replayCompleteness(threadId, logged, created, replay),
+  ];
+};
+
+/**
+ * The candidate's thread resume must replay exactly the events the prior's
+ * log holds after the thread's creation (the seeded messages and whatever the
+ * prior appended itself, such as thread.settled), in the log's order, each
+ * with the id, type, and payload of its logged row, and nothing else up to
+ * the log's last sequence. Clients apply a replay in arrival order
+ * (packages/client-runtime/src/state/threads.ts), so the stream as received
+ * must rise strictly in sequence with no event twice. Events past the log are the candidate's own writes since the
+ * upgrade: allowed, and reported.
+ */
+export const replayCompleteness = (
+  threadId: string,
+  logged: ReadonlyArray<SeededEvent>,
+  created: SeededEvent | undefined,
+  replay: ThreadReplayResponse | undefined,
+): ReadbackItem => {
+  const id = `${threadId}:replay`;
+  if (created === undefined) return item("event", id, "no thread.created to resume after");
+  if (replay === undefined) return item("event", id, "no replay");
+  const lastLogged = Math.max(created.sequence, ...logged.map((event) => event.sequence));
+  const describe = (sequence: number, type: string) => `${sequence} (${type})`;
+  const after = logged.filter((event) => event.sequence > created.sequence);
+  const expected = after.map((event) => describe(event.sequence, event.event_type));
+  const replayed = replay.values.flatMap((value) => Option.toArray(decodeAnyReplayedEvent(value)));
+  const complete = replay.values.flatMap((value) => Option.toArray(decodeReplayedEvent(value)));
+  const problems: Array<string> = [];
+  replayed.forEach((value, index) => {
+    const previous = replayed[index - 1];
+    if (previous !== undefined && value.sequence <= previous.sequence) {
+      problems.push(
+        `${describe(value.sequence, value.event.type)} arrived after ${describe(previous.sequence, previous.event.type)}`,
+      );
+    }
+  });
+  const ids = replayed.map((value) => value.event.id);
+  const repeated = ids.filter((eventId, index) => ids.indexOf(eventId) !== index);
+  if (repeated.length > 0) problems.push(`replayed more than once: ${repeated.join(", ")}`);
+  const actual = replayed
+    .filter((value) => value.sequence <= lastLogged)
+    .map((value) => describe(value.sequence, value.event.type));
+  if (!sameJson(actual, expected)) {
+    problems.push(`replayed [${actual.join(", ")}], the log holds [${expected.join(", ")}]`);
+  }
+  // Each logged event the candidate replayed must match its row; a missing
+  // one is already reported above.
+  for (const row of after) {
+    if (!replayed.some((candidate) => candidate.sequence === row.sequence)) continue;
+    const value = complete.find((candidate) => candidate.sequence === row.sequence);
+    const mismatch =
+      value === undefined
+        ? "replayed without its threadId or payload"
+        : eventMismatches(row, value);
+    if (mismatch !== "") problems.push(`${describe(row.sequence, row.event_type)}: ${mismatch}`);
+  }
+  const appended = replayed.filter((value) => value.sequence > lastLogged);
+  const detail =
+    problems.length > 0
+      ? problems.join("; ")
+      : `replayed all ${expected.length} logged events intact, in order${
+          appended.length > 0
+            ? `; the candidate appended ${appended
+                .map((value) => describe(value.sequence, value.event.type))
+                .join(", ")}`
+            : ""
+        }`;
+  return { kind: "event", id, passed: problems.length === 0, detail };
+};
+
+/**
+ * Passes only when every fixture thread, with its configuration, and every
+ * expected message read back from the server's snapshots; at `upgraded`,
+ * also when the candidate decoded every seeded event from the durable log.
+ */
+export const compareReadback = (
+  fixtures: ReadonlyArray<FixtureThread>,
+  observation: ReadbackObservation,
+  stage: ReadbackStage,
+): ReadbackResult => {
+  const items = fixtures.flatMap((fixture) => [
+    ...compareSnapshot(fixture, observation, stage),
+    ...(stage === "upgraded" ? compareEventLog(fixture, observation) : []),
+  ]);
+  return {
+    stage,
+    passed: items.length > 0 && items.every((entry) => entry.passed),
+    threads: fixtures.length,
+    messages:
+      stage === "created"
+        ? 0
+        : fixtures.reduce((count, fixture) => count + fixture.messages.length, 0),
+    events:
+      stage === "upgraded"
+        ? fixtures.reduce((count, fixture) => count + 1 + fixture.messages.length, 0)
+        : 0,
+    items,
+  };
+};
+
+export class ReadbackError extends Schema.TaggedError<ReadbackError>()("ReadbackError", {
+  detail: Schema.String,
+}) {
+  override get message(): string {
+    return `The server did not read the fixtures back: ${this.detail}`;
+  }
+}
+
+// The snapshot route serves only clients that speak orchestration protocol 2.
+const ORCHESTRATION_PROTOCOL_HEADER = "x-t3-orchestration-protocol";
+const ORCHESTRATION_PROTOCOL_VERSION = "2";
+const SUBSCRIBE_THREAD_RPC = "orchestration.subscribeThread";
+const SUBSCRIBE_SHELL_RPC = "orchestration.subscribeShell";
+
+const decodeJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }));
+const decodeSeededEvents = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Array(
+      Schema.Struct({
+        sequence: Schema.Number,
+        event_id: Schema.String,
+        stream_id: Schema.String,
+        event_type: Schema.String,
+        command_id: Schema.NullOr(Schema.String),
+        payload_json: Schema.String,
+      }),
+    ),
+  ),
+);
+const isCatchUpMarker = Schema.is(Schema.Struct({ kind: Schema.Literal("synchronized") }));
+
+/** Fetches every fixture thread's snapshot with a bearer token. */
+export const fetchSnapshots = Effect.fn("fetchSnapshots")(function* (options: {
+  readonly baseUrl: string;
+  readonly token: string;
+  readonly fixtures: ReadonlyArray<FixtureThread>;
+}) {
+  const client = (yield* HttpClient.HttpClient).pipe(
+    HttpClient.mapRequest(HttpClientRequest.prependUrl(options.baseUrl)),
+  );
+  return yield* Effect.forEach(options.fixtures, ({ thread }) =>
+    Effect.gen(function* () {
+      const response = yield* client.execute(
+        HttpClientRequest.get(`/api/orchestration/threads/${encodeURIComponent(thread.id)}`).pipe(
+          HttpClientRequest.bearerToken(options.token),
+          HttpClientRequest.setHeader(
+            ORCHESTRATION_PROTOCOL_HEADER,
+            ORCHESTRATION_PROTOCOL_VERSION,
+          ),
+        ),
+      );
+      const text = yield* response.text;
+      return {
+        threadId: thread.id,
+        status: response.status,
+        body: Option.getOrElse(decodeJson(text), () => text),
+      } satisfies ReadbackResponse;
+    }).pipe(
+      Effect.timeout(Duration.seconds(30)),
+      Effect.mapError(
+        (cause) => new ReadbackError({ detail: `GET thread ${thread.id}: ${cause.message}` }),
+      ),
+    ),
+  );
+});
+
+/**
+ * Resumes a subscription after `afterSequence` and keeps what the server
+ * streamed up to its catch-up marker. Only these named fields are returned:
+ * the request's token never leaves this function.
+ */
+const resume = Effect.fn("resume")(function* (options: {
+  readonly baseUrl: string;
+  readonly token: string;
+  readonly tag: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly afterSequence: number;
+}) {
+  const outcome = yield* callRpc({
+    baseUrl: options.baseUrl,
+    token: options.token,
+    tag: options.tag,
+    payload: {
+      ...options.payload,
+      afterSequence: options.afterSequence,
+      requestCompletionMarker: true,
+    },
+    until: isCatchUpMarker,
+  });
+  const replay: ReplayResponse = {
+    afterSequence: options.afterSequence,
+    values: outcome.exit === undefined ? outcome.values : [...outcome.values, outcome.exit],
+    synchronized: outcome.exit === undefined,
+  };
+  return replay;
+});
+
+export const readback = Effect.fn("readback")(function* (options: {
+  readonly stage: ReadbackStage;
+  readonly baseUrl: string;
+  readonly tokenFile: string;
+  readonly fixtures: string;
+  readonly seededEvents: string;
+  readonly candidateEvents: Option.Option<string>;
+  readonly out: string;
+  readonly responsesOut: Option.Option<string>;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const fixtures = yield* decodeFixtures(yield* fs.readFileString(options.fixtures));
+  const token = (yield* fs.readFileString(options.tokenFile)).trim();
+  if (token.length === 0) return yield* new ReadbackError({ detail: "the token file is empty." });
+  // `sqlite3 -json` prints nothing at all for an empty result.
+  const readEvents = Effect.fn("readEvents")(function* (file: string) {
+    const text = (yield* fs.readFileString(file)).trim();
+    return text === "" ? [] : yield* decodeSeededEvents(text);
+  });
+  const seededEvents = yield* readEvents(options.seededEvents);
+  const upgraded = options.stage === "upgraded";
+  if (upgraded && Option.isNone(options.candidateEvents)) {
+    return yield* new ReadbackError({
+      detail: "the upgraded stage needs --candidate-events, the candidate's own event rows.",
+    });
+  }
+  const candidateEvents = Option.isSome(options.candidateEvents)
+    ? yield* readEvents(options.candidateEvents.value)
+    : [];
+
+  const snapshots = yield* fetchSnapshots({ baseUrl: options.baseUrl, token, fixtures });
+  const threadReplays: Array<ThreadReplayResponse> = [];
+  let shellReplay: ReplayResponse | null = null;
+  if (upgraded) {
+    for (const { thread } of fixtures) {
+      const created = seededEvents.find(
+        (event) => event.stream_id === thread.id && event.command_id === threadCommandId(thread.id),
+      );
+      if (created === undefined) continue;
+      // From just after the creation: a resume that would replay the
+      // thread.created itself is answered with a snapshot instead (ws.ts).
+      const replay = yield* resume({
+        baseUrl: options.baseUrl,
+        token,
+        tag: SUBSCRIBE_THREAD_RPC,
+        payload: { threadId: thread.id },
+        afterSequence: created.sequence,
+      });
+      threadReplays.push({
+        threadId: thread.id,
+        afterSequence: replay.afterSequence,
+        values: replay.values,
+        synchronized: replay.synchronized,
+      });
+    }
+    shellReplay = yield* resume({
+      baseUrl: options.baseUrl,
+      token,
+      tag: SUBSCRIBE_SHELL_RPC,
+      payload: {},
+      afterSequence: 0,
+    });
+  }
+
+  const observation: ReadbackObservation = {
+    seededEvents,
+    candidateEvents,
+    snapshots,
+    threadReplays,
+    shellReplay,
+  };
+  if (Option.isSome(options.responsesOut)) {
+    yield* fs.writeFileString(options.responsesOut.value, `${yield* encodeJson(observation)}\n`);
+  }
+  const result = compareReadback(fixtures, observation, options.stage);
+  yield* fs.writeFileString(options.out, `${yield* encodeJson(result)}\n`);
+  if (!result.passed) {
+    return yield* new ReadbackError({
+      detail: result.items
+        .filter((entry) => !entry.passed)
+        .map((entry) => `${entry.kind} ${entry.id}: ${entry.detail}`)
+        .join("\n"),
+    });
+  }
+  yield* Effect.log(
+    `[${options.stage}] Read back ${result.threads} threads, ${result.messages} messages, and ${result.events} events.`,
+  );
+});
+
+const command = Command.make(
+  "linux-admission-readback",
+  {
+    stage: Flag.Literals("stage", ["created", "seeded", "upgraded"]).pipe(
+      Flag.withDescription("What the server should hold: see the header of readback.ts."),
+    ),
+    baseUrl: Flag.String("base-url").pipe(
+      Flag.withDescription("The server, for example http://127.0.0.1:47811."),
+    ),
+    tokenFile: Flag.String("token-file").pipe(
+      Flag.withDescription("File holding an orchestration:read bearer token."),
+    ),
+    fixtures: Flag.String("fixtures").pipe(Flag.withDescription("Path to fixtures.json.")),
+    seededEvents: Flag.String("seeded-events").pipe(
+      Flag.withDescription("`sqlite3 -json` rows of the thread event log the prior left."),
+    ),
+    candidateEvents: Flag.String("candidate-events").pipe(
+      Flag.withDescription(
+        "`sqlite3 -json` rows of the thread event log in the candidate's store, read after it started (`upgraded` only).",
+      ),
+      Flag.optional,
+    ),
+    out: Flag.String("out").pipe(Flag.withDescription("Where to write the comparison result.")),
+    responsesOut: Flag.String("responses-out").pipe(
+      Flag.withDescription("Where to write everything the comparison read."),
+      Flag.optional,
+    ),
+  },
+  (options) => readback(options),
+).pipe(Command.withDescription("Read the admission fixtures back through a server."));
+
+if (import.meta.main) {
+  Command.run(command, { version: "0.0.0" }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        Socket.layerWebSocketConstructorGlobal,
+      ),
+    ),
+    NodeRuntime.runMain,
+  );
+}
