@@ -234,7 +234,11 @@ it.effect("reads every fixture thread, message, and event back from the recordin
     assert.isAtLeast(withMessages(fixtures).messages.length, 2);
     const counts = (kind: string) => result.items.filter((item) => item.kind === kind).length;
     assert.strictEqual(counts("thread"), fixtures.length);
-    assert.strictEqual(counts("message"), fixtures.flatMap((fixture) => fixture.messages).length);
+    // Each message, plus one message-order item per thread.
+    assert.strictEqual(
+      counts("message"),
+      fixtures.flatMap((fixture) => fixture.messages).length + fixtures.length,
+    );
     // A thread.created and each message.updated, plus coverage and replay items, per thread.
     assert.strictEqual(counts("event"), result.events + 2 * fixtures.length);
   }),
@@ -250,8 +254,13 @@ it.effect("expects messages from the seeded stage on, and the event log only aft
       copy.threadReplays = [];
     });
     assert.deepStrictEqual(failedIds(fixtures, withoutMessages, "created"), []);
-    const messageIds = fixtures.flatMap((fixture) => fixture.messages.map((message) => message.id));
-    assert.deepStrictEqual(failedIds(fixtures, withoutMessages, "seeded"), messageIds);
+    assert.deepStrictEqual(
+      failedIds(fixtures, withoutMessages, "seeded"),
+      fixtures.flatMap((fixture) => [
+        ...fixture.messages.map((message) => message.id),
+        `${fixture.thread.id}:message-order`,
+      ]),
+    );
     assert.strictEqual(compareReadback(fixtures, recorded, "seeded").events, 0);
   }),
 );
@@ -267,7 +276,10 @@ it.effect("fails when a seeded message is missing from its thread's snapshot", (
         (message) => message.id !== dropped,
       );
     });
-    assert.deepStrictEqual(failedIds(fixtures, observation), [dropped]);
+    assert.deepStrictEqual(failedIds(fixtures, observation), [
+      dropped,
+      `${thread.thread.id}:message-order`,
+    ]);
   }),
 );
 
@@ -337,6 +349,7 @@ it.effect("fails when a seeded thread is missing from the snapshots", () =>
     assert.deepStrictEqual(failedIds(fixtures, missing), [
       first.thread.id,
       ...first.messages.map((message) => message.id),
+      `${first.thread.id}:message-order`,
       `${first.thread.id}:history`,
     ]);
   }),
@@ -513,5 +526,55 @@ it.effect("fails unless the candidate replays exactly the events the prior logge
       result.items.find((entry) => entry.id === replayItem)!.detail,
       `${lastLogged + 1} (thread.visited)`,
     );
+  }),
+);
+
+it.effect("fails when the snapshot lists the fixture messages out of the server's order", () =>
+  Effect.gen(function* () {
+    const fixtures = yield* loadFixtures;
+    const thread = withMessages(fixtures);
+    const orderItem = `${thread.thread.id}:message-order`;
+    const reversed = changed((copy) => {
+      snapshotOf(copy, thread.thread.id).projection.messages.reverse();
+    });
+    assert.deepStrictEqual(failedIds(fixtures, reversed), [orderItem]);
+    // The prior's own read-back is held to the same order.
+    assert.deepStrictEqual(failedIds(fixtures, reversed, "seeded"), [orderItem]);
+
+    const swapped = changed((copy) => {
+      const messages = snapshotOf(copy, thread.thread.id).projection.messages;
+      [messages[0], messages[1]] = [messages[1]!, messages[0]!];
+    });
+    assert.deepStrictEqual(failedIds(fixtures, swapped), [orderItem]);
+
+    const repeated = changed((copy) => {
+      const messages = snapshotOf(copy, thread.thread.id).projection.messages;
+      messages.push(messages[0]!);
+    });
+    assert.deepStrictEqual(failedIds(fixtures, repeated), [orderItem]);
+  }),
+);
+
+it.effect("fails when the candidate's replay arrives out of order or repeats an event", () =>
+  Effect.gen(function* () {
+    const fixtures = yield* loadFixtures;
+    const thread = withMessages(fixtures);
+    const replayItem = `${thread.thread.id}:replay`;
+    const reversed = changed((copy) => {
+      replayOf(copy, thread.thread.id).values.reverse();
+    });
+    assert.deepStrictEqual(failedIds(fixtures, reversed), [replayItem]);
+
+    const swapped = changed((copy) => {
+      const values = replayOf(copy, thread.thread.id).values;
+      [values[1], values[2]] = [values[2]!, values[1]!];
+    });
+    assert.deepStrictEqual(failedIds(fixtures, swapped), [replayItem]);
+
+    const duplicated = changed((copy) => {
+      const values = replayOf(copy, thread.thread.id).values;
+      values.splice(1, 0, structuredClone(values[0]!));
+    });
+    assert.deepStrictEqual(failedIds(fixtures, duplicated), [replayItem]);
   }),
 );

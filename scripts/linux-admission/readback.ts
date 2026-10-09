@@ -99,7 +99,7 @@ const decodeReplayedEvent = Schema.decodeUnknownOption(ReplayedEvent);
 const AnyReplayedEvent = Schema.Struct({
   kind: Schema.Literal("event"),
   sequence: Schema.Number,
-  event: Schema.Struct({ type: Schema.String }),
+  event: Schema.Struct({ id: Schema.String, type: Schema.String }),
 });
 const decodeAnyReplayedEvent = Schema.decodeUnknownOption(AnyReplayedEvent);
 const ShellThreadUpdated = Schema.Struct({
@@ -178,6 +178,45 @@ const expectedThreadAsCreated = (
 const snapshotBodyOf = (response: ReadbackResponse | undefined) =>
   response?.status === 200 ? decodeSnapshotBody(response.body) : Option.none();
 
+/**
+ * The snapshot lists messages in the server's order, created_at then
+ * message_id (ProjectionStore getThreadRecords, `ORDER BY created_at ASC,
+ * message_id ASC`), and each once: the fixture's messages, as received, must
+ * come in that order.
+ */
+const messageOrder = (
+  { thread, messages }: FixtureThread,
+  received: ReadonlyArray<Readonly<Record<string, unknown>>>,
+): ReadbackItem => {
+  const fixtureIds = new Set(messages.map((message) => message.id));
+  const expected = messages
+    .toSorted((left, right) =>
+      left.createdAt === right.createdAt
+        ? left.id < right.id
+          ? -1
+          : 1
+        : left.createdAt < right.createdAt
+          ? -1
+          : 1,
+    )
+    .map((message) => message.id);
+  const ids = received.map((message) => String(message.id));
+  const actual = ids.filter((messageId) => fixtureIds.has(messageId));
+  const repeated = ids.filter((messageId, index) => ids.indexOf(messageId) !== index);
+  return item(
+    "message",
+    `${thread.id}:message-order`,
+    [
+      repeated.length > 0 ? `listed more than once: ${repeated.join(", ")}` : "",
+      sameJson(actual, expected)
+        ? ""
+        : `listed [${actual.join(", ")}], expected [${expected.join(", ")}]`,
+    ]
+      .filter((problem) => problem !== "")
+      .join("; "),
+  );
+};
+
 const compareSnapshot = (
   fixture: FixtureThread,
   observation: ReadbackObservation,
@@ -198,6 +237,7 @@ const compareSnapshot = (
     return [
       item("thread", thread.id, detail),
       ...expectedMessages.map((message) => item("message", message.id, detail)),
+      ...(stage === "created" ? [] : [item("message", `${thread.id}:message-order`, detail)]),
     ];
   }
   const projection = snapshot.value.projection;
@@ -216,6 +256,7 @@ const compareSnapshot = (
         actual === undefined ? "message missing" : fieldMismatches(message.fields, actual),
       );
     }),
+    ...(stage === "created" ? [] : [messageOrder(fixture, projection.messages)]),
   ];
 };
 
@@ -315,9 +356,12 @@ const compareEventLog = (
 /**
  * The candidate's thread resume must replay exactly the events the prior's
  * log holds after the thread's creation (the seeded messages and whatever the
- * prior appended itself, such as thread.settled), each with its type, and
- * nothing else up to the log's last sequence. Events past it are the
- * candidate's own writes since the upgrade: allowed, and reported.
+ * prior appended itself, such as thread.settled), in the log's order, each
+ * with its type, and nothing else up to the log's last sequence. Clients
+ * apply a replay in arrival order (packages/client-runtime/src/state/threads.ts),
+ * so the stream as received must rise strictly in sequence with no event
+ * twice. Events past the log are the candidate's own writes since the
+ * upgrade: allowed, and reported.
  */
 export const replayCompleteness = (
   threadId: string,
@@ -329,37 +373,37 @@ export const replayCompleteness = (
   if (created === undefined) return item("event", id, "no thread.created to resume after");
   if (replay === undefined) return item("event", id, "no replay");
   const lastLogged = Math.max(created.sequence, ...logged.map((event) => event.sequence));
-  const expected = new Map(
-    logged
-      .filter((event) => event.sequence > created.sequence)
-      .map((event) => [event.sequence, event.event_type] as const),
-  );
+  const describe = (sequence: number, type: string) => `${sequence} (${type})`;
+  const expected = logged
+    .filter((event) => event.sequence > created.sequence)
+    .map((event) => describe(event.sequence, event.event_type));
   const replayed = replay.values.flatMap((value) => Option.toArray(decodeAnyReplayedEvent(value)));
-  const actual = new Map(
-    replayed
-      .filter((value) => value.sequence <= lastLogged)
-      .map((value) => [value.sequence, value.event.type] as const),
-  );
+  const problems: Array<string> = [];
+  replayed.forEach((value, index) => {
+    const previous = replayed[index - 1];
+    if (previous !== undefined && value.sequence <= previous.sequence) {
+      problems.push(
+        `${describe(value.sequence, value.event.type)} arrived after ${describe(previous.sequence, previous.event.type)}`,
+      );
+    }
+  });
+  const ids = replayed.map((value) => value.event.id);
+  const repeated = ids.filter((eventId, index) => ids.indexOf(eventId) !== index);
+  if (repeated.length > 0) problems.push(`replayed more than once: ${repeated.join(", ")}`);
+  const actual = replayed
+    .filter((value) => value.sequence <= lastLogged)
+    .map((value) => describe(value.sequence, value.event.type));
+  if (!sameJson(actual, expected)) {
+    problems.push(`replayed [${actual.join(", ")}], the log holds [${expected.join(", ")}]`);
+  }
   const appended = replayed.filter((value) => value.sequence > lastLogged);
-  const problems = [
-    ...[...expected]
-      .filter(([sequence, type]) => actual.get(sequence) !== type)
-      .map(([sequence, type]) =>
-        actual.has(sequence)
-          ? `${sequence} replayed as ${actual.get(sequence)}, logged as ${type}`
-          : `${sequence} (${type}) not replayed`,
-      ),
-    ...[...actual]
-      .filter(([sequence]) => !expected.has(sequence))
-      .map(([sequence, type]) => `${sequence} (${type}) replayed but not in the prior's log`),
-  ];
   const detail =
     problems.length > 0
       ? problems.join("; ")
-      : `replayed all ${expected.size} logged events after creation${
+      : `replayed all ${expected.length} logged events after creation, in order${
           appended.length > 0
             ? `; the candidate appended ${appended
-                .map((value) => `${value.sequence} (${value.event.type})`)
+                .map((value) => describe(value.sequence, value.event.type))
                 .join(", ")}`
             : ""
         }`;
