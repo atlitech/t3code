@@ -138,7 +138,7 @@ function EnvironmentNotifications({
           ? `${thread.latestRun?.runId ?? ""}:${status}`
           : null;
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");
-      // Commands left running (a dev server) read as ready; subagents and monitors wait.
+      // Pending background work (a command, subagent or monitor) holds the completion.
       const completion =
         status === "ready" &&
         thread.latestRun?.status === "completed" &&
