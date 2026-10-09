@@ -4,7 +4,8 @@ Fork-only runbook. `atli` is upstream `main` plus our commits.
 [`fork-server-release.yml`](../../.github/workflows/fork-server-release.yml)
 publishes the same self-contained Linux x64 server archive an official release
 ships, so a VM that already runs the official background service can switch to
-our build and keep its T3 Connect link.
+our build and keep its T3 Connect link. Each release also carries the unsigned
+Mac arm64 desktop app, built from the same commit.
 
 ## Versions
 
@@ -55,12 +56,14 @@ A guard job runs before any build. It refuses a dispatch from any other ref, a
 version whose tag or release already exists, and an `atli` tip without a
 passing `Check` run (CI runs on every push to `atli`). Every build checks out
 the commit the guard approved, and the publish job creates the tag and the
-release together, with every asset at once.
+release together, with every asset at once. A release publishes only when both
+the Linux server and the Mac desktop app build.
 
 The result is the prerelease `v0.0.46-atli.1` with
-`t3-0.0.46-atli.1-linux-x64.tar.gz`, `SHA256SUMS`, and `manifest.json`, which
-names the source commit, the version, and each archive's platform, arch, size,
-and sha256. Each of those files has a build provenance attestation:
+`t3-0.0.46-atli.1-linux-x64.tar.gz`, `T3-Code-0.0.46-atli.1-arm64.dmg`,
+`SHA256SUMS`, and `manifest.json`, which names the source commit, the version,
+and each asset's platform, arch, size, and sha256. Each of those files has a
+build provenance attestation:
 
 ```sh
 gh attestation verify t3-0.0.46-atli.1-linux-x64.tar.gz -R atlitech/t3code
@@ -125,11 +128,45 @@ your shell, because `t3 update` reads the shell's environment, not the unit's.
 T3CODE_RELEASE_BASE_URL=https://github.com/atlitech/t3code/releases/download t3 update 0.0.46-atli.2 --yes
 ```
 
-## Building the macOS desktop app
+## Installing the macOS desktop app
 
-The fork's desktop app is built locally from `atli`. Use the same version as the
-server release. Builds read T3 Connect's public identifiers from the repository
-`.env`; without it the app builds with T3 Connect left out:
+Every release carries the Mac arm64 desktop app as an unsigned DMG, with the
+same version as the server. Download it and check it before installing:
+
+```sh
+gh release download v0.0.46-atli.2 -R atlitech/t3code -p 'T3-Code-*-arm64.dmg' -p SHA256SUMS
+shasum -a 256 -c --ignore-missing SHA256SUMS
+gh attestation verify T3-Code-0.0.46-atli.2-arm64.dmg -R atlitech/t3code
+```
+
+Copy the app out of the DMG:
+
+```sh
+hdiutil attach T3-Code-0.0.46-atli.2-arm64.dmg -nobrowse -readonly -mountpoint /tmp/t3-dmg
+ditto "/tmp/t3-dmg/T3 Code (Alpha).app" "T3 Code (Alpha).app"
+hdiutil detach /tmp/t3-dmg
+```
+
+The unsigned app keeps Electron's default signature, which does not verify.
+Sign it ad hoc before installing:
+
+```sh
+codesign --force --deep --sign - "T3 Code (Alpha).app"
+codesign --verify --deep --strict "T3 Code (Alpha).app"
+```
+
+Then quit T3 Code and replace the app in `/Applications`. The bundle ID matches
+the official app, so `~/.t3/userdata` carries over. An agent running inside the
+app ends when it quits, so an agent doing the swap must hand it to a detached
+process. The build has no update feed and never replaces itself. macOS may ask
+once for Keychain access to "T3 Code Safe Storage" because every ad hoc build
+has a new signature.
+
+### Building it locally
+
+When a release cannot be used, build the same DMG from `atli`. Use the same
+version as the server release. Builds read T3 Connect's public identifiers from
+the repository `.env`; without it the app builds with T3 Connect left out:
 
 ```sh
 cp -n .env.example .env
@@ -148,20 +185,7 @@ cp "/Applications/T3 Code (Alpha).app/Contents/Resources/resource-monitor/t3-res
 T3CODE_DESKTOP_REUSE_RESOURCE_MONITOR=1 T3CODE_DESKTOP_VERSION=0.0.46-atli.2 vp run dist:desktop:dmg:arm64
 ```
 
-An unsigned local build keeps Electron's default signature, which does not
-verify. Copy the app out of the DMG and sign it ad hoc before installing:
-
-```sh
-codesign --force --deep --sign - "T3 Code (Alpha).app"
-codesign --verify --deep --strict "T3 Code (Alpha).app"
-```
-
-Then quit T3 Code and replace the app in `/Applications`. The bundle ID matches
-the official app, so `~/.t3/userdata` carries over. An agent running inside the
-app ends when it quits, so an agent doing the swap must hand it to a detached
-process. The build has no update feed and never replaces itself. macOS may ask
-once for Keychain access to "T3 Code Safe Storage" because every ad hoc build
-has a new signature.
+Copy the app out, sign it ad hoc, and install it as above.
 
 ## Building the personal Android app
 

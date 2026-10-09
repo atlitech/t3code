@@ -1,0 +1,15 @@
+Executable=/Volumes/T3 Code (Alpha) 0.0.46-arm64/T3 Code (Alpha).app/Contents/MacOS/T3 Code (Alpha)
+Identifier=com.t3tools.t3code
+Format=app bundle with Mach-O thin (arm64)
+CodeDirectory v=20500 size=640 flags=0x10000(runtime) hashes=9+7 location=embedded
+Signature size=9013
+Authority=Developer ID Application: Example Tools Inc. (ABCDE12345)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+Timestamp=Sep 30, 2026 at 5:22:35 AM
+Notarization Ticket=stapled
+Info.plist entries=34
+TeamIdentifier=ABCDE12345
+Runtime Version=26.0.0
+Sealed Resources version=2 rules=13 files=68
+Internal requirements count=1 size=180

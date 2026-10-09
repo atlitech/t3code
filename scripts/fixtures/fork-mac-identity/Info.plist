@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>T3 Code (Alpha)</string>
+	<key>CFBundleExecutable</key>
+	<string>T3 Code (Alpha)</string>
+	<key>CFBundleIconFile</key>
+	<string>icon.icns</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.t3tools.t3code</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>T3 Code (Alpha)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.0.46-atli.1</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>T3 Code</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>t3code</string>
+				<string>t3code-dev</string>
+			</array>
+		</dict>
+	</array>
+	<key>CFBundleVersion</key>
+	<string>0.0.46-atli.1</string>
+	<key>DTCompiler</key>
+	<string>com.apple.compilers.llvm.clang.1_0</string>
+	<key>DTSDKBuild</key>
+	<string>24F74</string>
+	<key>DTSDKName</key>
+	<string>macosx15.5</string>
+	<key>DTXcode</key>
+	<string>1640</string>
+	<key>DTXcodeBuild</key>
+	<string>16F6</string>
+	<key>ElectronAsarIntegrity</key>
+	<dict>
+		<key>Resources/app.asar</key>
+		<dict>
+			<key>algorithm</key>
+			<string>SHA256</string>
+			<key>hash</key>
+			<string>07edfee2734e042c0610ecc93ab751e58fa3f1f61fa7b5e31f7c47c8ede1c3ed</string>
+		</dict>
+	</dict>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.developer-tools</string>
+	<key>LSEnvironment</key>
+	<dict>
+		<key>MallocNanoZone</key>
+		<string>0</string>
+	</dict>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+		<key>NSExceptionDomains</key>
+		<dict>
+			<key>127.0.0.1</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+				<key>NSTemporaryExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSTemporaryExceptionAllowsInsecureHTTPSLoads</key>
+				<false/>
+				<key>NSTemporaryExceptionMinimumTLSVersion</key>
+				<string>1.0</string>
+				<key>NSTemporaryExceptionRequiresForwardSecrecy</key>
+				<false/>
+			</dict>
+			<key>localhost</key>
+			<dict>
+				<key>NSIncludesSubdomains</key>
+				<false/>
+				<key>NSTemporaryExceptionAllowsInsecureHTTPLoads</key>
+				<true/>
+				<key>NSTemporaryExceptionAllowsInsecureHTTPSLoads</key>
+				<false/>
+				<key>NSTemporaryExceptionMinimumTLSVersion</key>
+				<string>1.0</string>
+				<key>NSTemporaryExceptionRequiresForwardSecrecy</key>
+				<false/>
+			</dict>
+		</dict>
+	</dict>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>This app needs access to audio capture</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>This app needs access to Bluetooth</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>This app needs access to Bluetooth</string>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs access to the camera</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Copyright © 2026 T3 Tools</string>
+	<key>NSMainNibFile</key>
+	<string>MainMenu</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app needs access to the microphone</string>
+	<key>NSPrefersDisplaySafeAreaCompatibilityMode</key>
+	<false/>
+	<key>NSPrincipalClass</key>
+	<string>AtomApplication</string>
+	<key>NSQuitAlwaysKeepsWindows</key>
+	<false/>
+	<key>NSRequiresAquaSystemAppearance</key>
+	<false/>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>T3 Code captures the active window when you use the window capture shortcut.</string>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+</dict>
+</plist>
