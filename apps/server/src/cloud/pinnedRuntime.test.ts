@@ -208,6 +208,73 @@ it.layer(NodeServices.layer)("ensurePinnedRuntimeInstalled", (it) => {
           yield* fs.readFileString(path.join(finalPaths.versionDir, ".archive-sha256")),
           `${digest}\n`,
         );
+        // The replaced runtime is gone; no staging or set-aside tree remains.
+        assert.deepEqual(yield* fs.readDirectory(path.dirname(finalPaths.versionDir)), [version]);
+      }),
+  );
+
+  // Reads every file of a runtime tree, so a test can prove it is untouched.
+  const snapshotTree = (fs: FileSystem.FileSystem, path: Path.Path, dir: string) =>
+    Effect.gen(function* () {
+      const entries = (yield* fs.readDirectory(dir, { recursive: true })).toSorted();
+      const files: Array<readonly [string, string]> = [];
+      for (const entry of entries) {
+        const info = yield* fs.stat(path.join(dir, entry));
+        if (info.type === "File") {
+          files.push([entry, yield* fs.readFileString(path.join(dir, entry))]);
+        }
+      }
+      return files;
+    });
+
+  it.effect.each([
+    ["records no digest", "the admitted digest mismatches", undefined, "mismatch"],
+    ["records no digest", "validation fails", undefined, "validate"],
+    ["records another digest", "the admitted digest mismatches", "0".repeat(64), "mismatch"],
+    ["records another digest", "validation fails", "0".repeat(64), "validate"],
+  ] as const)(
+    "keeps a complete cached runtime that %s intact when its replacement fails because %s",
+    ([, , recordedDigest, failure]) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-keep-cached-" });
+        const finalPaths = yield* seedCachedRuntime(fs, path, baseDir, recordedDigest);
+        yield* fs.writeFileString(path.join(finalPaths.versionDir, "native.node"), "native\n");
+        const before = yield* snapshotTree(fs, path, finalPaths.versionDir);
+        const validated: string[] = [];
+
+        const error = yield* ensurePinnedRuntimeInstalled({
+          baseDir,
+          version,
+          fs,
+          path,
+          platform: "linux",
+          arch: "x64",
+          httpClient: releaseHttpClient(yield* validChecksums),
+          admittedArchiveSha256:
+            failure === "mismatch" ? "1".repeat(64) : yield* archiveHex(archiveBytes),
+          runner: extractingRunner(fs, path),
+          validate: (paths) =>
+            Effect.sync(() => validated.push(paths.versionDir)).pipe(
+              Effect.andThen(
+                Effect.fail(new PinnedRuntimeInstallError({ step: "validating the runtime" })),
+              ),
+            ),
+        }).pipe(Effect.flip);
+
+        assert.instanceOf(error, PinnedRuntimeInstallError);
+        if (failure === "mismatch") {
+          assert.equal(error.step, ADMITTED_ARCHIVE_MISMATCH_STEP);
+          assert.deepEqual(validated, []);
+        } else {
+          assert.equal(error.step, "validating the runtime");
+          // Only the staged replacement was validated, never the cached runtime.
+          assert.lengthOf(validated, 1);
+          assert.notEqual(validated[0], finalPaths.versionDir);
+        }
+        assert.deepEqual(yield* snapshotTree(fs, path, finalPaths.versionDir), before);
+        assert.deepEqual(yield* fs.readDirectory(path.dirname(finalPaths.versionDir)), [version]);
       }),
   );
 

@@ -340,32 +340,71 @@ export const isPinnedRuntimeInstalled = (input: {
     paths: pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform),
   }).pipe(Effect.orElseSucceed(() => false));
 
+/**
+ * Swaps a validated staging tree in for a complete but unadmitted cached
+ * runtime: the cached tree is moved aside, the staging tree is published, and
+ * only then is the aside tree removed. If publishing fails, the cached tree is
+ * moved back, so a failed replacement leaves it where it was. The swap is
+ * uninterruptible so it never stops halfway with no runtime in place.
+ */
+const replaceCachedRuntime = (
+  input: PinnedRuntimeInstallInput,
+  versionDir: string,
+  asideDir: string,
+  publishStaging: Effect.Effect<boolean, PinnedRuntimeInstallError>,
+) =>
+  Effect.uninterruptible(
+    Effect.gen(function* () {
+      const { fs } = input;
+      yield* fs.rename(versionDir, asideDir).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({
+              step: "setting aside the unadmitted pinned runtime",
+              cause,
+            }),
+        ),
+      );
+      const published = yield* publishStaging.pipe(
+        Effect.tapError(() => fs.rename(asideDir, versionDir).pipe(Effect.ignore)),
+      );
+      yield* fs.remove(asideDir, { recursive: true, force: true }).pipe(Effect.ignore);
+      return published;
+    }),
+  );
+
 const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(function* (
   input: PinnedRuntimeInstallInput,
 ) {
   const { fs } = input;
   const paths = pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform);
+  const checkError = (cause: unknown) =>
+    new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause });
   const [versionDirExists, alreadyPinned] = yield* Effect.all([
     fs.exists(paths.versionDir),
     isCompleteInstall({ ...input, paths }),
-  ]).pipe(
-    Effect.mapError(
-      (cause) => new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause }),
-    ),
-  );
-  // A cached runtime that cannot show it came from the admitted archive is
-  // replaced like an incomplete one, never switched to.
+  ]).pipe(Effect.mapError(checkError));
   if (alreadyPinned) {
     input.onProgress?.({ stage: "cached" });
     yield* input.validate(paths);
     return paths;
   }
-  if (versionDirExists) {
+  // A complete runtime that cannot show it came from the admitted archive is
+  // never switched to, but it stays in place until the admitted replacement
+  // has been installed and validated, so a failed replacement loses nothing.
+  // Only a genuinely incomplete tree is removed up front.
+  const keepCached =
+    versionDirExists &&
+    input.admittedArchiveSha256 !== undefined &&
+    (yield* isCompleteInstall({ ...input, paths, admittedArchiveSha256: undefined }).pipe(
+      Effect.mapError(checkError),
+    ));
+  if (versionDirExists && !keepCached) {
     yield* fs.remove(paths.versionDir, { recursive: true, force: true }).pipe(
       Effect.mapError(
         (cause) =>
           new PinnedRuntimeInstallError({
-            step: "removing an incomplete or unadmitted pinned runtime",
+            step: "removing an incomplete pinned runtime",
             cause,
           }),
       ),
@@ -427,7 +466,7 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
             new PinnedRuntimeInstallError({ step: "recording the completed install", cause }),
         ),
       );
-    const published = yield* fs.rename(stagingDir, paths.versionDir).pipe(
+    const publishStaging = fs.rename(stagingDir, paths.versionDir).pipe(
       Effect.as(true),
       Effect.catch((cause) =>
         isCompleteInstall({ ...input, paths }).pipe(
@@ -451,6 +490,14 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
         ),
       ),
     );
+    const published = keepCached
+      ? yield* replaceCachedRuntime(
+          input,
+          paths.versionDir,
+          `${stagingDir}-replaced`,
+          publishStaging,
+        )
+      : yield* publishStaging;
     if (!published) yield* input.validate(paths);
     return paths;
   }).pipe(
