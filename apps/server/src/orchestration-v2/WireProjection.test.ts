@@ -122,7 +122,7 @@ describe("orchestration V2 wire projection", () => {
         projectId: ProjectId.make("project-shell-budget"),
         title: "Shell payload budget",
         providerInstanceId: ProviderInstanceId.make("codex"),
-        modelSelection: null,
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "test-model" },
         runtimeMode: "full-access",
         interactionMode: "default",
         branch: null,
