@@ -177,7 +177,71 @@ archive="${stem}.tar.gz"
 versions_dir="${t3_home}/runtime/versions"
 target_dir="${versions_dir}/${version}"
 
+# Fetches SHA256SUMS into $1 and sets $expected to the archive's listed digest.
+fetch_sums() {
+  fetch_status=0
+  fetch "${base_url}/v${version}/SHA256SUMS" "$1/SHA256SUMS" || fetch_status=$?
+  if [ "$fetch_status" -eq 44 ]; then
+    fail "t3 ${version} has no release archive for ${platform}-${arch}; releases before the self-contained CLI can only be installed with \`npm install -g t3@${version}\`"
+  elif [ "$fetch_status" -ne 0 ]; then
+    fail "could not download the release checksums"
+  fi
+  expected="$(grep " \*\{0,1\}${archive}\$" "$1/SHA256SUMS" | cut -d' ' -f1)"
+  [ -n "$expected" ] || fail "${archive} is not listed in SHA256SUMS"
+}
+
+# A fork build (<semver>-atli.<n>) installs only once the release's admission
+# job has published ADMISSION.json for this exact archive. There is no override.
+fork=false
+if expr "X${version}" : 'X[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*-atli\.[0-9][0-9]*$' >/dev/null; then
+  fork=true
+fi
+record_field() {
+  sed -n "s/^  \"$1\": *\"\([^\"]*\)\",\{0,1\}\$/\1/p" "$2" | head -n 1
+}
+# Refuses unless ADMISSION.json names this version, this archive, and digest
+# $2. $1 is a scratch directory. The record is pretty-printed, so top-level
+# fields are the lines indented by exactly two spaces.
+require_admission() {
+  step "Checking the admission record..."
+  record="$1/ADMISSION.json"
+  admission_status=0
+  fetch "${base_url}/v${version}/ADMISSION.json" "$record" || admission_status=$?
+  if [ "$admission_status" -eq 44 ]; then
+    fail "t3 ${version} is a fork build with no admission record (ADMISSION.json); only admitted fork versions install. Nothing was changed."
+  elif [ "$admission_status" -ne 0 ]; then
+    fail "could not download the admission record for t3 ${version}. Nothing was changed."
+  fi
+  admitted="$(record_field version "$record")"
+  [ "$admitted" = "$version" ] \
+    || fail "the admission record is for version '${admitted}', not ${version}; refusing. Nothing was changed."
+  admitted="$(record_field archive "$record")"
+  [ "$admitted" = "$archive" ] \
+    || fail "t3 ${version} admits '${admitted}', not ${archive}; refusing. Nothing was changed."
+  [ "$(record_field archiveSha256 "$record")" = "$2" ] \
+    || fail "${archive} does not match the admitted archive digest; refusing. Nothing was changed."
+}
+
+# A cached fork runtime is reused only when the archive digest recorded at its
+# install (.archive-sha256) is the admitted one; otherwise it is downloaded,
+# verified, and replaced like a fresh install.
+cached=false
 if [ -f "${target_dir}/.install-complete" ] && [ "$(cat "${target_dir}/.install-complete")" = "$version" ]; then
+  if "$fork"; then
+    check_dir="$(mktemp -d)"
+    trap 'rm -rf "$check_dir"' EXIT
+    fetch_sums "$check_dir"
+    require_admission "$check_dir" "$expected"
+    rm -rf "$check_dir"
+    trap - EXIT
+    if [ -f "${target_dir}/.archive-sha256" ] && [ "$(cat "${target_dir}/.archive-sha256")" = "$expected" ]; then
+      cached=true
+    fi
+  else
+    cached=true
+  fi
+fi
+if "$cached"; then
   step "Version ${version} is already downloaded."
 else
   mkdir -p "$versions_dir"
@@ -190,26 +254,20 @@ else
   if "$interactive"; then printf '\r\033[2K' >&2; fi
   printf '  %sInstalling%s T3 Code %s%s%s\n\n' "$muted" "$reset" "$bold" "$version" "$reset" >&2
   step "Downloading..."
-  fetch_status=0
-  fetch "${base_url}/v${version}/SHA256SUMS" "${staging}/SHA256SUMS" || fetch_status=$?
-  if [ "$fetch_status" -eq 44 ]; then
-    fail "t3 ${version} has no release archive for ${platform}-${arch}; releases before the self-contained CLI can only be installed with \`npm install -g t3@${version}\`"
-  elif [ "$fetch_status" -ne 0 ]; then
-    fail "could not download the release checksums"
-  fi
+  fetch_sums "$staging"
+  if "$fork"; then require_admission "$staging" "$expected"; fi
   download "${base_url}/v${version}/${archive}" "${staging}/${archive}"
 
   step "Verifying the download..."
-  expected="$(grep " \*\{0,1\}${archive}\$" "${staging}/SHA256SUMS" | cut -d' ' -f1)"
-  [ -n "$expected" ] || fail "${archive} is not listed in SHA256SUMS"
   actual="$(checksum "${staging}/${archive}")"
   [ "$actual" = "$expected" ] || fail "checksum mismatch for ${archive}"
 
   step "Extracting T3 Code..."
   tar -xzf "${staging}/${archive}" -C "$staging" --strip-components=1
-  rm -f "${staging}/${archive}" "${staging}/SHA256SUMS"
+  rm -f "${staging}/${archive}" "${staging}/SHA256SUMS" "${staging}/ADMISSION.json"
   "${staging}/t3" --version >/dev/null || fail "the downloaded executable does not run"
   printf '%s\n' "$version" > "${staging}/.install-complete"
+  printf '%s\n' "$actual" > "${staging}/.archive-sha256"
 
   rm -rf "$target_dir"
   mv "$staging" "$target_dir"

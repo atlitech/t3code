@@ -102,6 +102,14 @@ published release's assets or move its tag.
 
 ## Switching the VM to a fork build
 
+A fork version installs only once it is admitted: its release carries the
+`ADMISSION.json` the release workflow's admission job publishes, naming that
+version and the sha256 of its Linux x64 archive. `install.sh`, `t3 update`, and
+the in-app update all check it, and refuse a version without a record or whose
+record does not match the archive, before anything changes. Official versions
+need no record. Below, `<version>` is an admitted fork version, such as the
+newest fork release.
+
 These steps assume the official service runs as your user with the default
 home, `~/.t3`. The service keeps the same home, database, and secrets, so the
 T3 Connect link carries over. If the service's unit sets a different
@@ -125,7 +133,7 @@ T3 Connect link carries over. If the service's unit sets a different
    ```sh
    export T3CODE_RELEASE_BASE_URL=https://github.com/atlitech/t3code/releases/download
    curl -fsSL https://raw.githubusercontent.com/atlitech/t3code/atli/scripts/install.sh \
-     | T3CODE_VERSION=0.0.46-atli.1 sh
+     | T3CODE_VERSION=<version> sh
    ```
 
 3. Switch the service. This uses the runtime unpacked in step 2, rewrites the
@@ -145,12 +153,22 @@ T3 Connect link carries over. If the service's unit sets a different
    ```
 
 To move to a newer fork build later, run one command. It downloads, verifies,
-repoints `t3`, and restarts the service. Run it with the base URL exported in
-your shell, because `t3 update` reads the shell's environment, not the unit's.
+checks the admission record, migrates a scratch copy of the database with the
+new version, repoints `t3`, and restarts the service. If that migration fails,
+it refuses and the service keeps the current version; the in-app update does
+the same. Run it with the base URL exported in your shell, because `t3 update`
+reads the shell's environment, not the unit's.
 
 ```sh
-T3CODE_RELEASE_BASE_URL=https://github.com/atlitech/t3code/releases/download t3 update 0.0.46-atli.2 --yes
+T3CODE_RELEASE_BASE_URL=https://github.com/atlitech/t3code/releases/download t3 update <version> --yes
 ```
+
+`0.0.46-atli.1`, `0.0.46-atli.2`, and `0.0.46-atli.3` were released before
+admission existed and have no record. Use them only for an owner rollback,
+with `t3 update <version> --allow-unadmitted`, which accepts only those three
+versions and logs the override. Any other unadmitted version is refused even
+with the flag. The in-app update (a client's Update button) and `install.sh`
+have no override.
 
 ## Installing the macOS desktop app
 

@@ -33,6 +33,9 @@ import * as ProcessRunner from "../processRunner.ts";
 const PINNED_RUNTIME_DIR = "runtime";
 const PINNED_RUNTIME_INSTALL_TIMEOUT = Duration.minutes(10);
 const PINNED_RUNTIME_ARCHIVE_FILE = "t3-runtime-archive";
+// The sha256 of the verified archive a runtime was unpacked from, written
+// beside the sentinel so an admitted install can prove which archive it is.
+const PINNED_RUNTIME_ARCHIVE_DIGEST_FILE = ".archive-sha256";
 // Boot-service setup and remote update can construct separate layers. Serialize
 // the complete install transaction across every caller in this process.
 const pinnedRuntimeInstallLock = Semaphore.makeUnsafe(1);
@@ -99,6 +102,10 @@ export class PinnedRuntimePreflightBlockedError extends Schema.TaggedError<Pinne
   }
 }
 
+/** The install step that refuses an archive its admission record did not admit. */
+export const ADMITTED_ARCHIVE_MISMATCH_STEP =
+  "verifying the t3 release archive against its admission record";
+
 export type PinnedRuntimeProgress =
   | { readonly stage: "download"; readonly received: number; readonly total: number | undefined }
   | { readonly stage: "verify" | "extract" | "validate" | "cached" };
@@ -109,7 +116,8 @@ export type PinnedRuntimeProgress =
  * paths. The sentinel is written only after extraction and validation
  * succeed; checking the entry file alone is not enough, since tar writes the
  * executable before the last native package and a killed install leaves a
- * plausible-looking but broken tree behind.
+ * plausible-looking but broken tree behind. With an admitted archive digest, a
+ * cached install also has to record that digest, or it is installed afresh.
  */
 
 interface PinnedRuntimeInstallInput {
@@ -125,6 +133,11 @@ interface PinnedRuntimeInstallInput {
   readonly arch: string;
   readonly httpClient: HttpClient.HttpClient;
   readonly releaseBaseUrl?: string | undefined;
+  /**
+   * The sha256 a release admission record names for this archive. When set, a
+   * downloaded archive with any other digest is refused before it is unpacked.
+   */
+  readonly admittedArchiveSha256?: string | undefined;
   readonly onProgress?: (progress: PinnedRuntimeProgress) => void;
 }
 
@@ -224,9 +237,18 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
     catch: (cause) =>
       new PinnedRuntimeInstallError({ step: "verifying the t3 release archive", cause }),
   });
-  if (Hex.encode(new Uint8Array(digest)) !== expected) {
+  const archiveSha256 = Hex.encode(new Uint8Array(digest));
+  if (archiveSha256 !== expected) {
     return yield* new PinnedRuntimeInstallError({
       step: "verifying the t3 release archive checksum",
+    });
+  }
+  if (
+    input.admittedArchiveSha256 !== undefined &&
+    archiveSha256 !== input.admittedArchiveSha256.toLowerCase()
+  ) {
+    return yield* new PinnedRuntimeInstallError({
+      step: ADMITTED_ARCHIVE_MISMATCH_STEP,
     });
   }
 
@@ -262,30 +284,122 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
       ),
     );
   yield* fs.remove(archivePath, { force: true }).pipe(Effect.ignore);
+  return archiveSha256;
 });
+
+/**
+ * Whether `paths` holds a complete install of `version`. With an admitted
+ * digest it must also record that it was unpacked from exactly that archive;
+ * a runtime installed before admission, or from any other archive, is not the
+ * admitted one however complete it looks.
+ */
+const isCompleteInstall = (input: {
+  readonly fs: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly paths: PinnedRuntimePaths;
+  readonly version: string;
+  readonly admittedArchiveSha256?: string | undefined;
+}) =>
+  Effect.all([
+    input.fs.exists(input.paths.entryPath),
+    input.fs.readFileString(input.paths.sentinelPath).pipe(Effect.option),
+    input.admittedArchiveSha256 === undefined
+      ? Effect.succeed(Option.none<string>())
+      : input.fs
+          .readFileString(
+            input.path.join(input.paths.versionDir, PINNED_RUNTIME_ARCHIVE_DIGEST_FILE),
+          )
+          .pipe(Effect.option),
+  ]).pipe(
+    Effect.map(
+      ([entryExists, sentinel, recordedDigest]) =>
+        entryExists &&
+        Option.isSome(sentinel) &&
+        sentinel.value.trim() === input.version &&
+        (input.admittedArchiveSha256 === undefined ||
+          (Option.isSome(recordedDigest) &&
+            recordedDigest.value.trim().toLowerCase() ===
+              input.admittedArchiveSha256.toLowerCase())),
+    ),
+  );
+
+/**
+ * Whether `version` is already installed and needs no download. Reading
+ * nothing counts as not installed.
+ */
+export const isPinnedRuntimeInstalled = (input: {
+  readonly fs: FileSystem.FileSystem;
+  readonly path: Path.Path;
+  readonly baseDir: string;
+  readonly version: string;
+  readonly platform: NodeJS.Platform;
+  readonly admittedArchiveSha256?: string | undefined;
+}): Effect.Effect<boolean> =>
+  isCompleteInstall({
+    ...input,
+    paths: pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform),
+  }).pipe(Effect.orElseSucceed(() => false));
+
+/**
+ * Swaps a validated staging tree in for a complete but unadmitted cached
+ * runtime: the cached tree is moved aside, the staging tree is published, and
+ * only then is the aside tree removed. If publishing fails, the cached tree is
+ * moved back, so a failed replacement leaves it where it was. The swap is
+ * uninterruptible so it never stops halfway with no runtime in place.
+ */
+const replaceCachedRuntime = (
+  input: PinnedRuntimeInstallInput,
+  versionDir: string,
+  asideDir: string,
+  publishStaging: Effect.Effect<boolean, PinnedRuntimeInstallError>,
+) =>
+  Effect.uninterruptible(
+    Effect.gen(function* () {
+      const { fs } = input;
+      yield* fs.rename(versionDir, asideDir).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({
+              step: "setting aside the unadmitted pinned runtime",
+              cause,
+            }),
+        ),
+      );
+      const published = yield* publishStaging.pipe(
+        Effect.tapError(() => fs.rename(asideDir, versionDir).pipe(Effect.ignore)),
+      );
+      yield* fs.remove(asideDir, { recursive: true, force: true }).pipe(Effect.ignore);
+      return published;
+    }),
+  );
 
 const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(function* (
   input: PinnedRuntimeInstallInput,
 ) {
   const { fs } = input;
   const paths = pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform);
-  const [versionDirExists, entryExists, sentinel] = yield* Effect.all([
+  const checkError = (cause: unknown) =>
+    new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause });
+  const [versionDirExists, alreadyPinned] = yield* Effect.all([
     fs.exists(paths.versionDir),
-    fs.exists(paths.entryPath),
-    fs.readFileString(paths.sentinelPath).pipe(Effect.option),
-  ]).pipe(
-    Effect.mapError(
-      (cause) => new PinnedRuntimeInstallError({ step: "checking the pinned runtime", cause }),
-    ),
-  );
-  const alreadyPinned =
-    entryExists && Option.isSome(sentinel) && sentinel.value.trim() === input.version;
+    isCompleteInstall({ ...input, paths }),
+  ]).pipe(Effect.mapError(checkError));
   if (alreadyPinned) {
     input.onProgress?.({ stage: "cached" });
     yield* input.validate(paths);
     return paths;
   }
-  if (versionDirExists) {
+  // A complete runtime that cannot show it came from the admitted archive is
+  // never switched to, but it stays in place until the admitted replacement
+  // has been installed and validated, so a failed replacement loses nothing.
+  // Only a genuinely incomplete tree is removed up front.
+  const keepCached =
+    versionDirExists &&
+    input.admittedArchiveSha256 !== undefined &&
+    (yield* isCompleteInstall({ ...input, paths, admittedArchiveSha256: undefined }).pipe(
+      Effect.mapError(checkError),
+    ));
+  if (versionDirExists && !keepCached) {
     yield* fs.remove(paths.versionDir, { recursive: true, force: true }).pipe(
       Effect.mapError(
         (cause) =>
@@ -328,10 +442,22 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   };
 
   return yield* Effect.gen(function* () {
-    yield* installFromArchive(input, stagingDir);
+    const archiveSha256 = yield* installFromArchive(input, stagingDir);
 
     input.onProgress?.({ stage: "validate" });
     yield* input.validate(stagingPaths);
+    // Recorded before the sentinel, so a sentinel always has its digest beside it.
+    yield* fs
+      .writeFileString(
+        input.path.join(stagingDir, PINNED_RUNTIME_ARCHIVE_DIGEST_FILE),
+        `${archiveSha256}\n`,
+      )
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new PinnedRuntimeInstallError({ step: "recording the installed archive", cause }),
+        ),
+      );
     yield* fs
       .writeFileString(stagingPaths.sentinelPath, `${input.version}\n`)
       .pipe(
@@ -340,13 +466,10 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
             new PinnedRuntimeInstallError({ step: "recording the completed install", cause }),
         ),
       );
-    const published = yield* fs.rename(stagingDir, paths.versionDir).pipe(
+    const publishStaging = fs.rename(stagingDir, paths.versionDir).pipe(
       Effect.as(true),
       Effect.catch((cause) =>
-        Effect.all([
-          fs.exists(paths.entryPath),
-          fs.readFileString(paths.sentinelPath).pipe(Effect.option),
-        ]).pipe(
+        isCompleteInstall({ ...input, paths }).pipe(
           Effect.mapError(
             (checkCause) =>
               new PinnedRuntimeInstallError({
@@ -354,10 +477,8 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
                 cause: checkCause,
               }),
           ),
-          Effect.flatMap(([publishedEntryExists, publishedSentinel]) =>
-            publishedEntryExists &&
-            Option.isSome(publishedSentinel) &&
-            publishedSentinel.value.trim() === input.version
+          Effect.flatMap((publishedComplete) =>
+            publishedComplete
               ? Effect.succeed(false)
               : Effect.fail(
                   new PinnedRuntimeInstallError({
@@ -369,6 +490,14 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
         ),
       ),
     );
+    const published = keepCached
+      ? yield* replaceCachedRuntime(
+          input,
+          paths.versionDir,
+          `${stagingDir}-replaced`,
+          publishStaging,
+        )
+      : yield* publishStaging;
     if (!published) yield* input.validate(paths);
     return paths;
   }).pipe(
