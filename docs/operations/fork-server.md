@@ -307,7 +307,31 @@ t3 update 0.0.45 --allow-downgrade --yes
 
 A fork build may already have run database migrations from upstream `main`
 against `~/.t3/userdata`, and an older official build may not run on that
-database. Back up `~/.t3/userdata` before the first switch to a fork build.
+database. An official build keeps no recovery point, so back up
+`~/.t3/userdata` before the first switch from it to a fork build.
+
+### Recovering a failed update
+
+Before `t3 update` or the in-app update switches this home to another server
+version, it keeps a recovery point under `~/.t3/recovery/points/`: a backup of
+the database and a record of the version it came from. The newest three
+points are kept. List them, then restore one by its id:
+
+```sh
+t3 recover --list
+t3 recover <id>
+```
+
+`t3 recover <id>` puts back that point's database and the prior runtime it
+records. When this home's background service serves it, recover stops the
+service first, then points it at the prior runtime and restarts it; otherwise
+it changes only the database and the `t3` launcher. The database it replaces
+is kept under `~/.t3/recovery/displaced/` and never pruned, so later work is
+not lost. Recover refuses before changing anything when the backup or the
+prior runtime does not match the point's record, or while a server started by
+hand runs on this home. A prior runtime installed without a recorded archive
+sha256 is restored only with `--allow-unverified-runtime`, which the point's
+`recovery.json` records.
 
 ## Updating `atli` from upstream
 

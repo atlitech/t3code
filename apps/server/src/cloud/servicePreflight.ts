@@ -71,7 +71,12 @@ const failureMessage = (cause: Cause.Cause<unknown>): string => {
 // the path it is given does not exist yet; it names the same sibling.
 const LEGACY_DATABASE_NAME = "state.sqlite";
 
-const snapshotDatabase = (sourcePath: string, destinationPath: string) =>
+/**
+ * Copies a SQLite database with its online backup through a read-only
+ * connection, so it sees one consistent state of a database a running server
+ * is still writing and never writes or checkpoints the live files.
+ */
+export const snapshotDatabase = (sourcePath: string, destinationPath: string) =>
   Effect.tryPromise(async () => {
     const database = new NodeSqlite.DatabaseSync(sourcePath, { readOnly: true });
     try {

@@ -34,6 +34,11 @@ import {
   pinnedRuntimeCommand,
   PinnedRuntimeInstallError,
 } from "../cloud/pinnedRuntime.ts";
+import {
+  createRecoveryPoint,
+  RECOVERY_POINT_STEP,
+  type RecoveryPoint,
+} from "../cloud/recoveryPoint.ts";
 import { PRE_ADMISSION_FORK_VERSIONS, verifyReleaseAdmission } from "../cloud/releaseAdmission.ts";
 import {
   runStagedServicePreflight,
@@ -342,17 +347,19 @@ const admitUpdateTarget = Effect.fn("cli.update.admit_target")(function* (input:
  * lineage: a service server's parent is the launcher, and on Linux that
  * launcher runs inside the unit's cgroup.
  */
-const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(function* (input: {
-  readonly serverRuntimeStatePath: string;
-  readonly serviceInstalled: boolean;
-}) {
-  const state = yield* readPersistedServerRuntimeState(input.serverRuntimeStatePath);
-  if (Option.isNone(state) || state.value.serviceManaged || !isProcessAlive(state.value.pid)) {
-    return undefined;
-  }
-  if (input.serviceInstalled && (yield* belongsToBootService(state.value.pid))) return undefined;
-  return state.value;
-});
+export const findForegroundServer = Effect.fn("cli.update.find_foreground_server")(
+  function* (input: {
+    readonly serverRuntimeStatePath: string;
+    readonly serviceInstalled: boolean;
+  }) {
+    const state = yield* readPersistedServerRuntimeState(input.serverRuntimeStatePath);
+    if (Option.isNone(state) || state.value.serviceManaged || !isProcessAlive(state.value.pid)) {
+      return undefined;
+    }
+    if (input.serviceInstalled && (yield* belongsToBootService(state.value.pid))) return undefined;
+    return state.value;
+  },
+);
 
 const belongsToBootService = Effect.fn("cli.update.belongs_to_boot_service")(function* (
   pid: number,
@@ -559,6 +566,29 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     }
   }
 
+  // A recovery point of the database and the version this home runs now, so
+  // `t3 recover` can return to both. It is kept inside validation, after the
+  // preflight, so a failed backup means the new runtime is never published;
+  // cached so a second validation in this run (a concurrent publish) reuses
+  // the point rather than taking another and evicting an older good one.
+  let keptPoint: RecoveryPoint | undefined;
+  const keepRecoveryPoint = yield* Effect.cached(
+    createRecoveryPoint({
+      baseDir: input.baseDir,
+      dbPath: input.dbPath,
+      fromVersion: serviceVersion ?? currentVersion,
+      toVersion: targetVersion,
+    }).pipe(
+      Effect.tap((point) =>
+        Effect.sync(() => {
+          keptPoint = Option.getOrUndefined(point);
+        }),
+      ),
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+    ),
+  );
+
   const runtime = yield* ensurePinnedRuntimeInstalled({
     onProgress: progress.report,
     baseDir: input.baseDir,
@@ -614,6 +644,8 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
               ),
             ),
           ),
+          Effect.andThen(keepRecoveryPoint),
+          Effect.asVoid,
         ),
   }).pipe(
     Effect.ensuring(Effect.sync(progress.finish)),
@@ -621,6 +653,11 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
       if (error._tag === "PinnedRuntimePreflightBlockedError") {
         return new CliUpdateError({
           reason: `Not switching to t3@${targetVersion}: ${error.reason}`,
+        });
+      }
+      if (error.step === RECOVERY_POINT_STEP) {
+        return new CliUpdateError({
+          reason: `Not switching to t3@${targetVersion}: could not keep a recovery point of the database at ${input.dbPath}. Nothing was changed.`,
         });
       }
       if (error.step === ADMITTED_ARCHIVE_MISMATCH_STEP) {
@@ -639,6 +676,12 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
       return error;
     }),
   );
+
+  if (keptPoint !== undefined) {
+    yield* Console.log(
+      `  Kept recovery point ${keptPoint.id} (${keptPoint.dir}); \`t3 recover ${keptPoint.id}\` restores t3@${keptPoint.record.from.version} and the database as it is now.`,
+    );
+  }
 
   const launchedAs = (yield* HostProcessIsExecutable) ? yield* resolveLauncherPath : undefined;
   const repointed = yield* repointLauncher({

@@ -1,16 +1,25 @@
+// @effect-diagnostics nodeBuiltinImport:off - tests seed a real SQLite database and read it back.
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeSqlite from "node:sqlite";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ServerSelfUpdateError, ThreadId } from "@t3tools/contracts";
 import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Cause from "effect/Cause";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as TestClock from "effect/testing/TestClock";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -28,6 +37,13 @@ interface HarnessOptions {
   readonly admission?: Readonly<Record<string, string>>;
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
   readonly desktopAppUpdate?: DesktopAppUpdate.DesktopAppUpdate["Service"];
+  /** An existing T3 home to update; a fresh one without a database by default. */
+  readonly baseDir?: string;
+  /** Called before every rename the update makes, so a test can observe or fail one. */
+  readonly onRename?: (
+    from: string,
+    to: string,
+  ) => Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem>;
 }
 
 // The staged runtime is a release archive: the fake client serves SHA256SUMS,
@@ -73,8 +89,21 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-self-update-test-" });
+  const baseDir =
+    options.baseDir ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-self-update-test-" }));
   const order: string[] = [];
+  const onRename = options.onRename;
+  const updateFs: FileSystem.FileSystem =
+    onRename === undefined
+      ? fs
+      : {
+          ...fs,
+          rename: (from, to) =>
+            onRename(from, to).pipe(
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.andThen(fs.rename(from, to)),
+            ),
+        };
   const runner = ProcessRunner.ProcessRunner.of({
     run: (input) =>
       Effect.gen(function* () {
@@ -144,11 +173,12 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
       },
     ),
     Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order, options.admission)),
+    Effect.provideService(FileSystem.FileSystem, updateFs),
     Effect.provideService(HostProcessPlatform, "linux"),
     Effect.provideService(HostProcessArchitecture, "x64"),
     Effect.provide(ServerConfig.layer({ ...config, mode: options.mode ?? "web" })),
   );
-  return { selfUpdate, order };
+  return { selfUpdate, order, baseDir, dbPath: config.dbPath };
 });
 
 it.layer(NodeServices.layer)("server self update", (it) => {
@@ -478,6 +508,208 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       );
       yield* Deferred.succeed(accepted, "launcher-id");
       expect((yield* Fiber.join(first)).updateId).toBe("launcher-id");
+    }),
+  );
+});
+
+const fileSha256 = (filePath: string) =>
+  NodeCrypto.createHash("sha256").update(NodeFS.readFileSync(filePath)).digest("hex");
+const SERVICE_VERSION = "1.0.5";
+const SERVICE_ARCHIVE_SHA256 = "cd".repeat(32);
+const SERVICE_STATE = `${JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: SERVICE_VERSION })}\n`;
+
+/**
+ * A T3 home with a database (or bytes that are not one), the runtime it runs
+ * now, the service state naming it when `serviceState` is set, and a
+ * database an earlier recover set aside.
+ */
+const makeHomeWithDatabase = Effect.fn("test.make_self_update_home")(function* (options: {
+  readonly serviceState: boolean;
+  readonly database?: "sqlite" | "garbage";
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-self-update-home-" });
+  const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
+  yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+  if (options.database === "garbage") {
+    yield* fs.writeFileString(dbPath, "this is not a SQLite database\n".repeat(64));
+  } else {
+    const database = new NodeSqlite.DatabaseSync(dbPath);
+    database.exec("create table notes (value text); insert into notes values ('kept');");
+    database.close();
+  }
+  const fromVersion = options.serviceState ? SERVICE_VERSION : packageJson.version;
+  const fromRuntime = path.join(baseDir, "runtime", "versions", fromVersion);
+  yield* fs.makeDirectory(fromRuntime, { recursive: true });
+  yield* fs.writeFileString(path.join(fromRuntime, "t3"), "#!/bin/sh\n");
+  const serviceStatePath = path.join(baseDir, "runtime", "service-state.json");
+  if (options.serviceState) {
+    yield* fs.writeFileString(
+      path.join(fromRuntime, ".archive-sha256"),
+      `${SERVICE_ARCHIVE_SHA256}\n`,
+    );
+    yield* fs.writeFileString(serviceStatePath, SERVICE_STATE);
+  }
+  const displacedPath = path.join(
+    baseDir,
+    "recovery/displaced/19700101T000000000Z-earlier/statev2.sqlite",
+  );
+  yield* fs.makeDirectory(path.dirname(displacedPath), { recursive: true });
+  yield* fs.writeFileString(displacedPath, "an earlier database\n");
+  return {
+    baseDir,
+    dbPath,
+    fromVersion,
+    fromRuntime,
+    serviceStatePath,
+    displacedPath,
+    pointsDir: path.join(baseDir, "recovery", "points"),
+  };
+});
+
+it.layer(NodeServices.layer)("server self update recovery point", (it) => {
+  it.effect.each([
+    ["the version the service state records", true],
+    ["the running version without a service state", false],
+  ] as const)("keeps one recovery point from %s before publishing", ([, serviceState]) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* makeHomeWithDatabase({ serviceState });
+      const targetDir = path.join(home.baseDir, "runtime", "versions", "1.1.0");
+      const pointsAtPublish: string[][] = [];
+      const { selfUpdate, order, dbPath } = yield* makeHarness({
+        baseDir: home.baseDir,
+        onRename: (_from, to) =>
+          to === targetDir
+            ? fs
+                .readDirectory(home.pointsDir)
+                .pipe(Effect.map((names) => void pointsAtPublish.push(names)))
+            : Effect.void,
+      });
+      expect(dbPath).toBe(home.dbPath);
+
+      expect((yield* selfUpdate.update({ targetVersion: "1.1.0" })).updateId).toBe("launcher-id");
+      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      const points = yield* fs.readDirectory(home.pointsDir);
+      expect(points).toEqual([`19700101T000000000Z-${home.fromVersion}-to-1.1.0`]);
+      // The point was already in place when the new runtime was published.
+      expect(pointsAtPublish).toEqual([points]);
+      const pointDir = path.join(home.pointsDir, points[0] ?? "");
+      expect((yield* fs.readDirectory(pointDir)).toSorted()).toEqual([
+        "recovery.json",
+        "statev2.sqlite",
+      ]);
+      const snapshotPath = path.join(pointDir, "statev2.sqlite");
+      const record: unknown = JSON.parse(
+        yield* fs.readFileString(path.join(pointDir, "recovery.json")),
+      );
+      expect(record).toEqual({
+        id: points[0],
+        createdAt: "1970-01-01T00:00:00.000Z",
+        from: {
+          version: home.fromVersion,
+          runtimePath: home.fromRuntime,
+          archiveSha256: serviceState ? SERVICE_ARCHIVE_SHA256 : null,
+        },
+        to: { version: "1.1.0" },
+        snapshot: { size: NodeFS.statSync(snapshotPath).size, sha256: fileSha256(snapshotPath) },
+        actions: [],
+      });
+    }),
+  );
+
+  it.effect("keeps a single point when a concurrent publish makes validation run twice", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* makeHomeWithDatabase({ serviceState: true });
+      const targetDir = path.join(home.baseDir, "runtime", "versions", "1.1.0");
+      const { selfUpdate, order } = yield* makeHarness({
+        baseDir: home.baseDir,
+        // Another update publishes the same version first, so this one
+        // validates the published runtime again instead of its own.
+        onRename: (from, to) =>
+          to === targetDir
+            ? Effect.gen(function* () {
+                yield* fs.makeDirectory(targetDir, { recursive: true });
+                yield* fs.writeFileString(path.join(targetDir, "t3"), "#!/bin/sh\n");
+                yield* fs.writeFileString(path.join(targetDir, ".install-complete"), "1.1.0\n");
+                return yield* PlatformError.systemError({
+                  _tag: "AlreadyExists",
+                  module: "FileSystem",
+                  method: "rename",
+                  pathOrDescriptor: from,
+                });
+              })
+            : Effect.void,
+      });
+
+      yield* selfUpdate.update({ targetVersion: "1.1.0" });
+      expect(order).toEqual(["download", "extract", "preflight", "preflight", "accept"]);
+      expect(yield* fs.readDirectory(home.pointsDir)).toHaveLength(1);
+    }),
+  );
+
+  it.effect("prunes only the oldest point on the fourth update", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* makeHomeWithDatabase({ serviceState: true });
+      const versions = ["1.1.0", "1.1.1", "1.1.2", "1.1.3"];
+      for (const version of versions) {
+        // A prepared update hands the server over, so each one is a fresh server.
+        const { selfUpdate } = yield* makeHarness({ baseDir: home.baseDir, version });
+        yield* selfUpdate.update({ targetVersion: version });
+        yield* TestClock.adjust(Duration.seconds(1));
+      }
+
+      expect((yield* fs.readDirectory(home.pointsDir)).toSorted()).toEqual([
+        `19700101T000001000Z-${SERVICE_VERSION}-to-1.1.1`,
+        `19700101T000002000Z-${SERVICE_VERSION}-to-1.1.2`,
+        `19700101T000003000Z-${SERVICE_VERSION}-to-1.1.3`,
+      ]);
+      expect(
+        (yield* fs.readDirectory(path.join(home.baseDir, "runtime", "versions"))).toSorted(),
+      ).toEqual([SERVICE_VERSION, ...versions]);
+      expect(yield* fs.readFileString(home.displacedPath)).toBe("an earlier database\n");
+    }),
+  );
+
+  it.effect.each([
+    ["the backup fails", "garbage"],
+    ["the recovery directory cannot be written", "points-file"],
+  ] as const)("refuses the update and changes nothing when %s", ([, failure]) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* makeHomeWithDatabase({
+        serviceState: true,
+        database: failure === "garbage" ? "garbage" : "sqlite",
+      });
+      if (failure === "points-file") yield* fs.writeFileString(home.pointsDir, "not a directory\n");
+      const databaseSha256 = fileSha256(home.dbPath);
+      const { selfUpdate, order } = yield* makeHarness({ baseDir: home.baseDir });
+
+      const error = yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip);
+
+      expect(error.reason).toBe(
+        "Not switching to t3@1.1.0: could not keep a recovery point of the database.",
+      );
+      // The preflight ran and the launcher was never asked to switch.
+      expect(order).toEqual(["download", "extract", "preflight"]);
+      expect(yield* fs.readDirectory(path.join(home.baseDir, "runtime", "versions"))).toEqual([
+        SERVICE_VERSION,
+      ]);
+      expect(yield* fs.readFileString(home.serviceStatePath)).toBe(SERVICE_STATE);
+      expect(fileSha256(home.dbPath)).toBe(databaseSha256);
+      expect(yield* fs.readFileString(home.displacedPath)).toBe("an earlier database\n");
+      if (failure === "points-file") {
+        expect(yield* fs.readFileString(home.pointsDir)).toBe("not a directory\n");
+      } else {
+        expect(yield* fs.readDirectory(home.pointsDir)).toEqual([]);
+      }
     }),
   );
 });

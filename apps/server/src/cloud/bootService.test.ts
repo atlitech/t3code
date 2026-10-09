@@ -599,6 +599,74 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
     }),
   );
 
+  it.effect.each([
+    { platform: "linux", expected: ["systemctl --user stop t3code.service"] },
+    {
+      platform: "darwin",
+      expected: ["launchctl bootout --wait gui/501/com.t3tools.t3code.service"],
+    },
+  ] as const)(
+    "stop stops this home's service without starting it on $platform",
+    ({ platform, expected }) =>
+      Effect.gen(function* () {
+        const { service, commands } = yield* makeHarness(platform);
+        yield* service.install();
+        commands.length = 0;
+
+        expect(yield* service.stop).toBe(true);
+        expect(commands).toEqual(expected);
+      }),
+  );
+
+  it.effect("stop is a no-op when no service is installed", () =>
+    Effect.gen(function* () {
+      const { service, commands } = yield* makeHarness();
+      commands.length = 0;
+
+      expect(yield* service.stop).toBe(false);
+      expect(commands).toEqual([]);
+    }),
+  );
+
+  it.effect("stop leaves a service that serves another T3 home alone", () =>
+    Effect.gen(function* () {
+      const { service, fs, commands, makeService } = yield* makeHarness();
+      yield* service.install();
+      const path = yield* Path.Path;
+      const otherHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-other-home-" });
+      const other = yield* makeService(undefined, "1.2.3", path.join(otherHome, ".t3"));
+      commands.length = 0;
+
+      expect(yield* other.stop).toBe(false);
+      expect(commands).toEqual([]);
+    }),
+  );
+
+  it.effect("stop refuses while a remote update is pending, before stopping anything", () =>
+    Effect.gen(function* () {
+      const { service, fs, statePath, commands } = yield* makeHarness();
+      yield* service.install();
+      const pendingState = JSON.stringify({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: "1.2.3",
+        update: {
+          id: "u",
+          fromVersion: "1.2.3",
+          targetVersion: "1.2.4",
+          dbPath: "/tmp/state.sqlite",
+          status: "pending",
+        },
+      });
+      yield* fs.writeFileString(statePath, pendingState);
+      commands.length = 0;
+
+      const error = yield* service.stop.pipe(Effect.flip);
+      expect(error._tag).toBe("BootServiceUpdatePendingError");
+      expect(commands).toEqual([]);
+      expect(yield* fs.readFileString(statePath)).toBe(pendingState);
+    }),
+  );
+
   it.effect("restart brings the service back when activation fails", () =>
     Effect.gen(function* () {
       const { service, commands, control } = yield* makeHarness();

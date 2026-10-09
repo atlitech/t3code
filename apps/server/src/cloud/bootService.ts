@@ -543,6 +543,13 @@ export class BootService extends Context.Service<
      * restarted.
      */
     readonly restart: Effect.Effect<boolean, BootServiceError>;
+    /**
+     * Stop the installed service without starting it again, so `t3 recover`
+     * can swap the database under it. Only when the unit serves this base dir,
+     * and refused while a remote update is pending, before anything stops.
+     * Resolves false when there is no such service to stop.
+     */
+    readonly stop: Effect.Effect<boolean, BootServiceError>;
     readonly uninstall: Effect.Effect<boolean, BootServiceError>;
     readonly status: Effect.Effect<BootServiceStatus, BootServiceError>;
   }
@@ -927,6 +934,26 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     Effect.withSpan("cloud.boot_service.restart"),
   );
 
+  const stop: BootService["Service"]["stop"] = Effect.gen(function* () {
+    const manager = yield* requireManager;
+    const unit = yield* fs.readFileString(unitPath).pipe(Effect.option);
+    if (Option.isNone(unit)) return false;
+    const installedBaseDir = bootServiceBaseDirOf(unit.value);
+    if (
+      installedBaseDir === undefined ||
+      path.resolve(installedBaseDir) !== path.resolve(input.baseDir)
+    ) {
+      return false;
+    }
+    // Stopping mid-update would leave the launcher's update unfinished.
+    const stateText = yield* fs.readFileString(statePath).pipe(Effect.option);
+    if (Option.isSome(stateText) && serviceStateHasPendingUpdate(stateText.value)) {
+      return yield* new BootServiceUpdatePendingError();
+    }
+    yield* runSteps(manager.stop);
+    return true;
+  }).pipe(Effect.withSpan("cloud.boot_service.stop"));
+
   const uninstall: BootService["Service"]["uninstall"] = Effect.gen(function* () {
     const manager = yield* requireManager;
     if (
@@ -990,7 +1017,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     Effect.withSpan("cloud.boot_service.status"),
   );
 
-  return BootService.of({ install, restart, uninstall, status });
+  return BootService.of({ install, restart, stop, uninstall, status });
 });
 
 export const layer = (input: {
