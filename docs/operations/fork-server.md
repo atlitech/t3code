@@ -45,21 +45,33 @@ and restart `<n>` at 1.
 
 ## Cutting a release
 
-Use a dispatch. The workflow creates the tag on the commit it built:
+Dispatch the workflow from `atli`; nothing else starts a release:
 
 ```sh
 gh workflow run fork-server-release.yml -R atlitech/t3code --ref atli -f version=0.0.46-atli.1
 ```
 
-Pushing a tag works too:
-
-```sh
-git tag v0.0.46-atli.1 atli && git push atlitech v0.0.46-atli.1
-```
+A guard job runs before any build. It refuses a dispatch from any other ref, a
+version whose tag or release already exists, and an `atli` tip without a
+passing `Check` run (CI runs on every push to `atli`). Every build checks out
+the commit the guard approved, and the publish job creates the tag and the
+release together, with every asset at once.
 
 The result is the prerelease `v0.0.46-atli.1` with
-`t3-0.0.46-atli.1-linux-x64.tar.gz` and `SHA256SUMS`. A dispatch refuses an
-existing tag. To retry a failed tag build, re-run its workflow run.
+`t3-0.0.46-atli.1-linux-x64.tar.gz`, `SHA256SUMS`, and `manifest.json`, which
+names the source commit, the version, and each archive's platform, arch, size,
+and sha256. Each of those files has a build provenance attestation:
+
+```sh
+gh attestation verify t3-0.0.46-atli.1-linux-x64.tar.gz -R atlitech/t3code
+```
+
+A published release never changes. Do not re-run a failed release: dispatch
+again, and once a version has a tag or release, use the next atli number.
+
+Owner action, once: enable immutable releases on atlitech/t3code
+(**Settings → General → Releases**), so GitHub also refuses to change a
+published release's assets or move its tag.
 
 ## Switching the VM to a fork build
 

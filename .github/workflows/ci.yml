@@ -2,12 +2,13 @@ name: CI
 
 on:
   # The fork's integration branch is atli; upstream's main does not exist here.
+  # A push to atli runs `Check` on the commit fork-server-release.yml may release.
   pull_request:
     branches:
       - atli
   push:
     branches:
-      - main
+      - atli
 
 permissions:
   contents: read
