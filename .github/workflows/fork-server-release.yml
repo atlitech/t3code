@@ -253,8 +253,10 @@ jobs:
           targets: aarch64-apple-darwin
 
       # Builds unsigned by default and writes release/T3-Code-<version>-arm64.dmg.
+      # Without GITHUB_REPOSITORY the build configures no update feed, as a
+      # local build does: fork releases carry no desktop updater metadata.
       - name: Build desktop DMG
-        run: vp run dist:desktop:dmg:arm64
+        run: env -u GITHUB_REPOSITORY -u T3CODE_DESKTOP_UPDATE_REPOSITORY vp run dist:desktop:dmg:arm64
 
       - name: Check the app's bundle identifier, version, and signature
         shell: bash
@@ -268,6 +270,10 @@ jobs:
           apps=("$mount_dir"/*.app)
           if (( ${#apps[@]} != 1 )); then
             echo "::error::Expected one app in the DMG; found ${#apps[@]}."
+            exit 1
+          fi
+          if [[ -e "${apps[0]}/Contents/Resources/app-update.yml" ]]; then
+            echo "::error::The app carries an update feed (app-update.yml); fork releases publish no updater metadata."
             exit 1
           fi
           plutil -convert xml1 -o - "${apps[0]}/Contents/Info.plist" > "$RUNNER_TEMP/Info.plist"

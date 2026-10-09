@@ -158,7 +158,9 @@ describe("fork server release workflow", () => {
     expect(env.get("T3CODE_DESKTOP_VERSION")).toBe("${{ needs.guard.outputs.version }}");
 
     const build = stepsOf(body).findIndex((step) =>
-      /run: vp run dist:desktop:dmg:arm64$/m.test(step),
+      /run: env -u GITHUB_REPOSITORY -u T3CODE_DESKTOP_UPDATE_REPOSITORY vp run dist:desktop:dmg:arm64$/m.test(
+        step,
+      ),
     );
     expect(build).toBeGreaterThan(stepsOf(body).indexOf(rust!));
   });
@@ -172,7 +174,11 @@ describe("fork server release workflow", () => {
   it("checks the Mac app's identity, then attests and uploads the DMG", () => {
     const steps = stepsOf(job("build-mac"));
     const dmg = "release/T3-Code-${{ needs.guard.outputs.version }}-arm64.dmg";
-    const build = steps.findIndex((step) => /run: vp run dist:desktop:dmg:arm64$/m.test(step));
+    const build = steps.findIndex((step) =>
+      /run: env -u GITHUB_REPOSITORY -u T3CODE_DESKTOP_UPDATE_REPOSITORY vp run dist:desktop:dmg:arm64$/m.test(
+        step,
+      ),
+    );
     const identity = steps.findIndex((step) => /node scripts\/fork-mac-identity\.ts/.test(step));
     const attest = steps.findIndex((step) => ATTEST.test(step));
     const upload = steps.findIndex((step) => /uses: actions\/upload-artifact@/.test(step));
@@ -189,6 +195,8 @@ describe("fork server release workflow", () => {
     expect(check).toMatch(/codesign -dv --verbose=2 [^\n]*2>&1 \|\| true/);
     expect(check).toMatch(/--release-version "\$VERSION"/);
     expect(check).toMatch(/hdiutil detach/);
+    // No update feed: fork releases publish no desktop updater metadata.
+    expect(check).toMatch(/Contents\/Resources\/app-update\.yml/);
 
     expect(steps[attest]).toContain(`subject-path: ${dmg}`);
     expect(steps[upload]).toMatch(/name: release-darwin-arm64\n/);
