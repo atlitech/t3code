@@ -21,9 +21,9 @@ nightlies use (`0.0.46-nightly.<date>.<run>`).
   `--allow-downgrade` to switch.
 
 Increase `<n>` for every release and never reuse a version. Each installed
-runtime is keyed by its version and is never downloaded again. After a rebase
-moves `package.json` to a new version, use the new next patch and restart `<n>`
-at 1.
+runtime is keyed by its version and is never downloaded again. After an
+upstream update moves `package.json` to a new version, use the new next patch
+and restart `<n>` at 1.
 
 ## One-time repository setup
 
@@ -162,8 +162,8 @@ adb devices -l
 adb -s <device-serial> install -r apps/mobile/android/app/build/outputs/apk/release/app-release.apk
 ```
 
-After a rebase, run it without `--no-prebuild` when dependencies or native
-config changed. `install -r` keeps the app's data only when the APK is signed
+After an upstream update, run it without `--no-prebuild` when dependencies or
+native config changed. `install -r` keeps the app's data only when the APK is signed
 with the same key as the installed app; the skill describes how to check.
 
 ## Pull request watcher
@@ -210,14 +210,48 @@ A fork build may already have run database migrations from upstream `main`
 against `~/.t3/userdata`, and an older official build may not run on that
 database. Back up `~/.t3/userdata` before the first switch to a fork build.
 
-## Rebasing `atli` on upstream
+## Updating `atli` from upstream
+
+`atli` takes upstream changes only through a merge, so it keeps upstream's
+history as an ancestor. The ruleset on `atli` refuses force pushes, so never
+rewrite it. `origin` is `atlitech/t3code` and `upstream` is `pingdotgg/t3code`.
+
+Freeze the upstream commit first, so the update does not move while you work
+on it, then build a candidate branch from `atli` plus a merge of that commit:
 
 ```sh
-git fetch upstream
-git switch atli
-git rebase upstream/main
-git push --force-with-lease atlitech atli
+git fetch origin atli
+git fetch upstream main
+upstream_sha="$(git rev-parse upstream/main)"
+branch="update/upstream-${upstream_sha:0:12}"
+git switch -c "$branch" origin/atli
+git merge --no-ff "$upstream_sha" -m "Merge upstream ${upstream_sha:0:12} into atli"
+git push origin "$branch"
+gh pr create --repo atlitech/t3code --base atli --head "$branch" \
+  --title "Merge upstream ${upstream_sha:0:12} into atli" \
+  --body "Merges upstream commit $upstream_sha. Merge with a merge commit."
 ```
+
+When the fork's CI passes, merge the pull request with a merge commit, never
+squash or rebase. Either loses upstream's commits as ancestors of `atli`, and
+the next update conflicts again on everything this one resolved:
+
+```sh
+gh pr merge <pr> --repo atlitech/t3code --merge
+```
+
+### Conflicts
+
+Two files are known to conflict. Resolve them in the candidate branch, then
+`git add` them and `git commit` to finish the merge:
+
+- `pnpm-workspace.yaml`: both sides add entries to `patchedDependencies`.
+  Keep both sides' entries.
+- `pnpm-lock.yaml`: never hand-merge it. Take either side, then regenerate it
+  with `pnpm install` once `pnpm-workspace.yaml` is resolved.
+
+Any other conflict stops the update. Run `git merge --abort`, delete the
+candidate branch, and leave the update for the owner.
 
 Then cut a release. If `apps/server/package.json` moved, use its new next patch
 with `-atli.1`.
