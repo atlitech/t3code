@@ -11,9 +11,10 @@
 // - `upgraded`: the candidate, on the same home: the snapshots again, plus
 //   the event log. The candidate decodes every seeded event: the shell
 //   resume (`orchestration.subscribeShell` from sequence 0) reads and decodes
-//   each thread.created from the log, and the thread resume
-//   (`orchestration.subscribeThread` after the creation) replays each
-//   message.updated with its sequence and content.
+//   each thread.created from the log, and the thread it then serves must be
+//   the one the log records; the thread resume (`orchestration.subscribeThread`
+//   after the creation) replays every later event the log holds for the
+//   thread, each compared with its logged row.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -93,8 +94,14 @@ const decodeSnapshotBody = Schema.decodeUnknownOption(SnapshotBody);
 const ReplayedEvent = Schema.Struct({
   kind: Schema.Literal("event"),
   sequence: Schema.Number,
-  event: Schema.Struct({ id: Schema.String, threadId: Schema.String, payload: Fields }),
+  event: Schema.Struct({
+    id: Schema.String,
+    type: Schema.String,
+    threadId: Schema.String,
+    payload: Fields,
+  }),
 });
+type ReplayedEvent = typeof ReplayedEvent.Type;
 const decodeReplayedEvent = Schema.decodeUnknownOption(ReplayedEvent);
 const AnyReplayedEvent = Schema.Struct({
   kind: Schema.Literal("event"),
@@ -174,6 +181,87 @@ const expectedThreadAsCreated = (
   if (Option.isNone(payload)) return "the prior's thread.created payload is unreadable";
   return { ...expectedThread(fixture.thread), createdAt: payload.value.createdAt };
 };
+
+/**
+ * How a replayed event differs from the row the prior logged at its
+ * sequence: its id, type, thread, and every payload field, both ways.
+ */
+const eventMismatches = (row: SeededEvent, replayed: ReplayedEvent): string => {
+  const { event } = replayed;
+  const payload = decodePayloadJson(row.payload_json);
+  return [
+    event.id === row.event_id ? "" : `id is '${event.id}', the log holds '${row.event_id}'`,
+    event.type === row.event_type ? "" : `type is ${event.type}, the log holds ${row.event_type}`,
+    event.threadId === row.stream_id ? "" : `threadId is '${event.threadId}'`,
+    Option.isNone(payload)
+      ? "the logged payload is unreadable"
+      : [
+          fieldMismatches(payload.value, event.payload),
+          ...Object.keys(event.payload)
+            .filter((key) => !(key in payload.value))
+            .map((key) => `payload.${key} is not in the log`),
+        ]
+          .filter((problem) => problem !== "")
+          .join("; "),
+  ]
+    .filter((problem) => problem !== "")
+    .join("; ");
+};
+
+/**
+ * The thread the prior's log records: its thread.created payload, with each
+ * later thread event's thread record (thread.settled carries the whole
+ * thread) laid over it in log order. Message events carry messages, not the
+ * thread, and are left out.
+ */
+const loggedThread = (
+  logged: ReadonlyArray<SeededEvent>,
+): Readonly<Record<string, unknown>> | string => {
+  const records = logged.filter((event) => event.event_type.startsWith("thread."));
+  if (records[0]?.event_type !== "thread.created") {
+    return "the log does not start with its thread.created";
+  }
+  const thread: Record<string, unknown> = {};
+  for (const record of records) {
+    const payload = decodePayloadJson(record.payload_json);
+    if (Option.isNone(payload)) return `the logged ${record.event_type} payload is unreadable`;
+    Object.assign(thread, payload.value);
+  }
+  return thread;
+};
+
+/**
+ * How the candidate's shell and snapshot thread differ from the fixture's
+ * thread as created and from the thread its log records.
+ */
+const threadMismatches = (
+  expected: Readonly<Record<string, unknown>>,
+  logged: Readonly<Record<string, unknown>> | string,
+  shellThread: Readonly<Record<string, unknown>>,
+  snapshotThread: Readonly<Record<string, unknown>> | undefined,
+): string => {
+  // A shell (OrchestrationV2ThreadShell) has no deletedAt: deleted threads leave it.
+  const withoutDeletedAt = (fields: Readonly<Record<string, unknown>>) =>
+    Object.fromEntries(Object.entries(fields).filter(([key]) => key !== "deletedAt"));
+  return [
+    fieldMismatches(withoutDeletedAt(expected), shellThread),
+    typeof logged === "string"
+      ? logged
+      : [
+          prefixed("shell", fieldMismatches(withoutDeletedAt(logged), shellThread)),
+          snapshotThread === undefined
+            ? "no snapshot to compare with the log"
+            : prefixed("snapshot", fieldMismatches(logged, snapshotThread)),
+        ]
+          .filter((problem) => problem !== "")
+          .join("; "),
+  ]
+    .filter((problem) => problem !== "")
+    .join("; ");
+};
+
+const prefixed = (where: string, problem: string) =>
+  problem === "" ? "" : `${where} differs from the log: ${problem}`;
 
 const snapshotBodyOf = (response: ReadbackResponse | undefined) =>
   response?.status === 200 ? decodeSnapshotBody(response.body) : Option.none();
@@ -267,9 +355,13 @@ const compareEventLog = (
   const threadId = fixture.thread.id;
   const logged = observation.seededEvents.filter((event) => event.stream_id === threadId);
   const created = createdEventOf(observation, threadId);
+  const snapshot = snapshotBodyOf(
+    observation.snapshots.find((response) => response.threadId === threadId),
+  );
 
-  // thread.created: the candidate decoded it on the shell resume, and the
-  // shell it then served still carries the thread as the prior created it.
+  // thread.created: the candidate decoded it on the shell resume, and both
+  // the shell and the snapshot it then served carry the thread as the prior
+  // created it, and as the log records it.
   const shell = observation.shellReplay;
   const shellThread = (shell?.values ?? [])
     .flatMap((value) => Option.toArray(decodeShellThreadUpdated(value)))
@@ -284,10 +376,11 @@ const compareEventLog = (
         ? "the candidate did not finish decoding the event log on the shell resume"
         : shellThread === undefined
           ? "the candidate's shell resume did not return the thread"
-          : // A shell (OrchestrationV2ThreadShell) has no deletedAt: deleted threads leave it.
-            fieldMismatches(
-              Object.fromEntries(Object.entries(expected).filter(([key]) => key !== "deletedAt")),
+          : threadMismatches(
+              expected,
+              loggedThread(logged),
               shellThread,
+              Option.getOrUndefined(snapshot)?.projection.thread,
             ),
   );
 
@@ -327,12 +420,7 @@ const compareEventLog = (
   // The snapshot must cover the logged history, and the replay must have
   // resumed right after creation and finished its catch-up.
   const lastLogged = Math.max(0, ...logged.map((event) => event.sequence));
-  const snapshotSequence = Option.getOrUndefined(
-    Option.map(
-      snapshotBodyOf(observation.snapshots.find((response) => response.threadId === threadId)),
-      (body) => body.snapshotSequence,
-    ),
-  );
+  const snapshotSequence = Option.getOrUndefined(snapshot)?.snapshotSequence;
   const coverage =
     snapshotSequence === undefined
       ? "no snapshot"
@@ -357,10 +445,10 @@ const compareEventLog = (
  * The candidate's thread resume must replay exactly the events the prior's
  * log holds after the thread's creation (the seeded messages and whatever the
  * prior appended itself, such as thread.settled), in the log's order, each
- * with its type, and nothing else up to the log's last sequence. Clients
- * apply a replay in arrival order (packages/client-runtime/src/state/threads.ts),
- * so the stream as received must rise strictly in sequence with no event
- * twice. Events past the log are the candidate's own writes since the
+ * with the id, type, and payload of its logged row, and nothing else up to
+ * the log's last sequence. Clients apply a replay in arrival order
+ * (packages/client-runtime/src/state/threads.ts), so the stream as received
+ * must rise strictly in sequence with no event twice. Events past the log are the candidate's own writes since the
  * upgrade: allowed, and reported.
  */
 export const replayCompleteness = (
@@ -374,10 +462,10 @@ export const replayCompleteness = (
   if (replay === undefined) return item("event", id, "no replay");
   const lastLogged = Math.max(created.sequence, ...logged.map((event) => event.sequence));
   const describe = (sequence: number, type: string) => `${sequence} (${type})`;
-  const expected = logged
-    .filter((event) => event.sequence > created.sequence)
-    .map((event) => describe(event.sequence, event.event_type));
+  const after = logged.filter((event) => event.sequence > created.sequence);
+  const expected = after.map((event) => describe(event.sequence, event.event_type));
   const replayed = replay.values.flatMap((value) => Option.toArray(decodeAnyReplayedEvent(value)));
+  const complete = replay.values.flatMap((value) => Option.toArray(decodeReplayedEvent(value)));
   const problems: Array<string> = [];
   replayed.forEach((value, index) => {
     const previous = replayed[index - 1];
@@ -396,11 +484,22 @@ export const replayCompleteness = (
   if (!sameJson(actual, expected)) {
     problems.push(`replayed [${actual.join(", ")}], the log holds [${expected.join(", ")}]`);
   }
+  // Each logged event the candidate replayed must match its row; a missing
+  // one is already reported above.
+  for (const row of after) {
+    if (!replayed.some((candidate) => candidate.sequence === row.sequence)) continue;
+    const value = complete.find((candidate) => candidate.sequence === row.sequence);
+    const mismatch =
+      value === undefined
+        ? "replayed without its threadId or payload"
+        : eventMismatches(row, value);
+    if (mismatch !== "") problems.push(`${describe(row.sequence, row.event_type)}: ${mismatch}`);
+  }
   const appended = replayed.filter((value) => value.sequence > lastLogged);
   const detail =
     problems.length > 0
       ? problems.join("; ")
-      : `replayed all ${expected.length} logged events after creation, in order${
+      : `replayed all ${expected.length} logged events intact, in order${
           appended.length > 0
             ? `; the candidate appended ${appended
                 .map((value) => describe(value.sequence, value.event.type))
@@ -565,6 +664,8 @@ export const readback = Effect.fn("readback")(function* (options: {
         (event) => event.stream_id === thread.id && event.command_id === threadCommandId(thread.id),
       );
       if (created === undefined) continue;
+      // From just after the creation: a resume that would replay the
+      // thread.created itself is answered with a snapshot instead (ws.ts).
       const replay = yield* resume({
         baseUrl: options.baseUrl,
         token,

@@ -334,7 +334,12 @@ it.effect("fails when any configuration field of a thread changed in the snapsho
       const observation = changed((copy) => {
         snapshotOf(copy, threadId).projection.thread[field] = value;
       });
-      assert.deepStrictEqual(failedIds(fixtures, observation), [threadId], field);
+      // It no longer matches the fixture, nor the thread the prior's log records.
+      assert.deepStrictEqual(
+        failedIds(fixtures, observation),
+        [threadId, `${threadId}:thread.created`],
+        field,
+      );
     }
   }),
 );
@@ -350,6 +355,7 @@ it.effect("fails when a seeded thread is missing from the snapshots", () =>
       first.thread.id,
       ...first.messages.map((message) => message.id),
       `${first.thread.id}:message-order`,
+      `${first.thread.id}:thread.created`,
       `${first.thread.id}:history`,
     ]);
   }),
@@ -404,6 +410,99 @@ it.effect("fails when the candidate's shell resume did not decode or keep the th
       );
     });
     assert.deepStrictEqual(failedIds(fixtures, dropped), [created]);
+  }),
+);
+
+it.effect("fails when the candidate's thread differs from the one the prior's log records", () =>
+  Effect.gen(function* () {
+    const fixtures = yield* loadFixtures;
+    const threadId = fixtures[0]!.thread.id;
+    const created = `${threadId}:thread.created`;
+    // Fields fixtures.json does not set: only the logged thread.created and
+    // thread.settled payloads say what they hold.
+    const mutations: ReadonlyArray<readonly [string, unknown]> = [
+      ["updatedAt", "2020-01-01T00:00:00.000Z"],
+      ["settledOverride", null],
+      ["settledAt", "2020-01-01T00:00:00.000Z"],
+      ["snoozedUntil", "2020-01-01T00:00:00.000Z"],
+      ["lastVisitedAt", "2020-01-01T00:00:00.000Z"],
+    ];
+    for (const [field, value] of mutations) {
+      const inShell = changed((copy) => {
+        shellThreadOf(copy, threadId)[field] = value;
+      });
+      assert.deepStrictEqual(failedIds(fixtures, inShell), [created], `shell ${field}`);
+      const inSnapshot = changed((copy) => {
+        snapshotOf(copy, threadId).projection.thread[field] = value;
+      });
+      assert.deepStrictEqual(failedIds(fixtures, inSnapshot), [created], `snapshot ${field}`);
+    }
+
+    // The candidate is unchanged, but the log the prior left says otherwise.
+    // thread.settled carries the whole thread, so its record is what the
+    // candidate's thread must hold.
+    const loggedSettled = changed((copy) => {
+      copy.seededEvents = copy.seededEvents.map((event) =>
+        event.stream_id === threadId && event.event_type === "thread.settled"
+          ? {
+              ...event,
+              payload_json: JSON.stringify({
+                ...JSON.parse(event.payload_json),
+                settledAt: "2020-01-01T00:00:00.000Z",
+              }),
+            }
+          : event,
+      );
+    });
+    // The replayed thread.settled no longer matches its row either.
+    assert.deepStrictEqual(failedIds(fixtures, loggedSettled), [created, `${threadId}:replay`]);
+  }),
+);
+
+it.effect("fails when a replayed event's contents differ from its logged row", () =>
+  Effect.gen(function* () {
+    const fixtures = yield* loadFixtures;
+    const thread = withMessages(fixtures);
+    const threadId = thread.thread.id;
+    const replayItem = `${threadId}:replay`;
+    const settledOf = (copy: RecordedObservation) =>
+      replayOf(copy, threadId).values.find(
+        (value) => (value.event as { type?: string }).type === "thread.settled",
+      )!;
+    const settledMutations: ReadonlyArray<readonly [string, (value: RecordedReplayEvent) => void]> =
+      [
+        ["settledAt", (value) => (value.event.payload.settledAt = "2020-01-01T00:00:00.000Z")],
+        ["settledOverride", (value) => (value.event.payload.settledOverride = null)],
+        ["title", (value) => (value.event.payload.title = "Renamed")],
+        ["unexpected field", (value) => (value.event.payload.unexpected = true)],
+        ["dropped field", (value) => delete value.event.payload.updatedAt],
+        ["id", (value) => (value.event.id = "another-event")],
+        ["threadId", (value) => ((value.event as { threadId?: string }).threadId = "another")],
+      ];
+    for (const [name, mutate] of settledMutations) {
+      const observation = changed((copy) => mutate(settledOf(copy)));
+      assert.deepStrictEqual(failedIds(fixtures, observation), [replayItem], name);
+    }
+
+    const incomplete = changed((copy) => {
+      delete (settledOf(copy).event as { payload?: Row }).payload;
+    });
+    assert.include(
+      compareReadback(fixtures, incomplete, "upgraded").items.find(
+        (entry) => entry.id === replayItem,
+      )!.detail,
+      "replayed without its threadId or payload",
+    );
+
+    // A message event with a field its logged row does not hold.
+    const [message] = messageEvents(thread);
+    const extraField = changed((copy) => {
+      const value = replayOf(copy, threadId).values.find(
+        (candidate) => candidate.event.id === message!.eventId,
+      )!;
+      value.event.payload.unexpected = true;
+    });
+    assert.deepStrictEqual(failedIds(fixtures, extraField), [replayItem]);
   }),
 );
 
