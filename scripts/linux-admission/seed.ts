@@ -1,19 +1,22 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Writes the SQL that seeds fixtures.json into a
-// stopped server's statev2.sqlite, for `sqlite3 <db> < seed.sql`. It commits
-// what the server's EventSink commits for the same history, in one
-// transaction: the durable V2 events (OrchestrationEventStore.appendAgentEvents),
-// the projection rows ProjectionStore.apply folds them into, and the
-// projection metadata's last_sequence.
+// Fork-only (atlitech/t3code). Writes the SQL that adds the fixture messages
+// to the threads the prior release's server created (create-threads.ts), for
+// `sqlite3 <db> < seed.sql` once that server has stopped. Messages have no
+// provider-free writer, so this commits what the server's EventSink commits
+// for a `message.updated`, in the prior's persisted format:
 //
-// The event rows match what a released server wrote for a dispatched
-// `thread.create` (event id `event:thread:<thread>:command:<command>:<suffix>`,
-// stream_version from 0, command and correlation id the command, actor
-// `server`, metadata `{"providerInstanceId": ...}`, payload in schema order).
-// Messages are seeded as `message.updated` events the same way; a real
-// conversation would also carry runs and turn items from a provider, which
-// the admission does not have.
+// - the event, appended after what the prior wrote: sequence from the
+//   table's AUTOINCREMENT and stream_version continuing the thread's stream,
+//   as OrchestrationEventStore.appendAgentEvents does; id, command id,
+//   correlation id, actor `server`, and metadata `{"providerInstanceId"}`
+//   shaped like the thread.created rows the prior wrote;
+// - the projection row ProjectionStore.apply folds it into;
+// - last_sequence advanced in the projection metadata row the prior wrote.
+//   The schema version stays the prior's own.
+//
+// It fails, committing nothing, unless the prior created every thread and
+// wrote its projection metadata.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -22,56 +25,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import { Command, Flag } from "effect/cli";
 
-import { decodeFixtures, type FixtureThread } from "./fixtures.ts";
-
-/** ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION, which EventSink stamps on every commit. */
-export const PROJECTION_SCHEMA_VERSION = 2;
-
-export interface FixtureEvent {
-  readonly eventId: string;
-  readonly commandId: string;
-  readonly threadId: string;
-  readonly type: "thread.created" | "message.updated";
-  /** The message this event carries; undefined for thread.created. */
-  readonly messageId: string | undefined;
-  readonly occurredAt: string;
-  readonly payloadJson: string;
-  readonly providerInstanceId: string;
-}
-
-const eventFor = (
-  subject: string,
-  event: Omit<FixtureEvent, "eventId" | "commandId">,
-): FixtureEvent => {
-  const commandId = `admission:${event.type}:${subject}`;
-  return { ...event, commandId, eventId: `event:thread:${event.threadId}:command:${commandId}:0` };
-};
-
-/** The durable events a fixture thread is seeded with, in commit order. */
-export const fixtureEvents = (fixture: FixtureThread): ReadonlyArray<FixtureEvent> => [
-  eventFor(fixture.thread.id, {
-    threadId: fixture.thread.id,
-    type: "thread.created",
-    messageId: undefined,
-    occurredAt: fixture.thread.createdAt,
-    payloadJson: fixture.thread.payloadJson,
-    providerInstanceId: fixture.thread.providerInstanceId,
-  }),
-  ...fixture.messages.map((message) =>
-    eventFor(message.id, {
-      threadId: fixture.thread.id,
-      type: "message.updated",
-      messageId: message.id,
-      occurredAt: message.updatedAt,
-      payloadJson: message.payloadJson,
-      providerInstanceId: fixture.thread.providerInstanceId,
-    }),
-  ),
-];
-
-const encodeEventMetadata = Schema.encodeSync(
-  Schema.fromJsonString(Schema.Struct({ providerInstanceId: Schema.String })),
-);
+import {
+  decodeFixtures,
+  type FixtureMessage,
+  type FixtureThread,
+  threadCommandId,
+} from "./fixtures.ts";
 
 /** A SQL literal: NULL, an integer, or a single-quoted string with quotes doubled. */
 export const sqlLiteral = (value: string | number | boolean | null): string => {
@@ -85,79 +44,105 @@ export const sqlLiteral = (value: string | number | boolean | null): string => {
   return `'${value.replaceAll("'", "''")}'`;
 };
 
-const insert = (table: string, row: Record<string, string | number | boolean | null>): string =>
-  `INSERT INTO ${table} (${Object.keys(row).join(", ")}) VALUES (${Object.values(row)
-    .map(sqlLiteral)
-    .join(", ")});`;
+export interface MessageEvent {
+  readonly eventId: string;
+  readonly commandId: string;
+  readonly threadId: string;
+  readonly message: FixtureMessage;
+  readonly providerInstanceId: string;
+}
 
-// stream_version continues the stream the way appendAgentEvents does.
-const insertEvent = (event: FixtureEvent): string =>
+/** The `message.updated` events a fixture thread's messages are seeded as, in order. */
+export const messageEvents = (fixture: FixtureThread): ReadonlyArray<MessageEvent> =>
+  fixture.messages.map((message) => {
+    const commandId = `admission:message.updated:${message.id}`;
+    return {
+      // IdAllocator's event id: `event` then URI-encoded parts, where the
+      // server ends with a random UUID.
+      eventId: [
+        "event",
+        ...["thread", fixture.thread.id, "command", commandId, "0"].map(encodeURIComponent),
+      ].join(":"),
+      commandId,
+      threadId: fixture.thread.id,
+      message,
+      providerInstanceId: fixture.thread.modelSelection.instanceId,
+    };
+  });
+
+const encodeEventMetadata = Schema.encodeSync(
+  Schema.fromJsonString(Schema.Struct({ providerInstanceId: Schema.String })),
+);
+
+const insertEvent = (event: MessageEvent): string =>
   `INSERT INTO orchestration_events (event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at, command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json, application_event_version) VALUES (${[
     sqlLiteral(event.eventId),
     sqlLiteral("thread"),
     sqlLiteral(event.threadId),
-    `COALESCE((SELECT MAX(stream_version) + 1 FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = ${sqlLiteral(event.threadId)}), 0)`,
-    sqlLiteral(event.type),
-    sqlLiteral(event.occurredAt),
+    `(SELECT MAX(stream_version) + 1 FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = ${sqlLiteral(event.threadId)})`,
+    sqlLiteral("message.updated"),
+    sqlLiteral(event.message.updatedAt),
     sqlLiteral(event.commandId),
     "NULL",
     sqlLiteral(event.commandId),
     sqlLiteral("server"),
-    sqlLiteral(event.payloadJson),
+    sqlLiteral(event.message.payloadJson),
     sqlLiteral(encodeEventMetadata({ providerInstanceId: event.providerInstanceId })),
     "2",
   ].join(", ")});`;
 
-/**
- * One transaction with every fixture event, the projection rows they fold
- * into, and the projection metadata pointing at the last event.
- */
+const insertMessageRow = (message: FixtureMessage): string =>
+  `INSERT INTO orchestration_v2_projection_messages (message_id, thread_id, run_id, node_id, role, streaming, created_at, updated_at, payload_json) VALUES (${[
+    message.id,
+    message.threadId,
+    message.runId,
+    message.nodeId,
+    message.role,
+    message.streaming,
+    message.createdAt,
+    message.updatedAt,
+    message.payloadJson,
+  ]
+    .map(sqlLiteral)
+    .join(", ")});`;
+
+// A row that only inserts when `condition` holds, so a false precondition
+// aborts `sqlite3 -bail` before COMMIT.
+const precondition = (condition: string): string =>
+  `INSERT INTO admission_precondition (ok) SELECT ${condition};`;
+
+/** One transaction adding every fixture message to the threads the prior created. */
 export const seedStatements = (fixtures: ReadonlyArray<FixtureThread>): string => {
-  const statements = ["BEGIN IMMEDIATE;"];
+  const statements = [
+    "BEGIN IMMEDIATE;",
+    "CREATE TEMP TABLE admission_precondition (ok INTEGER CONSTRAINT admission_precondition CHECK (ok = 1));",
+    precondition(
+      "EXISTS (SELECT 1 FROM orchestration_v2_projection_metadata WHERE projection_name = 'thread-projections')",
+    ),
+  ];
   for (const fixture of fixtures) {
-    const { thread, messages } = fixture;
-    statements.push(...fixtureEvents(fixture).map(insertEvent));
+    const threadId = sqlLiteral(fixture.thread.id);
     statements.push(
-      insert("orchestration_v2_projection_threads", {
-        thread_id: thread.id,
-        project_id: thread.projectId,
-        title: thread.title,
-        default_provider: thread.providerInstanceId,
-        provider_instance_id: thread.providerInstanceId,
-        runtime_mode: thread.runtimeMode,
-        interaction_mode: thread.interactionMode,
-        active_provider_thread_id: thread.activeProviderThreadId,
-        created_at: thread.createdAt,
-        updated_at: thread.updatedAt,
-        archived_at: thread.archivedAt,
-        deleted_at: thread.deletedAt,
-        payload_json: thread.payloadJson,
-      }),
+      precondition(
+        `EXISTS (SELECT 1 FROM orchestration_events WHERE aggregate_kind = 'thread' AND stream_id = ${threadId} AND event_type = 'thread.created' AND command_id = ${sqlLiteral(threadCommandId(fixture.thread.id))})`,
+      ),
+      precondition(
+        `EXISTS (SELECT 1 FROM orchestration_v2_projection_threads WHERE thread_id = ${threadId})`,
+      ),
     );
-    for (const message of messages) {
-      statements.push(
-        insert("orchestration_v2_projection_messages", {
-          message_id: message.id,
-          thread_id: message.threadId,
-          run_id: message.runId,
-          node_id: message.nodeId,
-          role: message.role,
-          streaming: message.streaming,
-          created_at: message.createdAt,
-          updated_at: message.updatedAt,
-          payload_json: message.payloadJson,
-        }),
-      );
+    for (const event of messageEvents(fixture)) {
+      statements.push(insertEvent(event), insertMessageRow(event.message));
     }
   }
-  const lastOccurredAt = fixtures
-    .flatMap((fixture) => fixtureEvents(fixture).map((event) => event.occurredAt))
+  const lastUpdatedAt = fixtures
+    .flatMap((fixture) => fixture.messages.map((message) => message.updatedAt))
     .toSorted()
-    .at(-1)!;
+    .at(-1);
   statements.push(
-    `INSERT INTO orchestration_v2_projection_metadata (projection_name, schema_version, last_sequence, updated_at) VALUES ('thread-projections', ${PROJECTION_SCHEMA_VERSION}, (SELECT MAX(sequence) FROM orchestration_events), ${sqlLiteral(lastOccurredAt)}) ON CONFLICT(projection_name) DO UPDATE SET schema_version = excluded.schema_version, last_sequence = excluded.last_sequence, updated_at = excluded.updated_at;`,
+    `UPDATE orchestration_v2_projection_metadata SET last_sequence = (SELECT MAX(sequence) FROM orchestration_events), updated_at = MAX(updated_at, ${sqlLiteral(lastUpdatedAt ?? "")}) WHERE projection_name = 'thread-projections';`,
+    "DROP TABLE admission_precondition;",
+    "COMMIT;",
   );
-  statements.push("COMMIT;");
   return `${statements.join("\n")}\n`;
 };
 
@@ -177,7 +162,7 @@ const command = Command.make(
     out: Flag.String("out").pipe(Flag.withDescription("Where to write the seed SQL.")),
   },
   (options) => writeSeed(options),
-).pipe(Command.withDescription("Write the SQL that seeds the admission fixtures."));
+).pipe(Command.withDescription("Write the SQL that seeds the admission fixture messages."));
 
 if (import.meta.main) {
   Command.run(command, { version: "0.0.0" }).pipe(

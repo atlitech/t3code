@@ -7,10 +7,11 @@
 #   gh release download v0.0.46-atli.3 --repo atlitech/t3code --dir /tmp/rel
 #   scripts/linux-admission/record-fixture.sh /tmp/rel/t3-0.0.46-atli.3-linux-x64.tar.gz
 #
-# The archive starts once on an empty home so it migrates, stops, and gets the
-# fixtures seeded with sqlite3; that database is pre-upgrade.sqlite. It then
-# starts again on the same home, and what readback.ts reads (the seeded event
-# rows, the thread snapshots, and the event replays) is snapshot-response.json.
+# The archive writes the fixture history as the prior does in an admission
+# (server.sh write_prior_history); that database is pre-upgrade.sqlite. It
+# then starts again on the same home as the candidate would, and what
+# readback.ts reads at the `upgraded` stage (the logged event rows, the thread
+# snapshots, and the resumes) is snapshot-response.json.
 set -euo pipefail
 
 archive="${1:?usage: record-fixture.sh <t3-VERSION-linux-x64.tar.gz>}"
@@ -25,29 +26,25 @@ t3="$(extract_archive "$archive" "$work/release")"
 home="$work/home"
 db="$home/userdata/statev2.sqlite"
 
-start_server "$t3" "$home" "$(free_port)" "$work/migrate.log"
-stop_server
+write_prior_history "$t3" "$home" "$work" "$here/fixtures.json"
 
-node "$here/seed.ts" --fixtures "$here/fixtures.json" --out "$work/seed.sql"
-sqlite3 -bail "$db" <"$work/seed.sql"
-# The seeded log as the prior left it, for readback.ts's event-log check.
-sqlite3 -json "$db" \
-  "SELECT sequence, event_id, stream_id, event_type FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread' ORDER BY sequence" \
-  >"$work/seeded-events.json"
-
-# One self-contained file: no -wal or -shm beside it once committed.
+# One self-contained file: no -wal or -shm beside it once committed, and no
+# scratch credentials.
 cp "$db" "$work/pre-upgrade.sqlite"
 for sidecar in -wal -shm; do
   if [[ -f "$db$sidecar" ]]; then cp "$db$sidecar" "$work/pre-upgrade.sqlite$sidecar"; fi
 done
-sqlite3 -bail "$work/pre-upgrade.sqlite" 'PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE; VACUUM;' >/dev/null
+sqlite3 -bail "$work/pre-upgrade.sqlite" \
+  'PRAGMA wal_checkpoint(TRUNCATE); DELETE FROM auth_sessions; DELETE FROM auth_pairing_links; PRAGMA journal_mode=DELETE; VACUUM;' \
+  >/dev/null
 rm -f "$work/pre-upgrade.sqlite-wal" "$work/pre-upgrade.sqlite-shm"
 
 port="$(free_port)"
 start_server "$t3" "$home" "$port" "$work/serve.log"
 run_t3 "$t3" "$home" auth session issue --base-dir "$home" --scope orchestration:read \
   --token-only >"$work/token"
-node "$here/readback.ts" --base-url "http://127.0.0.1:$port" --token-file "$work/token" \
+node "$here/readback.ts" --stage upgraded --base-url "http://127.0.0.1:$port" \
+  --token-file "$work/token" \
   --fixtures "$here/fixtures.json" --seeded-events "$work/seeded-events.json" \
   --out "$work/readback.json" \
   --responses-out "$work/snapshot-response.json"

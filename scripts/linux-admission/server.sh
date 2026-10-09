@@ -86,3 +86,52 @@ stop_server() {
   SERVER_PID=""
   return 1
 }
+
+# dump_thread_events <db> <out>: the thread event log, for readback.ts.
+dump_thread_events() {
+  sqlite3 -readonly -json "$1" \
+    "SELECT sequence, event_id, stream_id, event_type, command_id, payload_json FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread' ORDER BY sequence" \
+    >"$2"
+}
+
+# write_prior_history <prior t3> <home> <work> <fixtures.json>: has the prior
+# release write and read back the fixture history on an empty home:
+#   1. it starts (migrating the home) and creates every fixture thread
+#      through its own thread.create, then reads them back (`created`);
+#   2. it stops, and seed.ts appends the messages in its persisted format;
+#   3. it starts again and reads threads and messages back (`seeded`).
+# Leaves <work>/prior-created.json, <work>/prior-seeded.json, and
+# <work>/seeded-events.json (the log as the prior left it).
+write_prior_history() {
+  local t3="$1" home="$2" work="$3" fixtures="$4" here port db
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  db="$home/userdata/statev2.sqlite"
+
+  port="$(free_port)"
+  start_server "$t3" "$home" "$port" "$work/prior-create.log"
+  (
+    umask 077
+    run_t3 "$t3" "$home" auth session issue --base-dir "$home" --ttl 15m --token-only \
+      >"$work/prior-token"
+  )
+  node "$here/create-threads.ts" --base-url "http://127.0.0.1:$port" \
+    --token-file "$work/prior-token" --fixtures "$fixtures"
+  dump_thread_events "$db" "$work/prior-created-events.json"
+  node "$here/readback.ts" --stage created --base-url "http://127.0.0.1:$port" \
+    --token-file "$work/prior-token" --fixtures "$fixtures" \
+    --seeded-events "$work/prior-created-events.json" --out "$work/prior-created.json"
+  stop_server
+
+  node "$here/seed.ts" --fixtures "$fixtures" --out "$work/seed.sql"
+  sqlite3 -bail "$db" <"$work/seed.sql"
+
+  port="$(free_port)"
+  start_server "$t3" "$home" "$port" "$work/prior-seeded.log"
+  dump_thread_events "$db" "$work/prior-seeded-events.json"
+  node "$here/readback.ts" --stage seeded --base-url "http://127.0.0.1:$port" \
+    --token-file "$work/prior-token" --fixtures "$fixtures" \
+    --seeded-events "$work/prior-seeded-events.json" --out "$work/prior-seeded.json"
+  stop_server
+  rm -f "$work/prior-token"
+  dump_thread_events "$db" "$work/seeded-events.json"
+}

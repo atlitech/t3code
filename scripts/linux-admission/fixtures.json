@@ -7,28 +7,14 @@
         "id": "admission-thread-upgrade-notes",
         "projectId": "admission-project",
         "title": "Upgrade notes",
-        "providerInstanceId": "codex",
-        "modelSelection": { "instanceId": "codex", "model": "gpt-5-codex" },
+        "modelSelection": {
+          "instanceId": "codex",
+          "model": "gpt-5-codex"
+        },
         "runtimeMode": "full-access",
         "interactionMode": "default",
         "branch": null,
-        "worktreePath": null,
-        "activeProviderThreadId": null,
-        "lineage": {
-          "parentThreadId": null,
-          "relationshipToParent": null,
-          "rootThreadId": "admission-thread-upgrade-notes"
-        },
-        "forkedFrom": null,
-        "createdAt": "2026-10-01T09:00:00.000Z",
-        "updatedAt": "2026-10-01T09:00:00.000Z",
-        "archivedAt": null,
-        "settledOverride": null,
-        "settledAt": null,
-        "snoozedUntil": null,
-        "snoozedAt": null,
-        "lastVisitedAt": null,
-        "deletedAt": null
+        "worktreePath": null
       },
       "messages": [
         {
@@ -96,28 +82,14 @@
         "id": "admission-thread-plan-review",
         "projectId": "admission-project",
         "title": "Plan review",
-        "providerInstanceId": "claudeAgent",
-        "modelSelection": { "instanceId": "claudeAgent", "model": "claude-sonnet-4-5" },
+        "modelSelection": {
+          "instanceId": "claudeAgent",
+          "model": "claude-sonnet-4-5"
+        },
         "runtimeMode": "approval-required",
         "interactionMode": "plan",
-        "branch": null,
-        "worktreePath": null,
-        "activeProviderThreadId": null,
-        "lineage": {
-          "parentThreadId": null,
-          "relationshipToParent": null,
-          "rootThreadId": "admission-thread-plan-review"
-        },
-        "forkedFrom": null,
-        "createdAt": "2026-10-02T14:30:00.000Z",
-        "updatedAt": "2026-10-02T14:30:00.000Z",
-        "archivedAt": null,
-        "settledOverride": null,
-        "settledAt": null,
-        "snoozedUntil": null,
-        "snoozedAt": null,
-        "lastVisitedAt": null,
-        "deletedAt": null
+        "branch": "admission/plan-review",
+        "worktreePath": null
       },
       "messages": [
         {

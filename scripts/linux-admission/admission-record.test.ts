@@ -34,6 +34,7 @@ const probePassed = [
   },
 ];
 const readbackPassed = {
+  stage: "upgraded",
   passed: true,
   threads: 1,
   messages: 1,
@@ -46,11 +47,28 @@ const readbackPassed = {
   ],
 };
 
+const priorCreatedPassed = {
+  stage: "created",
+  passed: true,
+  threads: 1,
+  messages: 0,
+  events: 0,
+  items: [{ kind: "thread", id: "thread-1", passed: true, detail: "read back" }],
+};
+const priorSeededPassed = {
+  ...priorCreatedPassed,
+  stage: "seeded",
+  messages: 1,
+  items: readbackPassed.items.filter((item) => item.kind !== "event"),
+};
+
 // Runs the CLI's program in a temp dir and lists what it left in the output directory.
 const admit = (options: {
   readonly expectedSha256: string;
   readonly probe: unknown;
   readonly readback: unknown;
+  readonly priorCreated?: unknown;
+  readonly priorSeeded?: unknown;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -61,6 +79,14 @@ const admit = (options: {
     yield* fs.writeFileString(archive, archiveBytes);
     yield* fs.writeFileString(path.join(dir, "probe.json"), JSON.stringify(options.probe));
     yield* fs.writeFileString(path.join(dir, "readback.json"), JSON.stringify(options.readback));
+    yield* fs.writeFileString(
+      path.join(dir, "prior-created.json"),
+      JSON.stringify(options.priorCreated ?? priorCreatedPassed),
+    );
+    yield* fs.writeFileString(
+      path.join(dir, "prior-seeded.json"),
+      JSON.stringify(options.priorSeeded ?? priorSeededPassed),
+    );
     const exit = yield* Effect.exit(
       writeAdmissionRecord({
         archive,
@@ -69,6 +95,8 @@ const admit = (options: {
         priorVersion: "0.0.46-atli.3",
         priorSource: "bootstrap",
         verifierCommit,
+        priorCreated: path.join(dir, "prior-created.json"),
+        priorSeeded: path.join(dir, "prior-seeded.json"),
         probe: path.join(dir, "probe.json"),
         readback: path.join(dir, "readback.json"),
         out,
@@ -164,6 +192,32 @@ it.layer(NodeServices.layer)("admission record", (it) => {
       });
       assert.strictEqual(result.exit._tag, "Failure");
       assert.deepStrictEqual(result.written, []);
+    }),
+  );
+
+  it.effect("writes nothing when the prior did not read its own history back", () =>
+    Effect.gen(function* () {
+      for (const prior of [
+        { priorCreated: { ...priorCreatedPassed, passed: false } },
+        {
+          priorSeeded: {
+            ...priorSeededPassed,
+            passed: false,
+            items: priorSeededPassed.items.map((item) => ({ ...item, passed: false })),
+          },
+        },
+        // A result from the wrong stage stands in for none at all.
+        { priorSeeded: priorCreatedPassed },
+      ]) {
+        const result = yield* admit({
+          expectedSha256: archiveSha256,
+          probe: probePassed,
+          readback: readbackPassed,
+          ...prior,
+        });
+        assert.strictEqual(result.exit._tag, "Failure", JSON.stringify(prior));
+        assert.deepStrictEqual(result.written, []);
+      }
     }),
   );
 

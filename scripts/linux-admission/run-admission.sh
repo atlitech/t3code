@@ -5,15 +5,18 @@
 #
 #   1. The candidate's sha256 must be the one the build job reported.
 #   2. The prior release's archive is downloaded and verified with its SHA256SUMS.
-#   3. The prior starts once on an empty T3 home so it migrates, and stops.
-#   4. fixtures.json is seeded into that home's database with sqlite3: the
-#      durable events, their projection rows, and the projection metadata.
-#   5. The candidate starts on the same home (running its own migrations).
-#   6. probe.ts: GET / is 200 and the environment reports RELEASE_VERSION.
-#   7. readback.ts: every fixture thread and message reads back through the
-#      snapshot API, and the candidate replays every seeded message event from
-#      the durable log, with a token from its own `t3 auth session issue`.
-#   8. admission-record.ts writes OUT_DIR/ADMISSION.json, or nothing.
+#   3. The prior writes the history (server.sh write_prior_history): on an
+#      empty T3 home it creates every fixtures.json thread through its own
+#      thread.create and reads them back; once it stops, seed.ts appends the
+#      messages in its persisted format; it starts again and reads threads
+#      and messages back through its own snapshot API.
+#   4. The candidate starts on the same home (running its own migrations).
+#   5. probe.ts: GET / is 200 and the environment reports RELEASE_VERSION.
+#   6. readback.ts: every fixture thread and message reads back through the
+#      candidate's snapshot API, and the candidate decodes every event the
+#      prior's log holds for them, with a token from its own
+#      `t3 auth session issue`.
+#   7. admission-record.ts writes OUT_DIR/ADMISSION.json, or nothing.
 #
 # Needs node, sqlite3, curl, tar, sha256sum, and gh (GH_TOKEN, GH_REPO).
 set -euo pipefail
@@ -56,17 +59,9 @@ echo "::endgroup::"
 prior_t3="$(extract_archive "$work/prior-download/$prior_archive_name" "$work/prior")"
 candidate_t3="$(extract_archive "$candidate_archive" "$work/candidate")"
 home="$work/home"
-db="$home/userdata/statev2.sqlite"
 
-echo "::group::Migrate and seed with v$PRIOR_VERSION"
-start_server "$prior_t3" "$home" "$(free_port)" "$work/prior-serve.log"
-stop_server
-node "$here/seed.ts" --fixtures "$fixtures" --out "$work/seed.sql"
-sqlite3 -bail "$db" <"$work/seed.sql"
-# The seeded log as the prior left it, for readback.ts's event-log check.
-sqlite3 -json "$db" \
-  "SELECT sequence, event_id, stream_id, event_type FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread' ORDER BY sequence" \
-  >"$work/seeded-events.json"
+echo "::group::v$PRIOR_VERSION writes and reads back the fixture history"
+write_prior_history "$prior_t3" "$home" "$work" "$fixtures"
 echo "::endgroup::"
 
 echo "::group::Upgrade to $RELEASE_VERSION"
@@ -81,7 +76,7 @@ node "$here/probe.ts" --base-url "$base_url" --release-version "$RELEASE_VERSION
   run_t3 "$candidate_t3" "$home" auth session issue --base-dir "$home" \
     --scope orchestration:read --ttl 15m --token-only >"$work/token"
 )
-node "$here/readback.ts" --base-url "$base_url" --token-file "$work/token" \
+node "$here/readback.ts" --stage upgraded --base-url "$base_url" --token-file "$work/token" \
   --fixtures "$fixtures" --seeded-events "$work/seeded-events.json" --out "$work/readback.json"
 rm -f "$work/token"
 stop_server
@@ -94,6 +89,8 @@ node "$here/admission-record.ts" \
   --prior-version "$PRIOR_VERSION" \
   --prior-source "$PRIOR_SOURCE" \
   --verifier-commit "$VERIFIER_COMMIT" \
+  --prior-created "$work/prior-created.json" \
+  --prior-seeded "$work/prior-seeded.json" \
   --probe "$work/probe.json" \
   --readback "$work/readback.json" \
   --out "$OUT_DIR"

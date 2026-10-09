@@ -21,6 +21,7 @@ import type { AdmissionCheck } from "./probe.ts";
 /** Every check an admission runs; a record missing one is refused. */
 export const REQUIRED_CHECKS = [
   "archive-digest",
+  "prior-readback",
   "root",
   "environment-version",
   "readback",
@@ -126,6 +127,7 @@ const ProbeChecks = Schema.fromJsonString(
 );
 const ReadbackSummary = Schema.fromJsonString(
   Schema.Struct({
+    stage: Schema.Literals(["created", "seeded", "upgraded"]),
     passed: Schema.Boolean,
     threads: Schema.Number,
     messages: Schema.Number,
@@ -150,6 +152,8 @@ export const writeAdmissionRecord = Effect.fn("writeAdmissionRecord")(function* 
   readonly priorVersion: string;
   readonly priorSource: PriorReleaseSource;
   readonly verifierCommit: string;
+  readonly priorCreated: string;
+  readonly priorSeeded: string;
   readonly probe: string;
   readonly readback: string;
   readonly out: string;
@@ -160,27 +164,46 @@ export const writeAdmissionRecord = Effect.fn("writeAdmissionRecord")(function* 
 
   const archiveSha256 = toHex(yield* crypto.digest("SHA-256", yield* fs.readFile(options.archive)));
   const probe = yield* decodeProbeChecks(yield* fs.readFileString(options.probe));
-  const readback = yield* decodeReadbackSummary(yield* fs.readFileString(options.readback));
+  const summary = (file: string, stage: string) =>
+    Effect.flatMap(fs.readFileString(file), decodeReadbackSummary).pipe(
+      Effect.filterOrFail(
+        (result) => result.stage === stage,
+        () => new AdmissionRefusedError({ detail: `${file} is not the ${stage} readback.` }),
+      ),
+    );
+  const priorCreated = yield* summary(options.priorCreated, "created");
+  const priorSeeded = yield* summary(options.priorSeeded, "seeded");
+  const readback = yield* summary(options.readback, "upgraded");
   // Each check passes only with items of its own kind, all passed.
-  const verdict = (kinds: ReadonlyArray<string>) => {
-    const items = readback.items.filter((item) => kinds.includes(item.kind));
+  const verdict = (
+    result: typeof readback,
+    kinds: ReadonlyArray<string>,
+  ): { readonly passed: boolean; readonly failed: number } => {
+    const items = result.items.filter((item) => kinds.includes(item.kind));
     const failed = items.filter((item) => !item.passed).length;
-    return { passed: readback.passed && items.length > 0 && failed === 0, failed };
+    return { passed: result.passed && items.length > 0 && failed === 0, failed };
   };
-  const projections = verdict(["thread", "message"]);
-  const eventLog = verdict(["event"]);
+  const created = verdict(priorCreated, ["thread"]);
+  const seeded = verdict(priorSeeded, ["thread", "message"]);
+  const projections = verdict(readback, ["thread", "message"]);
+  const eventLog = verdict(readback, ["event"]);
   const checks: ReadonlyArray<AdmissionCheck> = [
     archiveDigestCheck(archiveSha256, options.expectedSha256),
+    {
+      name: "prior-readback",
+      passed: created.passed && seeded.passed,
+      detail: `v${options.priorVersion} created ${priorCreated.threads} threads and read them back (${created.failed} not), then read back ${priorSeeded.messages} seeded messages (${seeded.failed} items not)`,
+    },
     ...probe,
     {
       name: "readback",
       passed: projections.passed,
-      detail: `${readback.threads} threads and ${readback.messages} messages seeded by v${options.priorVersion}; ${projections.failed} not read back`,
+      detail: `${readback.threads} threads and ${readback.messages} messages from v${options.priorVersion}; ${projections.failed} not read back`,
     },
     {
       name: "event-log",
       passed: eventLog.passed,
-      detail: `${readback.events} events seeded by v${options.priorVersion}; ${eventLog.failed} missing from the log or not replayed`,
+      detail: `${readback.events} events from v${options.priorVersion}'s log; ${eventLog.failed} not decoded or replayed intact`,
     },
   ];
   const admitted = yield* buildAdmissionRecord({
@@ -215,8 +238,16 @@ const command = Command.make(
     verifierCommit: Flag.String("verifier-commit").pipe(
       Flag.withDescription("The commit whose verifier scripts ran."),
     ),
+    priorCreated: Flag.String("prior-created").pipe(
+      Flag.withDescription("readback.ts's `created` result, from the prior."),
+    ),
+    priorSeeded: Flag.String("prior-seeded").pipe(
+      Flag.withDescription("readback.ts's `seeded` result, from the prior."),
+    ),
     probe: Flag.String("probe").pipe(Flag.withDescription("probe.ts's check results.")),
-    readback: Flag.String("readback").pipe(Flag.withDescription("readback.ts's result.")),
+    readback: Flag.String("readback").pipe(
+      Flag.withDescription("readback.ts's `upgraded` result, from the candidate."),
+    ),
     out: Flag.String("out").pipe(Flag.withDescription("Directory to write ADMISSION.json into.")),
   },
   (options) => writeAdmissionRecord(options),
