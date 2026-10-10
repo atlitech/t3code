@@ -40,6 +40,23 @@ const { spawn } = require('node:child_process');
 const workspace = process.cwd();
 const mode = process.argv[2];
 if (mode === '--version') { console.log('codex-cli 0.162.0'); process.exit(0); }
+if (mode === 'login' || mode === 'logout') {
+  const args = process.argv.slice(2);
+  if (!args.includes('cli_auth_credentials_store="file"')) process.exit(125);
+  const auth = process.env.CODEX_HOME + '/auth.json';
+  fs.mkdirSync(process.env.CODEX_HOME, { recursive: true });
+  if (args.includes('--device-auth')) {
+    if (fs.existsSync(workspace + '/block-auth')) {
+      net.createServer(() => {}).listen(workspace + '/login.sock', () => console.log(JSON.stringify({ loginPending: true })));
+      return;
+    }
+    fs.writeFileSync(auth, JSON.stringify({ syntheticPrivateCredential: true }), { mode: 0o600 });
+  }
+  if (mode === 'logout') fs.rmSync(auth, { force: true });
+  const authenticated = fs.existsSync(auth);
+  console.log(JSON.stringify({ authenticated, args, proxy: process.env.HTTPS_PROXY }));
+  process.exit(args.includes('status') && !authenticated ? 1 : 0);
+}
 if (fs.existsSync(workspace + '/fail-start')) process.exit(127);
 const marker = fs.readFileSync(workspace + '/identity', 'utf8');
 const serve = (name, ready) => net.createServer(socket => {
@@ -62,7 +79,7 @@ const run = () => { if (mode === 'grandchild') {
     serve(mode === 'daemon' ? 'daemon' : 'main', () => {
       fs.writeFileSync(process.env.HOME + '/identity', marker);
       if (mode === 'daemon') { process.send({ ready: mode, pid: process.pid, grandchild: message.pid }); process.disconnect(); }
-      else console.log(JSON.stringify({ ready: marker, pid: process.pid, daemon: message.pid, grandchild: message.grandchild }));
+      else console.log(JSON.stringify({ ready: marker, authenticated: fs.existsSync(process.env.CODEX_HOME + '/auth.json'), pid: process.pid, daemon: message.pid, grandchild: message.grandchild }));
     });
   });
 } };
@@ -219,19 +236,76 @@ async function fixture() {
   }
 }
 
-async function nativePrerequisites(profile: BridgeProfile) {
+/** Independent trusted no-op: failures in the runtime/supervisor under test are not prerequisites. */
+function unavailableNativeHost(bwrapPath: string) {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Only an actual native kernel probe can justify skipping OS proof.
+  if (process.platform !== "linux") return "unsupported-platform" as const;
+  try {
+    NodeChildProcess.execFileSync(
+      bwrapPath,
+      [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup",
+        "--die-with-parent",
+        "--clearenv",
+        "--ro-bind",
+        "/",
+        "/",
+        "--proc",
+        "/proc",
+        "--",
+        process.execPath,
+        "-e",
+        "",
+      ],
+      { env: {}, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    return undefined;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+      return "missing-bwrap" as const;
+    const stderr =
+      error && typeof error === "object" && "stderr" in error ? String(error.stderr) : "";
+    if (
+      /^bwrap: [^\n]*(?:namespace[^\n]*(?:Operation not permitted|Permission denied)|No permissions to create (?:a )?new namespace)[^\n]*$/m.test(
+        stderr,
+      )
+    )
+      return "namespace-permission" as const;
+    // Unsupported arguments, broken executables, timeouts and arbitrary failures are test failures.
+    throw error;
+  }
+}
+
+async function nativePrerequisites(
+  profile: BridgeProfile,
+  requireNative = process.env.T3_BRIDGE_REQUIRE_NATIVE === "1",
+) {
+  const unavailable = unavailableNativeHost(profile.bwrapPath);
   const failure = await runNative(
     verifyNamespacePrerequisites(profile).pipe(
       Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }),
     ),
   );
-  if (failure === undefined) return true;
+  if (unavailable === undefined) {
+    if (failure) throw failure;
+    return true;
+  }
   expect(failure).toBeInstanceOf(BridgeIsolationUnavailable);
-  expect(["unsupported-platform", "runtime-failed"]).toContain(failure.reason);
-  await runNative(
-    Effect.logInfo(`Native confinement unavailable; production refused with ${failure.reason}`),
+  if (!failure) throw new Error("The runtime admitted a host without native prerequisites.");
+  expect(failure.reason).toBe(
+    unavailable === "unsupported-platform" ? "unsupported-platform" : "runtime-failed",
   );
-  if (process.env.T3_BRIDGE_REQUIRE_NATIVE === "1") throw failure;
+  await runNative(
+    Effect.logInfo(
+      `Native confinement unavailable (${unavailable}); production refused with ${failure.reason}`,
+    ),
+  );
+  if (requireNative) throw failure;
   return false;
 }
 
@@ -363,6 +437,147 @@ async function expectGone(recorded: ReadonlyArray<{ pid: number; namespace: stri
 }
 
 describe("real BridgeRuntime ownership and lifecycle", () => {
+  it("provisions, consumes and removes credentials only in the selected thread's private home", async () => {
+    const f = await fixture();
+    const rootScope = Scope.makeUnsafe();
+    const scopes: Scope.Closeable[] = [];
+    try {
+      if (!(await nativePrerequisites(f.profile))) return;
+      const runtime = await service(f.profile, rootScope);
+      const auth = async (
+        purpose: "device-login" | "login-status" | "logout",
+        threadId: string,
+        workspace = f.workspace(threadId),
+      ) => {
+        const scope = Scope.makeUnsafe();
+        scopes.push(scope);
+        const handle = await runNative(
+          runtime
+            .open({ threadId, sessionId: `auth:${purpose}:${threadId}`, workspace, purpose })
+            .pipe(Effect.provideService(Scope.Scope, scope)),
+        );
+        const [output, code] = await runNative(
+          Effect.all(
+            [
+              handle.stdout.pipe(
+                Stream.decodeText(),
+                Stream.runFold(
+                  () => "",
+                  (all, chunk) => all + chunk,
+                ),
+              ),
+              handle.exitCode,
+            ],
+            { concurrency: "unbounded" },
+          ),
+        );
+        await closeScope(scope);
+        return { result: JSON.parse(output), code };
+      };
+      const login = await auth("device-login", "a");
+      expect(login).toMatchObject({
+        code: 0,
+        result: {
+          authenticated: true,
+          proxy: "http://127.0.0.1:18080",
+          args: ["login", "--device-auth", "-c", 'cli_auth_credentials_store="file"'],
+        },
+      });
+      expect(await auth("login-status", "a")).toMatchObject({
+        code: 0,
+        result: { authenticated: true },
+      });
+      expect(await auth("login-status", "b")).toMatchObject({
+        code: 1,
+        result: { authenticated: false },
+      });
+      const aScope = Scope.makeUnsafe();
+      scopes.push(aScope);
+      const a = await runNative(
+        runtime
+          .open({ threadId: "a", sessionId: "app-a", workspace: f.workspace("a") })
+          .pipe(Effect.provideService(Scope.Scope, aScope)),
+      );
+      const aReady = await runNative(
+        a.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead),
+      );
+      expect(Option.isSome(aReady) && JSON.parse(aReady.value)).toMatchObject({
+        authenticated: true,
+      });
+      const bScope = Scope.makeUnsafe();
+      scopes.push(bScope);
+      const b = await runNative(
+        runtime
+          .open({ threadId: "b", sessionId: "app-b", workspace: f.workspace("b") })
+          .pipe(Effect.provideService(Scope.Scope, bScope)),
+      );
+      const bReady = await runNative(
+        b.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead),
+      );
+      expect(Option.isSome(bReady) && JSON.parse(bReady.value)).toMatchObject({
+        authenticated: false,
+      });
+      const busyScope = Scope.makeUnsafe();
+      scopes.push(busyScope);
+      expect(
+        await runNative(
+          runtime
+            .open({
+              threadId: "a",
+              sessionId: "busy-login",
+              workspace: f.workspace("b"),
+              purpose: "device-login",
+            })
+            .pipe(Effect.provideService(Scope.Scope, busyScope), Effect.flip),
+        ),
+      ).toMatchObject({ reason: "workspace-busy" });
+      await closeScope(aScope);
+      await closeScope(bScope);
+      expect(await auth("logout", "a")).toMatchObject({
+        code: 0,
+        result: {
+          authenticated: false,
+          args: ["logout", "-c", 'cli_auth_credentials_store="file"'],
+        },
+      });
+      expect(await auth("login-status", "a")).toMatchObject({
+        code: 1,
+        result: { authenticated: false },
+      });
+      await NodeFSP.writeFile(NodePath.join(f.workspace("a"), "block-auth"), "");
+      const cancelScope = Scope.makeUnsafe();
+      scopes.push(cancelScope);
+      const pending = await runNative(
+        runtime
+          .open({
+            threadId: "a",
+            sessionId: "pending-login",
+            workspace: f.workspace("a"),
+            purpose: "device-login",
+          })
+          .pipe(Effect.provideService(Scope.Scope, cancelScope)),
+      );
+      const pendingOutput = await runNative(
+        pending.stdout.pipe(Stream.decodeText(), Stream.splitLines, Stream.runHead),
+      );
+      expect(Option.isSome(pendingOutput) && JSON.parse(pendingOutput.value)).toMatchObject({
+        loginPending: true,
+      });
+      const tree = await descendants(Number(pending.pid));
+      await closeScope(cancelScope);
+      await expectGone(tree);
+      expect(await auth("login-status", "a")).toMatchObject({
+        code: 1,
+        result: { authenticated: false },
+      });
+      expect(await NodeFSP.readdir(NodePath.join(f.profile.stateRoot, "sessions"))).toEqual([]);
+    } finally {
+      await Promise.all(scopes.map(closeScope));
+      await closeScope(rootScope);
+      await NodeFSP.rm(f.root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("reaps setsid daemons and grandchildren before A releases its workspace, while B stays responsive", async () => {
     const f = await fixture();
     const rootScope = Scope.makeUnsafe();
@@ -436,6 +651,17 @@ describe("real BridgeRuntime ownership and lifecycle", () => {
     const badExecutorSession = Scope.makeUnsafe();
     try {
       if (!(await nativePrerequisites(f.profile))) return;
+      // An independently capable host cannot turn an implementation failure into
+      // a passing skip, even when native proof is not required by the environment.
+      for (const broken of [
+        { ...f.profile, supervisorPath: NodePath.join(f.root, "missing-supervisor") },
+        { ...f.profile, codexPath: "/runtime/usr/bin/missing-codex" },
+      ]) {
+        await expect(nativePrerequisites(broken, false)).rejects.toMatchObject({
+          _tag: "BridgeIsolationUnavailable",
+          reason: "runtime-failed",
+        });
+      }
       await expect(
         service({ ...f.profile, bwrapPath: NodePath.join(f.root, "missing-bwrap") }, failedRoot),
       ).rejects.toMatchObject({ _tag: "BridgeIsolationUnavailable", reason: "runtime-failed" });

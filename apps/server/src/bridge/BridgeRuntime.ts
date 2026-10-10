@@ -15,6 +15,33 @@ import type { BridgeProfile } from "./BridgeTopology.ts";
 import { buildNamespaceCommand, namespaceHelperSource } from "./BridgeNamespace.ts";
 import { openProviderEgress } from "./BridgeEgress.ts";
 
+type BridgePurpose = "app-server" | "device-login" | "login-status" | "logout";
+
+function codexArguments(purpose: BridgePurpose) {
+  const fileStore = ["-c", 'cli_auth_credentials_store="file"'];
+  switch (purpose) {
+    case "device-login":
+      return ["login", "--device-auth", ...fileStore];
+    case "login-status":
+      return ["login", ...fileStore, "status"];
+    case "logout":
+      return ["logout", ...fileStore];
+    case "app-server":
+      return [
+        "app-server",
+        "-c",
+        "model_providers.openai.supports_websockets=false",
+        "-c",
+        "features.responses_websockets=false",
+        "-c",
+        "features.responses_websockets_v2=false",
+        ...fileStore,
+      ];
+    default:
+      throw new BridgeIsolationUnavailable({ reason: "unsupported-runtime-settings" });
+  }
+}
+
 export class BridgeRuntime extends Context.Service<
   BridgeRuntime,
   {
@@ -22,6 +49,7 @@ export class BridgeRuntime extends Context.Service<
       readonly threadId: string;
       readonly sessionId: string;
       readonly workspace: string;
+      readonly purpose?: BridgePurpose;
     }) => Effect.Effect<
       ChildProcessSpawner.ChildProcessHandle,
       BridgeIsolationUnavailable,
@@ -247,6 +275,10 @@ const make = (profile: BridgeProfile) =>
       open: (input) =>
         Effect.gen(function* () {
           if (poisoned) return yield* new BridgeIsolationUnavailable({ reason: "runtime-failed" });
+          const args = yield* Effect.try({
+            try: () => codexArguments(input.purpose ?? "app-server"),
+            catch: runtimeFailure,
+          });
           let teardownProven = true;
           yield* Effect.acquireRelease(
             awaitable(() => acquireWorkspaceLease(profile.workspaceRoot, input.workspace, leases)),
@@ -327,17 +359,7 @@ const make = (profile: BridgeProfile) =>
               workspace: input.workspace,
               home,
               executable: profile.codexPath,
-              args: [
-                "app-server",
-                "-c",
-                "model_providers.openai.supports_websockets=false",
-                "-c",
-                "features.responses_websockets=false",
-                "-c",
-                "features.responses_websockets_v2=false",
-                "-c",
-                'cli_auth_credentials_store="file"',
-              ],
+              args,
             }),
             () => {
               teardownProven = false;

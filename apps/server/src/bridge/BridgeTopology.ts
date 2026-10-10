@@ -29,7 +29,7 @@ const refuse = (reason: BridgeIsolationUnavailable["reason"]): never => {
 const contained = (parent: string, child: string) => child.startsWith(`${parent}/`);
 
 /** Parents cannot be replaced by the custody UID, including through a symlink. */
-export async function assertOperatorOwned(path: string): Promise<void> {
+async function assertOperatorOwned(path: string): Promise<void> {
   if (!NodePath.isAbsolute(path) || NodePath.normalize(path) !== path)
     refuse("untrusted-deployment");
   let current = path;
@@ -58,7 +58,7 @@ async function assertImmutableTree(root: string, treeRoot = root) {
 }
 
 /** Administrator UID allocation is a prerequisite; process enumeration cannot establish it. */
-export async function validateBridgeTopology(profile: BridgeProfile): Promise<void> {
+async function validateBridgeTopology(profile: BridgeProfile): Promise<void> {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Admission must verify the real kernel platform, never an injectable claim.
   if (process.platform !== "linux") refuse("unsupported-platform");
   if (
@@ -193,10 +193,29 @@ const untrustedDeployment = (cause: unknown) =>
 
 const decodeBridgeProfile = Schema.decodeEffect(Schema.fromJsonString(BridgeProfile));
 
+/** Mandatory admission shared by server startup and offline provisioning. */
+export const loadAdmittedBridgeProfile = Effect.gen(function* () {
+  const profilePath = bridgeProfilePath;
+  if (profilePath === undefined)
+    return yield* new BridgeIsolationUnavailable({ reason: "unsupported-topology" });
+  const source = yield* Effect.tryPromise({
+    try: async () => {
+      await assertOperatorOwned(profilePath);
+      return NodeFSP.readFile(profilePath, "utf8");
+    },
+    catch: untrustedDeployment,
+  });
+  const profile = yield* decodeBridgeProfile(source).pipe(Effect.mapError(untrustedDeployment));
+  yield* Effect.tryPromise({
+    try: () => validateBridgeTopology(profile),
+    catch: untrustedDeployment,
+  });
+  return profile;
+});
+
 export const admitBridgeProfile = (config: ServerConfig["Service"]) =>
   Effect.gen(function* () {
-    const profilePath = bridgeProfilePath;
-    if (profilePath === undefined) return undefined;
+    if (bridgeProfilePath === undefined) return undefined;
     if (
       config.mode !== "web" ||
       config.devUrl ||
@@ -205,17 +224,5 @@ export const admitBridgeProfile = (config: ServerConfig["Service"]) =>
       (config.host !== undefined && config.host !== "127.0.0.1")
     )
       return yield* new BridgeIsolationUnavailable({ reason: "unsupported-connection" });
-    const source = yield* Effect.tryPromise({
-      try: async () => {
-        await assertOperatorOwned(profilePath);
-        return NodeFSP.readFile(profilePath, "utf8");
-      },
-      catch: untrustedDeployment,
-    });
-    const profile = yield* decodeBridgeProfile(source).pipe(Effect.mapError(untrustedDeployment));
-    yield* Effect.tryPromise({
-      try: () => validateBridgeTopology(profile),
-      catch: untrustedDeployment,
-    });
-    return profile;
+    return yield* loadAdmittedBridgeProfile;
   });

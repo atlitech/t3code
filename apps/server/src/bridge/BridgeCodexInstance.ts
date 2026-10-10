@@ -46,7 +46,7 @@ export const makeBridgeCodexInstance = Effect.fn("makeBridgeCodexInstance")(func
             installed: true,
             status: input.enabled ? "ready" : "disabled",
             message:
-              "Codex runs in an isolated runtime. Sign in only inside its private runtime home.",
+              "Provision each thread offline from the stopped dedicated unit: t3 bridge-auth login --thread-id <thread-id> --workspace <absolute-workspace>. Host sign-in is unavailable.",
           },
           models,
           driver,

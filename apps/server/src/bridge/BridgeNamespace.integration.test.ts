@@ -134,19 +134,76 @@ async function runtimeImage(root: string) {
   }
 }
 
-async function nativePrerequisites(profile: BridgeProfile) {
+/** Independent trusted no-op: failures in the runtime/supervisor under test are not prerequisites. */
+function unavailableNativeHost(bwrapPath: string) {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- Only an actual native kernel probe can justify skipping OS proof.
+  if (process.platform !== "linux") return "unsupported-platform" as const;
+  try {
+    NodeChildProcess.execFileSync(
+      bwrapPath,
+      [
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-net",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup",
+        "--die-with-parent",
+        "--clearenv",
+        "--ro-bind",
+        "/",
+        "/",
+        "--proc",
+        "/proc",
+        "--",
+        process.execPath,
+        "-e",
+        "",
+      ],
+      { env: {}, encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    return undefined;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+      return "missing-bwrap" as const;
+    const stderr =
+      error && typeof error === "object" && "stderr" in error ? String(error.stderr) : "";
+    if (
+      /^bwrap: [^\n]*(?:namespace[^\n]*(?:Operation not permitted|Permission denied)|No permissions to create (?:a )?new namespace)[^\n]*$/m.test(
+        stderr,
+      )
+    )
+      return "namespace-permission" as const;
+    // Unsupported arguments, broken executables, timeouts and arbitrary failures are test failures.
+    throw error;
+  }
+}
+
+async function nativePrerequisites(
+  profile: BridgeProfile,
+  requireNative = process.env.T3_BRIDGE_REQUIRE_NATIVE === "1",
+) {
+  const unavailable = unavailableNativeHost(profile.bwrapPath);
   const failure = await runNative(
     verifyNamespacePrerequisites(profile).pipe(
       Effect.match({ onFailure: (error) => error, onSuccess: () => undefined }),
     ),
   );
-  if (failure === undefined) return true;
+  if (unavailable === undefined) {
+    if (failure) throw failure;
+    return true;
+  }
   expect(failure).toBeInstanceOf(BridgeIsolationUnavailable);
-  expect(["unsupported-platform", "runtime-failed"]).toContain(failure.reason);
-  await runNative(
-    Effect.logInfo(`Native confinement unavailable; production refused with ${failure.reason}`),
+  if (!failure) throw new Error("The runtime admitted a host without native prerequisites.");
+  expect(failure.reason).toBe(
+    unavailable === "unsupported-platform" ? "unsupported-platform" : "runtime-failed",
   );
-  if (process.env.T3_BRIDGE_REQUIRE_NATIVE === "1") throw failure;
+  await runNative(
+    Effect.logInfo(
+      `Native confinement unavailable (${unavailable}); production refused with ${failure.reason}`,
+    ),
+  );
+  if (requireNative) throw failure;
   return false;
 }
 

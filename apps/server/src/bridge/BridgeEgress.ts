@@ -3,7 +3,7 @@ import * as NodeDnsPromises from "node:dns/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
 
-export const providerEgressHosts = new Set(["api.openai.com", "chatgpt.com", "auth.openai.com"]);
+const providerEgressHosts = new Set(["api.openai.com", "chatgpt.com", "auth.openai.com"]);
 const nonPublic = new NodeNet.BlockList();
 for (const [network, prefix] of [
   ["0.0.0.0", 8],
