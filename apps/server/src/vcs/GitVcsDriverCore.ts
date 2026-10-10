@@ -17,6 +17,7 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { assertUnconfinedExecutionAllowed } from "../bridge/BridgePolicy.ts";
 
 import {
   GitCommandError,
@@ -957,6 +958,15 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
       const appendTruncationMarker = input.appendTruncationMarker ?? false;
 
       const runGitCommand = Effect.fn("runGitCommand")(function* () {
+        yield* Effect.try({
+          try: assertUnconfinedExecutionAllowed,
+          catch: (cause) =>
+            new GitCommandError({
+              ...gitCommandContext(commandInput),
+              detail: "Git execution is unavailable in the bridge service.",
+              cause,
+            }),
+        });
         const trace2Monitor = yield* createTrace2Monitor(commandInput, input.progress).pipe(
           Effect.provideService(Path.Path, path),
           Effect.provideService(FileSystem.FileSystem, fileSystem),

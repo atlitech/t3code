@@ -1,3 +1,4 @@
+import { assertUnconfinedExecutionAllowed } from "../bridge/BridgePolicy.ts";
 import {
   type ClaudeSettings,
   type ModelCapabilities,
@@ -380,6 +381,7 @@ const probeClaudeCapabilities = (
       claudeEnvironment,
     );
     return yield* Effect.tryPromise(async () => {
+      assertUnconfinedExecutionAllowed();
       const q = claudeQuery({
         // Never yield — we only need initialization data, not a conversation.
         // This prevents any prompt from reaching the Anthropic API.

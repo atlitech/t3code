@@ -1,3 +1,4 @@
+import { assertUnconfinedExecutionAllowed } from "../bridge/BridgePolicy.ts";
 import * as NodeModule from "node:module";
 import * as NodeNet from "node:net";
 
@@ -261,6 +262,15 @@ export const make = Effect.fn("NodePtyAdapter.make")(function* () {
 
   return PtyAdapter.PtyAdapter.of({
     spawn: Effect.fn("NodePtyAdapter.spawn")(function* (input) {
+      yield* Effect.try({
+        try: assertUnconfinedExecutionAllowed,
+        catch: (cause) =>
+          new PtyAdapter.PtySpawnError({
+            adapter: "node-pty",
+            shell: input.shell,
+            cause,
+          }),
+      });
       yield* ensureNodePtySpawnHelperExecutableCached;
       // node-pty only writes `name` into the child's TERM on the Unix path;
       // the ConPTY path leaves the environment untouched, so Windows children

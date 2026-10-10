@@ -1,3 +1,4 @@
+import { bridgeRequested, BridgeIsolationUnavailable } from "../bridge/BridgePolicy.ts";
 /**
  * TerminalManager - Terminal session orchestration service interface.
  *
@@ -2210,6 +2211,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     input: TerminalStartInput,
     eventType: "started" | "restarted",
   ) {
+    if (bridgeRequested)
+      return yield* new BridgeIsolationUnavailable({ reason: "unconfined-execution" });
     yield* stopProcess(session);
     yield* Effect.annotateCurrentSpan({
       "terminal.thread_id": session.threadId,
@@ -2707,10 +2710,12 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     );
 
   const open: TerminalManager["Service"]["open"] = (input) =>
-    withThreadLock(
-      input.threadId,
-      resolveLaunchInputEnvironment(input).pipe(Effect.flatMap(openLocked)),
-    );
+    bridgeRequested
+      ? Effect.fail(new BridgeIsolationUnavailable({ reason: "unconfined-execution" }))
+      : withThreadLock(
+          input.threadId,
+          resolveLaunchInputEnvironment(input).pipe(Effect.flatMap(openLocked)),
+        );
 
   const openOrAttachForStream = (input: TerminalAttachInput) =>
     withThreadLock(
@@ -3094,17 +3099,19 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     });
 
   const restart: TerminalManager["Service"]["restart"] = (input) =>
-    withThreadLock(
-      input.threadId,
-      resolveLaunchInputEnvironment(input).pipe(
-        Effect.flatMap((resolved) =>
-          withWorkspaceLease(
-            path.resolve(resolved.worktreePath ?? resolved.cwd),
-            restartResolved(resolved),
+    bridgeRequested
+      ? Effect.fail(new BridgeIsolationUnavailable({ reason: "unconfined-execution" }))
+      : withThreadLock(
+          input.threadId,
+          resolveLaunchInputEnvironment(input).pipe(
+            Effect.flatMap((resolved) =>
+              withWorkspaceLease(
+                path.resolve(resolved.worktreePath ?? resolved.cwd),
+                restartResolved(resolved),
+              ),
+            ),
           ),
-        ),
-      ),
-    );
+        );
 
   const close: TerminalManager["Service"]["close"] = (input) =>
     withThreadLock(

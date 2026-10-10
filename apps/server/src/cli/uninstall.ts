@@ -1,3 +1,4 @@
+import { assertUnconfinedExecutionAllowed } from "../bridge/BridgePolicy.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 // The Windows cleanup shell must outlive this process (it deletes the
 // directory this executable runs from), which Effect's scoped ChildProcess
@@ -193,6 +194,7 @@ const runUninstall = Effect.fn("cli.uninstall.run")(function* (input: {
       const comspec = environment["ComSpec"] ?? environment["COMSPEC"] ?? "cmd.exe";
       yield* Effect.try({
         try: () => {
+          assertUnconfinedExecutionAllowed();
           const child = NodeChildProcess.spawn(
             comspec,
             ["/d", "/c", `ping -n 3 127.0.0.1 >nul & rmdir /s /q "${runtimeDir}"`],

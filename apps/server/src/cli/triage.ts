@@ -1,3 +1,4 @@
+import { assertUnconfinedExecutionAllowed } from "../bridge/BridgePolicy.ts";
 /**
  * `t3 triage` - hand a misbehaving install to the user's own coding agent.
  *
@@ -131,6 +132,12 @@ const runInteractiveSession = (input: {
   readonly cwd: string;
 }) =>
   Effect.callback<number, TriageAgentSpawnError>((resume) => {
+    try {
+      assertUnconfinedExecutionAllowed();
+    } catch (cause) {
+      resume(Effect.fail(new TriageAgentSpawnError({ command: input.command, cause })));
+      return;
+    }
     const child = NodeChildProcess.spawn(input.command, [...input.args], {
       cwd: input.cwd,
       stdio: "inherit",

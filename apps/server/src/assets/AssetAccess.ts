@@ -1,3 +1,4 @@
+import { bridgeRequested, BridgeIsolationUnavailable } from "../bridge/BridgePolicy.ts";
 import type { AssetResource } from "@t3tools/contracts";
 import {
   AssetAttachmentNotFoundError,
@@ -458,6 +459,12 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   /** The project's clone has not landed, so its icon is reported missing without a lookup. */
   readonly projectCheckoutPending?: boolean;
 }) {
+  if (bridgeRequested && ["media-file", "draft-workspace-file"].includes(input.resource._tag)) {
+    return yield* new AssetWorkspacePathValidationError({
+      resource: input.resource,
+      cause: new BridgeIsolationUnavailable({ reason: "unconfined-execution" }),
+    });
+  }
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;

@@ -1,3 +1,4 @@
+import { assertUnconfinedExecutionAllowed } from "./bridge/BridgePolicy.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 // @effect-diagnostics globalTimers:off
 // The launcher supervises the server child for the boot service and must keep
@@ -414,6 +415,7 @@ export class Launcher {
   }
 
   async #startChild(version: string, role: ChildRole, update?: ServiceUpdateRecord): Promise<void> {
+    assertUnconfinedExecutionAllowed();
     if (this.#stopping) return;
     if (!(await runtimeExists(this.#baseDir, version))) {
       throw new Error(`Selected t3@${version} runtime is missing or incomplete.`);

@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as NodeOS from "node:os";
+import { bridgeRequested } from "./bridge/BridgePolicy.ts";
 
 function logPathHydrationWarning(message: string, error?: unknown): void {
   process.stderr.write(
@@ -53,6 +54,7 @@ export const fixPath = Effect.fn("fixPath")(function* (): Effect.fn.Return<
   never,
   FileSystem.FileSystem | Path.Path
 > {
+  if (bridgeRequested) return;
   const platform = yield* HostProcessPlatform;
   const env = yield* HostProcessEnvironment;
 

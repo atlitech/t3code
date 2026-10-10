@@ -1,4 +1,7 @@
 import { revertCodexThread } from "../../provider/CodexThreadRevert.ts";
+import { bridgeRequested, BridgeIsolationUnavailable } from "../../bridge/BridgePolicy.ts";
+import * as BridgeRuntime from "../../bridge/BridgeRuntime.ts";
+import { isolateProviderIdentity } from "../../bridge/BridgeProviderIdentity.ts";
 import { historyResponseItems } from "@t3tools/provider-core/server/handoffBudget";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
@@ -741,10 +744,23 @@ export function buildCodexTurnStartParams(input: {
       input.runtimePolicy.approvalPolicy === undefined
         ? runtimeModeDefaults.approvalPolicy
         : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
-    const sandboxPolicy =
+    const requestedSandbox =
       input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
+    if (
+      bridgeRequested &&
+      requestedSandbox?.type !== "workspaceWrite" &&
+      requestedSandbox?.type !== "dangerFullAccess"
+    ) {
+      return yield* toProtocolError(
+        "BridgeIsolationUnavailable:unsupported-runtime-settings",
+        new BridgeIsolationUnavailable({ reason: "unsupported-runtime-settings" }),
+      );
+    }
+    const sandboxPolicy = bridgeRequested
+      ? { type: "externalSandbox" as const, networkAccess: "enabled" as const }
+      : requestedSandbox;
     const selectedEffort = getModelSelectionStringOptionValue(
       input.modelSelection,
       "reasoningEffort",
@@ -1331,7 +1347,9 @@ export function codexThreadRuntimeParams(input: {
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const mcpSession =
-    input.threadId === null ? undefined : McpProviderSession.readMcpProviderSession(input.threadId);
+    bridgeRequested || input.threadId === null
+      ? undefined
+      : McpProviderSession.readMcpProviderSession(input.threadId);
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
@@ -1521,6 +1539,7 @@ export const layerAppServerClientFactory: Layer.Layer<
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const { native: nativeEventLogger } = yield* ProviderEventLoggers;
+    const bridge = yield* Effect.serviceOption(BridgeRuntime.BridgeRuntime);
 
     return CodexAppServerClientFactory.of({
       open: (input) =>
@@ -1530,14 +1549,33 @@ export const layerAppServerClientFactory: Layer.Layer<
             ...input.environment,
             ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
           };
-          const command = yield* makeCodexAppServerSpawnCommand({
-            command: input.settings.binaryPath || "codex",
-            args: codexAppServerArgs(
-              resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
-            ),
-            env: environment,
-          });
-          const handle = yield* spawner.spawn(command).pipe(
+          const handle = yield* Effect.gen(function* () {
+            if (bridgeRequested) {
+              if (Option.isNone(bridge) || !input.runtimePolicy.cwd)
+                return yield* new BridgeIsolationUnavailable({ reason: "unsupported-topology" });
+              const sandbox =
+                input.runtimePolicy.sandboxPolicy === undefined
+                  ? codexRuntimeModeTurnDefaults(input.runtimePolicy.runtimeMode).sandboxPolicy
+                  : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
+              if (sandbox?.type !== "workspaceWrite" && sandbox?.type !== "dangerFullAccess")
+                return yield* new BridgeIsolationUnavailable({
+                  reason: "unsupported-runtime-settings",
+                });
+              return yield* bridge.value.open({
+                threadId: input.threadId,
+                sessionId: input.providerSessionId,
+                workspace: input.runtimePolicy.cwd,
+              });
+            }
+            const command = yield* makeCodexAppServerSpawnCommand({
+              command: input.settings.binaryPath || "codex",
+              args: codexAppServerArgs(
+                resolveCodexLaunchArgs(input.settings.launchArgs, input.environment),
+              ),
+              env: environment,
+            });
+            return yield* spawner.spawn(command);
+          }).pipe(
             Effect.provideService(Scope.Scope, scope),
             Effect.mapError(
               (cause) =>
@@ -1590,31 +1628,51 @@ export const createCodexAdapterV2 = (
     const hostEnvironment = yield* HostProcessEnvironment;
     const idAllocator = yield* IdAllocatorV2;
     const serverConfig = yield* ServerConfig;
-    const homeLayout = yield* resolveCodexHomeLayout(config);
+    if (
+      bridgeRequested &&
+      (config.setupMode === "managed" ||
+        config.homePath ||
+        config.shadowHomePath ||
+        config.launchArgs ||
+        (config.binaryPath && config.binaryPath !== "codex") ||
+        environment.length > 0 ||
+        hooks.resolveRuntime)
+    ) {
+      return yield* new ProviderAdapterDriverCreateError({
+        driver: CODEX_DRIVER_KIND,
+        instanceId,
+        detail: "Bridge Codex uses only the operator-installed runtime and its private login.",
+        cause: new BridgeIsolationUnavailable({ reason: "unsupported-runtime-settings" }),
+      });
+    }
+    const homeLayout = bridgeRequested ? undefined : yield* resolveCodexHomeLayout(config);
 
-    yield* materializeCodexShadowHome(homeLayout).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ProviderAdapterDriverCreateError({
-            driver: CODEX_DRIVER_KIND,
-            instanceId,
-            detail: "Failed to materialize the Codex shadow home.",
-            cause,
-          }),
-      ),
-    );
+    if (homeLayout !== undefined)
+      yield* materializeCodexShadowHome(homeLayout).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProviderAdapterDriverCreateError({
+              driver: CODEX_DRIVER_KIND,
+              instanceId,
+              detail: "Failed to materialize the Codex shadow home.",
+              cause,
+            }),
+        ),
+      );
 
     const settings = {
       ...config,
       enabled,
       binaryPath: expandHomePath(config.binaryPath),
-      homePath: homeLayout.effectiveHomePath ?? "",
+      homePath: homeLayout?.effectiveHomePath ?? "",
     } satisfies CodexSettings;
 
     return makeCodexAdapterV2({
       instanceId,
       settings,
-      environment: mergeProviderInstanceEnvironment(environment, hostEnvironment),
+      environment: bridgeRequested
+        ? {}
+        : mergeProviderInstanceEnvironment(environment, hostEnvironment),
       clientFactory,
       crypto,
       fileSystem,
@@ -1688,17 +1746,38 @@ export interface CodexAdapterV2Options {
 }
 
 export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): ProviderAdapterV2Shape {
-  const { clientFactory, crypto, fileSystem, idAllocator, serverConfig } = adapterOptions;
+  const { clientFactory, crypto, fileSystem, serverConfig } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests;
 
   return ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CODEX_PROVIDER,
-    getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+    getCapabilities: () =>
+      Effect.succeed(
+        bridgeRequested
+          ? {
+              ...CodexProviderCapabilitiesV2,
+              sessions: {
+                ...CodexProviderCapabilitiesV2.sessions,
+                supportsMultipleProviderThreadsPerSession: false,
+              },
+            }
+          : CodexProviderCapabilitiesV2,
+      ),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: (input) =>
       Effect.gen(function* () {
+        const idAllocator = bridgeRequested
+          ? isolateProviderIdentity(adapterOptions.idAllocator, input.threadId)
+          : adapterOptions.idAllocator;
         const scope = yield* Scope.Scope;
+        if (bridgeRequested && adapterOptions.resolveRuntime !== undefined) {
+          return yield* new ProviderAdapterOpenSessionError({
+            driver: CODEX_PROVIDER,
+            providerSessionId: input.providerSessionId,
+            cause: new BridgeIsolationUnavailable({ reason: "unsupported-runtime-settings" }),
+          });
+        }
         const resolvedRuntime =
           adapterOptions.resolveRuntime === undefined
             ? undefined

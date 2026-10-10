@@ -1,3 +1,4 @@
+import { assertUnconfinedExecutionAllowed } from "../bridge/BridgePolicy.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Owns Playwright resources outside the Effect runtime.
 import { INCOGNITO_BROWSER_PROFILE_ID } from "@t3tools/contracts";
 import { constVoid } from "effect/Function";
@@ -112,6 +113,7 @@ export class ServerBrowserContexts {
   }
 
   private async launch<A>(options: { readonly executablePath: string }, start: () => Promise<A>) {
+    assertUnconfinedExecutionAllowed();
     try {
       return await start();
     } catch (cause) {
