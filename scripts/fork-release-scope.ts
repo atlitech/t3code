@@ -19,7 +19,10 @@ import {
   admissionMismatch,
   decodeAdmissionJson,
   decodeReleaseManifestJson,
+  FORK_SCOPE_DECISION,
+  FORK_VERIFICATION_SCOPE,
   MANIFEST_FILE,
+  parseAssetName,
   type VerificationScopeEntry,
 } from "./fork-release-manifest.ts";
 import { ADMISSION_FILE } from "./linux-admission/prior-release.ts";
@@ -33,13 +36,16 @@ export class ReleaseScopeError extends Schema.TaggedError<ReleaseScopeError>()(
   }
 }
 
-const describeChecks = (entry: VerificationScopeEntry): string =>
+const describeChecks = (entry: Pick<VerificationScopeEntry, "checks">): string =>
   entry.checks.map((check) => `${check.job} "${check.step}"`).join(", ");
 
 /**
- * Checks manifest.json's verificationScope against ADMISSION.json and returns
- * one line per platform. Only the archive ADMISSION.json admits, at the
- * manifest's version and sha256, may be runtime-verified.
+ * Checks manifest.json's verificationScope against ADMISSION.json and the
+ * committed FORK_VERIFICATION_SCOPE, and returns one line per platform. Each
+ * asset's platform and arch come from its file name, not the manifest's
+ * labels; only a platform the committed table runtime-verifies may be
+ * runtime-verified, and only by the archive ADMISSION.json admits, at the
+ * manifest's version and sha256.
  */
 export const readReleaseScope = (input: {
   readonly manifestJson: string;
@@ -59,6 +65,38 @@ export const readReleaseScope = (input: {
       Effect.mapError((error) => new ReleaseScopeError({ detail: error.detail })),
     );
     const { decision, entries } = manifest.verificationScope;
+
+    // The file name, not the manifest's labels, says what platform an asset is.
+    for (const asset of manifest.assets) {
+      const parsed = parseAssetName(manifest.version, asset.file);
+      if (!parsed) {
+        return yield* refuse(`${asset.file} is not a ${manifest.version} release asset name.`);
+      }
+      if (parsed.platform !== asset.platform || parsed.arch !== asset.arch) {
+        return yield* refuse(
+          `${asset.file} is labeled ${asset.platform} ${asset.arch}, but its name says ${parsed.platform} ${parsed.arch}.`,
+        );
+      }
+      if (
+        !FORK_VERIFICATION_SCOPE.some(
+          (scope) => scope.platform === asset.platform && scope.arch === asset.arch,
+        )
+      ) {
+        return yield* refuse(
+          `${asset.platform} ${asset.arch} has no committed verification scope.`,
+        );
+      }
+    }
+    for (const scope of FORK_VERIFICATION_SCOPE) {
+      const count = manifest.assets.filter(
+        (asset) => asset.platform === scope.platform && asset.arch === scope.arch,
+      ).length;
+      if (count !== 1) {
+        return yield* refuse(
+          `${MANIFEST_FILE} lists ${count} ${scope.platform} ${scope.arch} assets, not one.`,
+        );
+      }
+    }
 
     const admitted = manifest.assets.find((asset) => asset.file === admission.archive);
     if (!admitted) {
@@ -87,6 +125,24 @@ export const readReleaseScope = (input: {
       }
       const entry = matching[0]!;
       const label = `${entry.platform} ${entry.arch} ${entry.file}`;
+      const committed = FORK_VERIFICATION_SCOPE.find(
+        (scope) => scope.platform === entry.platform && scope.arch === entry.arch,
+      )!;
+      if (entry.runtimeVerified && !committed.runtimeVerified) {
+        return yield* refuse(
+          `${label} is marked runtime-verified, but the owner decision of ${FORK_SCOPE_DECISION.date} leaves ${entry.platform} ${entry.arch} build-checked.`,
+        );
+      }
+      if (!entry.runtimeVerified && committed.runtimeVerified) {
+        return yield* refuse(
+          `${label} is marked build-checked, but the committed scope runtime-verifies ${entry.platform} ${entry.arch}.`,
+        );
+      }
+      if (describeChecks(entry) !== describeChecks(committed)) {
+        return yield* refuse(
+          `${label} claims checks ${describeChecks(entry)}, not the committed ${describeChecks(committed)}.`,
+        );
+      }
       if (entry.runtimeVerified !== (entry.status === "runtime-verified")) {
         return yield* refuse(
           `${label} has status ${entry.status} but runtimeVerified ${entry.runtimeVerified}.`,

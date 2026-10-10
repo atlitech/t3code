@@ -163,3 +163,103 @@ it.effect("fails when an asset has no scope entry", () =>
     assert.strictEqual(error._tag, "ReleaseScopeError");
   }),
 );
+
+// The manifest with the asset and scope entry for `file` given new labels.
+const relabel = (
+  manifest: {
+    assets: ReadonlyArray<{ file: string }>;
+    verificationScope: { entries: ReadonlyArray<{ file: string }> };
+  },
+  file: string,
+  labels: Record<string, unknown>,
+) => ({
+  ...manifest,
+  assets: manifest.assets.map((asset) => (asset.file === file ? { ...asset, ...labels } : asset)),
+  verificationScope: {
+    ...manifest.verificationScope,
+    entries: manifest.verificationScope.entries.map((entry) =>
+      entry.file === file ? { ...entry, ...labels } : entry,
+    ),
+  },
+});
+
+it.effect("fails when the Linux archive and its entry are relabeled Mac runtime-verified", () =>
+  Effect.gen(function* () {
+    const manifest = yield* published;
+    // Drop the real Mac asset so the relabeled archive is the only darwin one.
+    const withoutMac = {
+      ...manifest,
+      assets: manifest.assets.filter((asset: { file: string }) => asset.file !== dmg.file),
+      verificationScope: {
+        ...manifest.verificationScope,
+        entries: manifest.verificationScope.entries.filter(
+          (entry: { file: string }) => entry.file !== dmg.file,
+        ),
+      },
+    };
+    for (const edited of [
+      relabel(withoutMac, linux.file, { platform: "darwin", arch: "arm64" }),
+      relabel(manifest, linux.file, { platform: "darwin", arch: "arm64" }),
+    ]) {
+      const error = yield* Effect.flip(read(edited));
+      assert.strictEqual(error._tag, "ReleaseScopeError");
+    }
+  }),
+);
+
+it.effect("fails when an asset's platform or arch disagrees with its file name", () =>
+  Effect.gen(function* () {
+    const manifest = yield* published;
+    const error = yield* Effect.flip(
+      read(relabel(manifest, apk.file, { platform: "android", arch: "x86_64" })),
+    );
+    assert.strictEqual(error._tag, "ReleaseScopeError");
+    assert.include(error.detail, "its name says android arm64-v8a");
+  }),
+);
+
+it.effect("fails when an asset is outside the committed verification scope", () =>
+  Effect.gen(function* () {
+    const manifest = yield* published;
+    const arm = {
+      platform: "linux",
+      arch: "arm64",
+      file: "t3-0.0.46-atli.4-linux-arm64.tar.gz",
+      size: 1,
+      sha256: dmg.sha256,
+    };
+    const edited = {
+      ...manifest,
+      assets: [...manifest.assets, arm],
+      verificationScope: {
+        ...manifest.verificationScope,
+        entries: [
+          ...manifest.verificationScope.entries,
+          {
+            platform: arm.platform,
+            arch: arm.arch,
+            file: arm.file,
+            status: "build-checked",
+            runtimeVerified: false,
+            checks: [{ job: "build-linux", step: "Build and smoke-test CLI archive" }],
+          },
+        ],
+      },
+    };
+    const error = yield* Effect.flip(read(edited));
+    assert.strictEqual(error._tag, "ReleaseScopeError");
+    assert.include(error.detail, "no committed verification scope");
+  }),
+);
+
+it.effect("fails when an entry claims checks the committed scope does not name", () =>
+  Effect.gen(function* () {
+    const manifest = yield* published;
+    const edited = editEntry(manifest, "darwin", (entry) => ({
+      ...entry,
+      checks: [{ job: "build-mac", step: "Build desktop DMG" }],
+    }));
+    const error = yield* Effect.flip(read(edited));
+    assert.strictEqual(error._tag, "ReleaseScopeError");
+  }),
+);
