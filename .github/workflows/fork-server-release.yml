@@ -511,8 +511,9 @@ jobs:
           OUT_DIR: ${{ runner.temp }}/admission-record
         run: bash scripts/linux-admission/run-admission.sh
 
-      # Not a `release-*` artifact: publish adds it after the manifest step,
-      # which accepts only the server archive, the DMG, and the APK.
+      # Not a `release-*` artifact: publish downloads it into release/ before
+      # the manifest step, which leaves it out of SHA256SUMS and the assets
+      # and records the Linux archive as runtime-verified only if it matches.
       - name: Upload admission record
         uses: actions/upload-artifact@v7
         with:
@@ -566,16 +567,24 @@ jobs:
           path: release
           merge-multiple: true
 
-      - name: Write SHA256SUMS and manifest.json
-        run: |
-          node scripts/fork-release-manifest.ts --dir release --commit "$SHA" --release-version "$VERSION"
-          cat release/SHA256SUMS release/manifest.json
-
       - name: Download admission record
         uses: actions/download-artifact@v8
         with:
           name: admission
           path: release
+
+      # manifest.json's verificationScope: Linux x64 runtime-verified by
+      # ADMISSION.json, Mac and Android build-checked but runtime-unverified
+      # (owner decision of 2026-10-06). Writes nothing if the evidence differs.
+      - name: Write SHA256SUMS and manifest.json
+        run: |
+          node scripts/fork-release-manifest.ts --dir release --commit "$SHA" --release-version "$VERSION" --admission release/ADMISSION.json
+          cat release/SHA256SUMS release/manifest.json
+
+      # Only a refusal guard: the evidence verdict is an independent reader
+      # running the same checker on the published release.
+      - name: Check the verification scope against ADMISSION.json
+        run: node scripts/fork-release-scope.ts --manifest release/manifest.json --admission release/ADMISSION.json
 
       - name: Attest SHA256SUMS, manifest.json, and ADMISSION.json provenance
         uses: actions/attest-build-provenance@v3
@@ -584,6 +593,10 @@ jobs:
             release/SHA256SUMS
             release/manifest.json
             release/ADMISSION.json
+
+      # Under RUNNER_TEMP, not release/: every file in release/ is published.
+      - name: Write release notes
+        run: node scripts/fork-release-notes.ts --manifest release/manifest.json --out "$RUNNER_TEMP/release-notes.md"
 
       # Tags created with GITHUB_TOKEN start no other workflows.
       - name: Create tag and release
@@ -594,4 +607,4 @@ jobs:
             --target "$SHA" \
             --prerelease \
             --title "T3 Code $VERSION (atli fork, Linux x64 server, Mac arm64 app, and Android APK)" \
-            --notes "Linux x64 server, unsigned Mac arm64 desktop app, and personal Android arm64-v8a APK built from $GH_REPO@$SHA. Install them with docs/operations/fork-server.md."
+            --notes-file "$RUNNER_TEMP/release-notes.md"

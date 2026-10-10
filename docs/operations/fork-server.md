@@ -84,10 +84,11 @@ signing certificate, and versionCode before it uploads.
 
 The result is the prerelease `v0.0.46-atli.1` with
 `t3-0.0.46-atli.1-linux-x64.tar.gz`, `T3-Code-0.0.46-atli.1-arm64.dmg`,
-`T3-Code-0.0.46-atli.1-android-arm64-v8a.apk`, `SHA256SUMS`, and
-`manifest.json`, which names the source commit, the version, and each asset's
-platform, arch, size, and sha256. Each of those files has a build provenance
-attestation:
+`T3-Code-0.0.46-atli.1-android-arm64-v8a.apk`, `SHA256SUMS`, `ADMISSION.json`,
+and `manifest.json`, which names the source commit, the version, each asset's
+platform, arch, size, and sha256, and each asset's
+[verification scope](#verification-scope). Each of those files has a build
+provenance attestation:
 
 ```sh
 gh attestation verify t3-0.0.46-atli.1-linux-x64.tar.gz -R atlitech/t3code
@@ -99,6 +100,41 @@ again, and once a version has a tag or release, use the next atli number.
 Owner action, once: enable immutable releases on atlitech/t3code
 (**Settings → General → Releases**), so GitHub also refuses to change a
 published release's assets or move its tag.
+
+## Verification scope
+
+Not every package in a release is checked the same way. By the owner decision
+of 2026-10-06:
+
+- **Linux x64 server**: runtime-verified. The admission job installs the
+  archive over data the prior release wrote, upgrades and runs it, and reads
+  that data back; the release's `ADMISSION.json` names the version and the
+  archive's sha256 it admitted.
+- **Mac arm64 desktop app** and **Android arm64-v8a APK**: build-checked but
+  runtime-unverified. Their jobs check the built package's identity (the Mac
+  app's bundle identifier, version, and signature; the APK's public config,
+  package, certificate, and versionCode) and never run it.
+
+`manifest.json` records this as `verificationScope`: the decision, and one
+entry per asset with its status, `runtimeVerified`, and the job and step of
+each check. The publish job writes it only when `ADMISSION.json` admits the
+release's own Linux archive, refuses a scope that marks the Mac or Android
+package runtime-verified, and writes the release notes from it.
+
+To read a release's scope, download its `manifest.json` and `ADMISSION.json`
+and run the checker from an `atli` checkout:
+
+```sh
+gh release download v0.0.46-atli.4 --repo atlitech/t3code -p manifest.json -p ADMISSION.json
+node scripts/fork-release-scope.ts --manifest manifest.json --admission ADMISSION.json
+```
+
+It prints one line per platform, or fails when the two files disagree on the
+version, the Linux archive, or its sha256, when `verificationScope` is
+missing, or when the manifest marks the Mac or Android package
+runtime-verified. The publish job runs it only as a refusal guard; the
+evidence verdict is an independent reader's run on the published release,
+never the publishing run's own.
 
 ## Switching the VM to a fork build
 
