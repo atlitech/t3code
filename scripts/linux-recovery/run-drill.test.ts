@@ -186,7 +186,9 @@ function stubT3(config: StubConfig) {
 }
 
 // What the drill's `node` runs for the admission helpers that would talk to a
-// real server: it logs the call and writes what the helper would have.
+// real server: it logs the call and writes what the helper would have. With
+// RECOVERY_TEST_READBACK_FAILS set, readback.ts writes a passing result and
+// still exits non-zero, an observation that did not complete.
 function fakeHelper(config: { readonly callsLog: string }) {
   const fs = process.getBuiltinModule("node:fs");
   const path = process.getBuiltinModule("node:path");
@@ -210,6 +212,7 @@ function fakeHelper(config: { readonly callsLog: string }) {
         ],
       }),
     );
+    if (process.env["RECOVERY_TEST_READBACK_FAILS"] !== undefined) process.exit(1);
   } else if (helper === "seed.ts") {
     fs.writeFileSync(flag("out"), "SELECT 1;\n");
   } else if (helper === "post-upgrade-thread.ts") {
@@ -380,12 +383,18 @@ const drill = async (fixture: Fixture) => {
 };
 
 // The verify job, on its own scratch directory, against the drill's outputs.
-const verify = async (fixture: Fixture, record: string, name: string) => {
+const verify = async (
+  fixture: Fixture,
+  record: string,
+  name: string,
+  env: Readonly<Record<string, string>> = {},
+) => {
   const result = await runScript(fixture, "run-verify.sh", {
     RECORD: record,
     DRILLED_HOME_ARCHIVE: NodePath.join(fixture.root, "out/drilled-home.tar.gz"),
     WORKDIR: NodePath.join(fixture.root, name),
     OUT_DIR: NodePath.join(fixture.root, `${name}-out`),
+    ...env,
   });
   const verification = JSON.parse(
     await NodeFSP.readFile(NodePath.join(fixture.root, `${name}-out/VERIFICATION.json`), "utf8"),
@@ -505,6 +514,7 @@ describe.runIf(hostPlatform === "linux" || hostPlatform === "darwin")("recovery 
         "environment-id",
         "post-upgrade-work",
         "action-order",
+        "observations",
       ]);
 
       // And fails a record whose claims the home does not bear out.
@@ -525,6 +535,29 @@ describe.runIf(hostPlatform === "linux" || hostPlatform === "darwin")("recovery 
       expect(
         refuted.verification.checks.filter((check) => !check.passed).map((check) => check.name),
       ).toEqual(["environment-id"]);
+
+      // And fails an observation of its own that did not complete, even when
+      // the files it left behind pass.
+      const unfinished = await verify(
+        fixture,
+        NodePath.join(fixture.root, "out/RECOVERY.json"),
+        "verify-unfinished",
+        { RECOVERY_TEST_READBACK_FAILS: "1" },
+      );
+      expect(unfinished.output).toContain("::warning::observe_copy did not complete");
+      expect(unfinished.code).not.toBe(0);
+      expect(unfinished.verification.passed).toBe(false);
+      expect(
+        unfinished.verification.checks.filter((check) => !check.passed).map((check) => check.name),
+      ).toEqual(["observations"]);
+      expect(
+        JSON.parse(
+          await NodeFSP.readFile(
+            NodePath.join(fixture.root, "verify-unfinished/readback.json"),
+            "utf8",
+          ),
+        ).passed,
+      ).toBe(true);
     } finally {
       await fixture.close();
     }

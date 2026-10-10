@@ -9,7 +9,9 @@
 // release archive, the prior started on a copy of the home must read the
 // fixtures back and report the pre-upgrade environment id, and the database
 // recover moved aside must hold the post-upgrade thread the restored one
-// lacks. VERIFICATION.json lists every check; any failed check fails the job.
+// lacks. An observation of its own that did not complete fails the verdict
+// too, whatever files it left behind. VERIFICATION.json lists every check;
+// any failed check fails the job.
 
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -73,6 +75,8 @@ export interface RecoveryObservations {
   readonly environmentId: string | undefined;
   readonly displacedHasPostUpgradeThread: boolean | undefined;
   readonly restoredHasPostUpgradeThread: boolean | undefined;
+  /** The verify job's observations that did not complete; their files are not trusted. */
+  readonly failedObservations: ReadonlyArray<string>;
 }
 
 const observed = <A>(value: A | undefined, render: (value: A) => string = String) =>
@@ -188,6 +192,13 @@ export const verifyRecovery = (
         ? record.actions.map((action) => action.name).join(" -> ")
         : actionFaults.join("; "),
     ),
+    check(
+      "observations",
+      observations.failedObservations.length === 0,
+      observations.failedObservations.length === 0
+        ? "every observation completed"
+        : `${observations.failedObservations.join(", ")} did not complete`,
+    ),
   ];
   return { passed: checks.every((entry) => entry.passed), checks };
 };
@@ -259,6 +270,7 @@ export const runVerification = Effect.fn("runVerification")(function* (options: 
   readonly priorReleaseT3: string;
   readonly readback: string;
   readonly environment: string;
+  readonly failedObservations: string;
   readonly out: string;
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -342,6 +354,10 @@ export const runVerification = Effect.fn("runVerification")(function* (options: 
           ? undefined
           : databaseHasThread(path.join(displacedDir, "statev2.sqlite"), POST_UPGRADE_THREAD_ID),
       restoredHasPostUpgradeThread: databaseHasThread(liveDb, POST_UPGRADE_THREAD_ID),
+      failedObservations: options.failedObservations
+        .split(",")
+        .map((name) => name.trim())
+        .filter((name) => name.length > 0),
     }),
   );
 });
@@ -366,6 +382,10 @@ const command = Command.make(
       "environment",
       "GET /.well-known/t3/environment from the prior on that copy.",
     ),
+    failedObservations: file(
+      "failed-observations",
+      "Comma-separated names of this job's observations that did not complete; empty when none.",
+    ).pipe(Flag.withDefault("")),
     out: file("out", "Directory to write VERIFICATION.json into."),
   },
   (options) => runVerification(options),

@@ -14,7 +14,9 @@
 #      database, checks the actions, and writes OUT_DIR/VERIFICATION.json.
 #
 # The record only says what to fetch and where to look; an observation that
-# fails is left out, and its check fails. Exits non-zero unless every check
+# fails is left out, and its check fails. An observation that did not complete
+# is named in --failed-observations, so the `observations` check fails even
+# when the files it left behind would pass. Exits non-zero unless every check
 # passed. Needs node, sqlite3, curl, tar, and sha256sum.
 set -euo pipefail
 
@@ -113,9 +115,13 @@ observe_copy() {
   return "$status"
 }
 
+failed_observations=""
 for observation in observe_launcher observe_prior_release observe_copy; do
   echo "::group::$observation"
-  "$observation" || echo "::warning::$observation did not complete; its checks fail"
+  if ! "$observation"; then
+    echo "::warning::$observation did not complete; its checks fail"
+    failed_observations="${failed_observations:+$failed_observations,}$observation"
+  fi
   echo "::endgroup::"
 done
 
@@ -133,4 +139,5 @@ node "$here/verify-recovery.ts" \
   --prior-release-t3 "$prior_release_t3" \
   --readback "$work/readback.json" \
   --environment "$work/environment.json" \
+  --failed-observations "$failed_observations" \
   --out "$out"

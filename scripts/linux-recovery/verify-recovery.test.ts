@@ -35,6 +35,7 @@ const recovered: RecoveryObservations = {
   environmentId: drilledRecord.preUpgradeEnvironmentId,
   displacedHasPostUpgradeThread: true,
   restoredHasPostUpgradeThread: false,
+  failedObservations: [],
 };
 
 const failedChecks = (record: RecoveryRecord, observations: RecoveryObservations) => {
@@ -61,8 +62,10 @@ describe("verifyRecovery", () => {
         "environment-id",
         "post-upgrade-work",
         "action-order",
+        "observations",
       ],
     );
+    assert.isTrue(verification.checks.every((check) => check.passed));
   });
 
   it.each([
@@ -120,6 +123,11 @@ describe("verifyRecovery", () => {
       "post-upgrade-work",
     ],
     ["no displaced database", { displacedHasPostUpgradeThread: undefined }, "post-upgrade-work"],
+    [
+      "an observation did not complete though its files pass",
+      { failedObservations: ["observe_copy"] },
+      "observations",
+    ],
   ] as const)("fails when %s", (_, override, failing) => {
     assert.deepStrictEqual(failedChecks(drilledRecord, { ...recovered, ...override }), {
       passed: false,
@@ -283,6 +291,7 @@ const makeDrilledHome = (dir: string, options: { readonly restoredDiffers: boole
         serverVersion: version,
       }),
     ),
+    failedObservations: "",
     out: NodePath.join(dir, "out"),
   };
 };
@@ -290,7 +299,7 @@ const makeDrilledHome = (dir: string, options: { readonly restoredDiffers: boole
 const readVerification = (out: string) =>
   JSON.parse(NodeFS.readFileSync(NodePath.join(out, "VERIFICATION.json"), "utf8")) as {
     passed: boolean;
-    checks: ReadonlyArray<{ name: string; passed: boolean }>;
+    checks: ReadonlyArray<{ name: string; passed: boolean; detail: string }>;
   };
 
 describe("runVerification", () => {
@@ -321,6 +330,32 @@ describe("runVerification", () => {
         assert.deepStrictEqual(
           verification.checks.filter((check) => !check.passed).map((check) => check.name),
           ["restored-database", "post-upgrade-work"],
+        );
+      } finally {
+        NodeFS.rmSync(dir, { recursive: true, force: true });
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("fails when an observation did not complete, whatever files it left", () =>
+    Effect.gen(function* () {
+      const dir = scratch();
+      try {
+        const files = makeDrilledHome(dir, { restoredDiffers: false });
+        yield* Effect.flip(
+          runVerification({ ...files, failedObservations: "observe_launcher,observe_copy" }),
+        );
+        const verification = readVerification(files.out);
+        assert.isFalse(verification.passed);
+        assert.deepStrictEqual(
+          verification.checks.filter((check) => !check.passed),
+          [
+            {
+              name: "observations",
+              passed: false,
+              detail: "observe_launcher, observe_copy did not complete",
+            },
+          ],
         );
       } finally {
         NodeFS.rmSync(dir, { recursive: true, force: true });
