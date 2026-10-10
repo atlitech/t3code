@@ -1,3 +1,4 @@
+import { bridgeFailure } from "../bridge/BridgePolicy.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { projectComposerContextForProvider } from "@t3tools/shared/composerContextReferences";
 import {
@@ -560,6 +561,7 @@ export const layer: Layer.Layer<
       }) =>
         Effect.gen(function* () {
           const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
+          const isolationFailure = bridgeFailure(failed.error);
           yield* settleRunBeforeStart({
             signal: failed.signal,
             status: "failed",
@@ -571,12 +573,16 @@ export const layer: Layer.Layer<
               title: failed.title,
               failure: makeProviderFailure({
                 cause: failed.error,
+                ...(isolationFailure
+                  ? { code: `BridgeIsolationUnavailable:${isolationFailure.reason}` }
+                  : {}),
                 message:
-                  nestedCause instanceof Error
+                  isolationFailure?.message ??
+                  (nestedCause instanceof Error
                     ? nestedCause.message
                     : typeof nestedCause === "string"
                       ? nestedCause
-                      : failed.error.message,
+                      : failed.error.message),
                 class: "provider_error",
               }),
             },

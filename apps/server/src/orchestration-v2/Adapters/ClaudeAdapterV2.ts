@@ -1,3 +1,4 @@
+import { assertUnconfinedExecutionAllowed } from "../../bridge/BridgePolicy.ts";
 import { makeProviderTextDeltaCoalescer } from "./ProviderTextDeltaCoalescer.ts";
 import {
   dynamicToolTitle,
@@ -632,11 +633,13 @@ export const layerQueryRunner: Layer.Layer<
           Stream.toAsyncIterable,
         );
         const queryRuntime = yield* Effect.try({
-          try: () =>
-            query({
+          try: () => {
+            assertUnconfinedExecutionAllowed();
+            return query({
               prompt,
               options: input.options,
-            }),
+            });
+          },
           catch: (cause) => queryRunnerError(cause, "query"),
         });
         yield* logProtocolEvent({

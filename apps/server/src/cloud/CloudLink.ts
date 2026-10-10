@@ -1,3 +1,4 @@
+import { bridgeRequested, BridgeIsolationUnavailable } from "../bridge/BridgePolicy.ts";
 /**
  * The T3 Connect link lifecycle of this environment: linking it to the relay,
  * applying and reading the link, unlinking, answering the relay's signed health
@@ -1657,19 +1658,39 @@ const make = Effect.gen(function* () {
     Effect.catchTags({ PlatformError: internalError("issue-credential") }),
   );
 
+  const guard = <A, E, R>(action: Effect.Effect<A, E, R>) =>
+    bridgeRequested
+      ? Effect.fail(
+          new CloudLinkInternalError({
+            operation: "resolve-server-origin",
+            cause: new BridgeIsolationUnavailable({ reason: "unsupported-connection" }),
+          }),
+        )
+      : action;
   return CloudLink.of({
-    linkProof,
-    applyRelayConfig,
+    linkProof: (...args) => guard(linkProof(...args)),
+    applyRelayConfig: (...args) => guard(applyRelayConfig(...args)),
     linkState,
     unlink,
-    updatePreferences,
-    answerHealthRequest,
-    mintCredential,
-    reconcileDesiredLink,
-    reconcileDesiredLinkIfStillDesired,
-    registerManagedTunnelRecovery,
-    recoverManagedTunnel,
-    startManagedTunnelIfOriginConfirmed,
+    updatePreferences: (...args) => guard(updatePreferences(...args)),
+    answerHealthRequest: (...args) => guard(answerHealthRequest(...args)),
+    mintCredential: (...args) => guard(mintCredential(...args)),
+    reconcileDesiredLink: (...args) => guard(reconcileDesiredLink(...args)),
+    reconcileDesiredLinkIfStillDesired: (...args) =>
+      guard(reconcileDesiredLinkIfStillDesired(...args)),
+    registerManagedTunnelRecovery: (...args) => guard(registerManagedTunnelRecovery(...args)),
+    recoverManagedTunnel: (...args) => guard(recoverManagedTunnel(...args)),
+    startManagedTunnelIfOriginConfirmed: (...args) =>
+      bridgeRequested
+        ? Effect.fail(
+            new CloudLinkEndpointUnavailableError({
+              reason: "runtime-not-started",
+              endpointRuntimeStatus: new BridgeIsolationUnavailable({
+                reason: "unsupported-connection",
+              }),
+            }),
+          )
+        : startManagedTunnelIfOriginConfirmed(...args),
     releaseManagedTunnelOnShutdown,
   });
 });

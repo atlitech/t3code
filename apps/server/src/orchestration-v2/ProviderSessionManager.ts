@@ -1,4 +1,5 @@
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import { bridgeRequested } from "../bridge/BridgePolicy.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   ModelSelection,
@@ -2477,4 +2478,4 @@ export const layerWithOptions = (
     }),
   );
 
-export const layer = layerWithOptions();
+export const layer = layerWithOptions({ configureMcp: !bridgeRequested });

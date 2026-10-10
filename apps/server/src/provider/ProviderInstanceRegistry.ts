@@ -48,6 +48,7 @@
  *
  * @module provider/ProviderInstanceRegistry
  */
+import { bridgeRequested } from "../bridge/BridgePolicy.ts";
 import {
   providerInstanceConfigEnabledFlag,
   ProviderInstanceId,
@@ -195,6 +196,18 @@ const buildEntry = <R>(input: {
 > =>
   Effect.gen(function* () {
     const { driversById, parentScope, instanceId, rawInstanceId, entry } = input;
+    if (bridgeRequested && entry.driver !== "codex") {
+      return {
+        kind: "unavailable" as const,
+        snapshot: yield* buildUnavailableProviderSnapshot({
+          driverKind: entry.driver,
+          instanceId,
+          displayName: entry.displayName,
+          accentColor: entry.accentColor,
+          reason: "Bridge isolation is unavailable: unsupported-provider.",
+        }),
+      };
+    }
     const driver = driversById.get(entry.driver);
     if (!driver) {
       return {

@@ -22,6 +22,8 @@
  * @module provider/Drivers/CodexDriver
  */
 import { CodexSettings, ProviderDriverKind } from "@t3tools/contracts";
+import { bridgeRequested } from "../../bridge/BridgePolicy.ts";
+import { makeBridgeCodexInstance } from "../../bridge/BridgeCodexInstance.ts";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -132,6 +134,15 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
   defaultConfig: (): CodexSettings => decodeCodexSettings({}),
   create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
+      if (bridgeRequested)
+        return yield* makeBridgeCodexInstance({
+          instanceId,
+          displayName,
+          accentColor,
+          environment,
+          enabled,
+          config,
+        });
       if (config.setupMode === "managed")
         return yield* makeManagedCodexProvider({
           instanceId,
