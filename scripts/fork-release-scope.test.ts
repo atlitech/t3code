@@ -263,3 +263,22 @@ it.effect("fails when an entry claims checks the committed scope does not name",
     assert.strictEqual(error._tag, "ReleaseScopeError");
   }),
 );
+
+it.effect("fails when one check's step embeds quotes to read like the two committed checks", () =>
+  Effect.gen(function* () {
+    const manifest = yield* published;
+    const forged = {
+      job: "build-android",
+      step: 'Check public config", build-android "Check APK identity',
+    };
+    // Rendered for a message, the forged check matches the committed pair.
+    assert.strictEqual(
+      `${forged.job} "${forged.step}"`,
+      'build-android "Check public config", build-android "Check APK identity"',
+    );
+    const edited = editEntry(manifest, "android", (entry) => ({ ...entry, checks: [forged] }));
+    const error = yield* Effect.flip(read(edited));
+    assert.strictEqual(error._tag, "ReleaseScopeError");
+    assert.include(error.detail, "not the committed");
+  }),
+);

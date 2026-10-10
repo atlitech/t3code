@@ -39,6 +39,17 @@ export class ReleaseScopeError extends Schema.TaggedError<ReleaseScopeError>()(
 const describeChecks = (entry: Pick<VerificationScopeEntry, "checks">): string =>
   entry.checks.map((check) => `${check.job} "${check.step}"`).join(", ");
 
+// Compared field by field: a rendered string could make one check whose step
+// embeds quotes read exactly like two.
+const sameChecks = (
+  left: VerificationScopeEntry["checks"],
+  right: VerificationScopeEntry["checks"],
+): boolean =>
+  left.length === right.length &&
+  left.every(
+    (check, index) => check.job === right[index]!.job && check.step === right[index]!.step,
+  );
+
 /**
  * Checks manifest.json's verificationScope against ADMISSION.json and the
  * committed FORK_VERIFICATION_SCOPE, and returns one line per platform. Each
@@ -138,7 +149,7 @@ export const readReleaseScope = (input: {
           `${label} is marked build-checked, but the committed scope runtime-verifies ${entry.platform} ${entry.arch}.`,
         );
       }
-      if (describeChecks(entry) !== describeChecks(committed)) {
+      if (!sameChecks(entry.checks, committed.checks)) {
         return yield* refuse(
           `${label} claims checks ${describeChecks(entry)}, not the committed ${describeChecks(committed)}.`,
         );
