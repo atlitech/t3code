@@ -85,4 +85,33 @@ describe("fork server runbook", () => {
     );
     expect(section("Cutting a release")).toMatch(/\[verification scope\]\(#verification-scope\)/);
   });
+
+  it("gives the operator's t3 recover steps and where points and displaced databases live", () => {
+    const rollback = section("Rolling back to an official version");
+    const recover = rollback.slice(rollback.indexOf("### Recovering a failed update\n"));
+    expect(recover).toMatch(/recovery point under\s+`~\/\.t3\/recovery\/points\/`/);
+    expect(recover).toMatch(/1\. List the points[\s\S]*\n\s+t3 recover --list\n/);
+    expect(recover).toMatch(/2\. Restore it by its id[\s\S]*\n\s+t3 recover <id>\n/);
+    expect(recover).toMatch(/3\. Check the result[\s\S]*`t3 --version`/);
+    expect(recover).toMatch(/kept under\s+`~\/\.t3\/recovery\/displaced\/` and never\s+pruned/);
+    expect(recover).toMatch(/\[recovery drill\]\(#recovery-drill\)/);
+  });
+
+  it("shows how to dispatch the recovery drill and read its records", () => {
+    const drill = section("Recovery drill");
+    expect(drill).toMatch(/\[recovering a failed update\]\(#recovering-a-failed-update\)/);
+    expect(drill).toMatch(
+      /gh workflow run fork-recovery-drill\.yml --repo atlitech\/t3code --ref atli\n/,
+    );
+    expect(drill).toMatch(/--ref atli -f target-version=[^\s]+\n/);
+    expect(drill).toMatch(/`priorVersion` in the target's\s+`ADMISSION\.json`/);
+    expect(drill).toMatch(/must already\s+carry\s+`t3 recover`/);
+    expect(drill).toMatch(
+      /gh run download <run-id> --repo atlitech\/t3code -n recovery-drill -n recovery-verification\n/,
+    );
+    expect(drill).toMatch(/`RECOVERY\.json`/);
+    expect(drill).toMatch(
+      /The verdict is\s+`VERIFICATION\.json` from the verify\s+job, never the\s+drill job's own grading/,
+    );
+  });
 });
