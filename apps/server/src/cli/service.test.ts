@@ -116,6 +116,7 @@ function makeTestService(serviceStatus: BootService.BootServiceStatus) {
           logPath: serviceStatus.logPath,
         };
       }),
+    stop: Effect.succeed(false),
     uninstall: Effect.succeed(false),
   });
   return { service, installOptions, restarts };

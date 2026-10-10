@@ -154,11 +154,14 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
     linger: string;
     enabled: boolean;
     active: boolean;
+    /** Whether `launchctl print` still finds the launch agent in its domain. */
+    loaded: boolean;
   } = {
     failCommand: undefined,
     linger: "yes",
     enabled: true,
     active: true,
+    loaded: true,
   };
   const runner = ProcessRunner.ProcessRunner.of({
     run: Effect.fn("test.run_boot_service_command")(function* (
@@ -194,7 +197,11 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
                 : "",
         stderr: "",
         code: ChildProcessSpawner.ExitCode(
-          failed || (input.args[1] === "is-active" && !control.active) ? 1 : 0,
+          failed ||
+            (input.args[1] === "is-active" && !control.active) ||
+            (input.command === "launchctl" && input.args[0] === "print" && !control.loaded)
+            ? 1
+            : 0,
         ),
         timedOut: false,
         stdoutTruncated: false,
@@ -596,6 +603,119 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       const other = yield* makeService(undefined, "1.2.3", path.join(otherHome, ".t3"));
       expect(yield* other.restart).toBe(false);
       expect(commands.filter((command) => command.startsWith("systemctl "))).toEqual([]);
+    }),
+  );
+
+  it.effect.each([
+    { platform: "linux", expected: ["systemctl --user stop t3code.service"] },
+    {
+      platform: "darwin",
+      expected: ["launchctl bootout --wait gui/501/com.t3tools.t3code.service"],
+    },
+  ] as const)(
+    "stop stops this home's service without starting it on $platform",
+    ({ platform, expected }) =>
+      Effect.gen(function* () {
+        const { service, commands } = yield* makeHarness(platform);
+        yield* service.install();
+        commands.length = 0;
+
+        expect(yield* service.stop).toBe(true);
+        expect(commands).toEqual(expected);
+      }),
+  );
+
+  it.effect("stop fails when the launch agent bootout fails and the job is still loaded", () =>
+    Effect.gen(function* () {
+      const { service, commands, control } = yield* makeHarness("darwin");
+      yield* service.install();
+      commands.length = 0;
+      control.failCommand = "launchctl bootout --wait gui/501/com.t3tools.t3code.service";
+
+      const error = yield* service.stop.pipe(Effect.flip);
+      expect(error._tag).toBe("BootServiceCommandError");
+      expect(commands).toEqual([
+        "launchctl bootout --wait gui/501/com.t3tools.t3code.service",
+        "launchctl print gui/501/com.t3tools.t3code.service",
+      ]);
+    }),
+  );
+
+  it.effect("stop succeeds when the launch agent bootout fails on a job that is not loaded", () =>
+    Effect.gen(function* () {
+      const { service, commands, control } = yield* makeHarness("darwin");
+      yield* service.install();
+      commands.length = 0;
+      control.failCommand = "launchctl bootout --wait gui/501/com.t3tools.t3code.service";
+      control.loaded = false;
+
+      expect(yield* service.stop).toBe(true);
+      expect(commands).toEqual([
+        "launchctl bootout --wait gui/501/com.t3tools.t3code.service",
+        "launchctl print gui/501/com.t3tools.t3code.service",
+      ]);
+    }),
+  );
+
+  it.effect("stop fails when systemd cannot stop the service", () =>
+    Effect.gen(function* () {
+      const { service, commands, control } = yield* makeHarness();
+      yield* service.install();
+      commands.length = 0;
+      control.failCommand = "systemctl --user stop t3code.service";
+
+      const error = yield* service.stop.pipe(Effect.flip);
+      expect(error._tag).toBe("BootServiceCommandError");
+      expect(commands).toEqual(["systemctl --user stop t3code.service"]);
+    }),
+  );
+
+  it.effect("stop is a no-op when no service is installed", () =>
+    Effect.gen(function* () {
+      const { service, commands } = yield* makeHarness();
+      commands.length = 0;
+
+      expect(yield* service.stop).toBe(false);
+      expect(commands).toEqual([]);
+    }),
+  );
+
+  it.effect("stop leaves a service that serves another T3 home alone", () =>
+    Effect.gen(function* () {
+      const { service, fs, commands, makeService } = yield* makeHarness();
+      yield* service.install();
+      const path = yield* Path.Path;
+      const otherHome = yield* fs.makeTempDirectoryScoped({ prefix: "t3-other-home-" });
+      const other = yield* makeService(undefined, "1.2.3", path.join(otherHome, ".t3"));
+      commands.length = 0;
+
+      expect(yield* other.stop).toBe(false);
+      expect(commands).toEqual([]);
+    }),
+  );
+
+  it.effect("stop refuses while a remote update is pending, before stopping anything", () =>
+    Effect.gen(function* () {
+      const { service, fs, statePath, commands } = yield* makeHarness();
+      yield* service.install();
+      const pendingState = JSON.stringify({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        activeVersion: "1.2.3",
+        update: {
+          id: "u",
+          fromVersion: "1.2.3",
+          targetVersion: "1.2.4",
+          dbPath: "/tmp/state.sqlite",
+          status: "pending",
+        },
+      });
+      yield* fs.writeFileString(statePath, pendingState);
+      commands.length = 0;
+
+      const error = yield* service.stop.pipe(Effect.flip);
+      expect(error._tag).toBe("BootServiceUpdatePendingError");
+      expect(commands).toEqual([]);
+      expect(yield* fs.readFileString(statePath)).toBe(pendingState);
     }),
   );
 

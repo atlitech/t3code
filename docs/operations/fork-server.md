@@ -307,7 +307,45 @@ t3 update 0.0.45 --allow-downgrade --yes
 
 A fork build may already have run database migrations from upstream `main`
 against `~/.t3/userdata`, and an older official build may not run on that
-database. Back up `~/.t3/userdata` before the first switch to a fork build.
+database. An official build keeps no recovery point, so back up
+`~/.t3/userdata` before the first switch from it to a fork build.
+
+### Recovering a failed update
+
+Before `t3 update` or the in-app update switches this home to another server
+version, it keeps a recovery point under `~/.t3/recovery/points/`: a backup of
+the database and a record of the version it came from. The newest three
+points are kept. List them, then restore one by its id:
+
+```sh
+t3 recover --list
+t3 recover <id>
+```
+
+`t3 recover <id>` puts back that point's database and the prior runtime it
+records. When this home's background service serves it, recover stops the
+service first, then points it at the prior runtime and restarts it; otherwise
+it changes only the database and the `t3` launcher. The database it replaces
+is kept under `~/.t3/recovery/displaced/` and never pruned, so later work is
+not lost. Recover refuses before changing anything when the backup or the
+prior runtime does not match the point's record, while a server started by
+hand runs on this home, when `server-runtime.json` cannot be read to tell
+whether one does, or while another `t3 recover` holds this home's
+`~/.t3/recovery/recover.lock`. A lock left by a recover that is no longer
+running is taken over; if a recover dies during that takeover, the next one
+names the `recover.lock.takeover` file to remove. A prior runtime installed
+without a recorded archive sha256 is restored only with
+`--allow-unverified-runtime`, which the point's `recovery.json` records.
+
+Revocations made after the point was kept are carried over into the restored
+database: before anything moves, recover copies the point's backup beside the
+database and applies to that copy every session and pairing-link revocation,
+and every pairing-link use, the current database records. A session or
+pairing link the current database no longer has, for example because a
+migration recreated the auth tables, is revoked in the restored database. A
+session created after the point is not in the restored database at all. When those
+revocations cannot be read, recover refuses with the current database in
+place.
 
 ## Updating `atli` from upstream
 

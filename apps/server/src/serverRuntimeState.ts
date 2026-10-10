@@ -127,7 +127,12 @@ export const isProcessAlive = (pid: number): boolean => {
   }
 };
 
-export const readPersistedServerRuntimeState = (path: string) =>
+/**
+ * The persisted runtime state at `path`, or none when the file is absent or
+ * empty. A file that cannot be read or decoded fails, so a caller that must
+ * know no server is running can refuse instead of assuming none is.
+ */
+export const readPersistedServerRuntimeStateStrict = (path: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const raw = yield* fs.readFileString(path).pipe(
@@ -165,7 +170,10 @@ export const readPersistedServerRuntimeState = (path: string) =>
           }),
       ),
     );
-  }).pipe(
+  });
+
+export const readPersistedServerRuntimeState = (path: string) =>
+  readPersistedServerRuntimeStateStrict(path).pipe(
     Effect.catchTags({
       ServerRuntimeStateError: (error) =>
         Effect.logWarning(error.message).pipe(

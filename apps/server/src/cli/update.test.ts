@@ -1,26 +1,40 @@
+// @effect-diagnostics nodeBuiltinImport:off - tests seed a real SQLite database and read it back.
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodeSqlite from "node:sqlite";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as TestClock from "effect/testing/TestClock";
 import * as TestConsole from "effect/testing/TestConsole";
 import {
   HostProcessArchitecture,
   HostProcessEnvironment,
   HostProcessInvokedAs,
+  HostProcessIsExecutable,
   HostProcessPlatform,
   HostProcessWorkingDirectory,
 } from "@t3tools/shared/hostProcess";
+import { afterEach, vi } from "vite-plus/test";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { repointLauncher, resolveLauncherPath, runUpdate } from "./update.ts";
+
+afterEach(() => vi.restoreAllMocks());
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
   it.effect("repoints a symlink that lives in a runtime versions tree", () =>
@@ -151,7 +165,8 @@ const preflightFailures = {
 /**
  * Runs `t3 update <version>` against a fake release (ADMISSION.json served
  * only when `admission` is given) and a fake staged runtime that answers
- * `--version` and the update preflight. No background service is installed.
+ * `--version` and the update preflight. No background service is installed
+ * unless `service` names the version one serving this home runs.
  */
 const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
   readonly version: string;
@@ -168,10 +183,27 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
   readonly cachedDigest?: string | null;
   readonly allowUnadmitted?: boolean;
   readonly allowDowngrade?: boolean;
+  /** An existing T3 home to update; a fresh one without a database by default. */
+  readonly baseDir?: string;
+  /** A background service serving this home on this version. */
+  readonly service?: {
+    readonly version: string;
+    readonly problems?: BootService.BootServiceStatus["problems"];
+  };
+  /** Contents served for these paths instead of the disk, such as a `/proc` file. */
+  readonly files?: Readonly<Record<string, string>>;
+  /** Runs `t3` as an executable started through this launcher symlink. */
+  readonly launcherPath?: string;
+  /** Called before every rename the update makes, so a test can observe or fail one. */
+  readonly onRename?: (
+    from: string,
+    to: string,
+  ) => Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem>;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-run-" });
+  const baseDir =
+    options.baseDir ?? (yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-run-" }));
   const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
   const versionDir = path.join(baseDir, "runtime", "versions", options.version);
   if (options.cachedDigest !== undefined) {
@@ -248,18 +280,51 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
     }
     return Effect.succeed(HttpClientResponse.fromWeb(request, new Response(archiveBytes)));
   });
+  // The service switch builds its own BootService for the target version.
+  const serviceCalls: string[] = [];
   const bootService = BootService.BootService.of({
-    install: () => Effect.die("no service is installed"),
-    restart: Effect.die("no service is installed"),
-    uninstall: Effect.die("no service is installed"),
-    status: Effect.succeed({
-      supported: false,
-      installed: false,
-      current: false,
-      unitPath: "",
-      logPath: "",
-    }),
+    install: (installOptions) =>
+      Effect.sync(() => {
+        serviceCalls.push(`install start=${installOptions?.start}`);
+        return { program: [], baseDir, logPath: "", unitPath: "" };
+      }),
+    restart: Effect.die("unexpected service restart"),
+    stop: Effect.die("unexpected service stop"),
+    uninstall: Effect.die("unexpected service uninstall"),
+    status: Effect.succeed(
+      options.service === undefined
+        ? { supported: false, installed: false, current: false, unitPath: "", logPath: "" }
+        : {
+            supported: true,
+            installed: true,
+            current: false,
+            installedVersion: options.service.version,
+            installedBaseDir: baseDir,
+            problems: options.service.problems ?? [],
+            unitPath: "",
+            logPath: "",
+          },
+    ),
   });
+  vi.spyOn(BootService, "layer").mockReturnValue(
+    Layer.succeed(BootService.BootService, bootService),
+  );
+  const onRename = options.onRename;
+  const files = options.files ?? {};
+  const updateFs: FileSystem.FileSystem = {
+    ...fs,
+    readFileString: (filePath, encoding) =>
+      files[filePath] === undefined
+        ? fs.readFileString(filePath, encoding)
+        : Effect.succeed(files[filePath]),
+    rename: (from, to) =>
+      onRename === undefined
+        ? fs.rename(from, to)
+        : onRename(from, to).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.andThen(fs.rename(from, to)),
+          ),
+  };
   const exit = yield* runUpdate({
     baseDir,
     logsDir: path.join(baseDir, "logs"),
@@ -274,6 +339,9 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
     Effect.provideService(ProcessRunner.ProcessRunner, runner),
     Effect.provideService(HttpClient.HttpClient, httpClient),
     Effect.provideService(BootService.BootService, bootService),
+    Effect.provideService(FileSystem.FileSystem, updateFs),
+    Effect.provideService(HostProcessIsExecutable, options.launcherPath !== undefined),
+    Effect.provideService(HostProcessInvokedAs, options.launcherPath ?? "t3"),
     Effect.provideService(HostProcessPlatform, "linux"),
     Effect.provideService(HostProcessArchitecture, "x64"),
     Effect.provideService(HostProcessEnvironment, {
@@ -295,7 +363,18 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
     .readFileString(path.join(versionDir, ".archive-sha256"))
     .pipe(Effect.option);
   const entry = yield* fs.readFileString(path.join(versionDir, "t3")).pipe(Effect.option);
-  return { exit, requests, commands, warnings, published, dbPath, recordedDigest, entry };
+  return {
+    exit,
+    requests,
+    commands,
+    warnings,
+    published,
+    baseDir,
+    dbPath,
+    recordedDigest,
+    entry,
+    serviceCalls,
+  };
 });
 
 const failureReason = (exit: Exit.Exit<unknown, unknown>) =>
@@ -463,5 +542,313 @@ it.layer(NodeServices.layer)("t3 update admission and preflight", (it) => {
         assert.deepEqual(Option.getOrUndefined(run.entry), "#!/bin/sh\n");
         assert.deepEqual(Option.getOrUndefined(run.recordedDigest), `${digest}\n`);
       }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+});
+
+const fileSha256 = (filePath: string) =>
+  NodeCrypto.createHash("sha256").update(NodeFS.readFileSync(filePath)).digest("hex");
+const SERVICE_VERSION = "0.0.46";
+const SERVICE_ARCHIVE_SHA256 = "ab".repeat(32);
+const DISPLACED_FILE = "recovery/displaced/19700101T000000000Z-earlier/statev2.sqlite";
+
+/**
+ * A T3 home with a database (or bytes that are not one), the runtime it runs
+ * now behind a launcher symlink, and a database an earlier recover set aside.
+ */
+const makeHomeWithDatabase = Effect.fn("test.make_update_home_with_database")(function* (options: {
+  readonly fromVersion: string;
+  readonly fromArchiveSha256?: string | undefined;
+  readonly database?: "sqlite" | "garbage";
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-update-home-" });
+  const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
+  yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+  if (options.database === "garbage") {
+    yield* fs.writeFileString(dbPath, "this is not a SQLite database\n".repeat(64));
+  } else {
+    const database = new NodeSqlite.DatabaseSync(dbPath);
+    database.exec("create table notes (value text); insert into notes values ('kept');");
+    database.close();
+  }
+  const fromRuntime = path.join(baseDir, "runtime", "versions", options.fromVersion);
+  yield* fs.makeDirectory(fromRuntime, { recursive: true });
+  yield* fs.writeFileString(path.join(fromRuntime, "t3"), "#!/bin/sh\n");
+  if (options.fromArchiveSha256 !== undefined) {
+    yield* fs.writeFileString(
+      path.join(fromRuntime, ".archive-sha256"),
+      `${options.fromArchiveSha256}\n`,
+    );
+  }
+  const launcherPath = path.join(baseDir, "bin", "t3");
+  yield* fs.makeDirectory(path.dirname(launcherPath), { recursive: true });
+  yield* fs.symlink(path.join(fromRuntime, "t3"), launcherPath);
+  const displacedPath = path.join(baseDir, DISPLACED_FILE);
+  yield* fs.makeDirectory(path.dirname(displacedPath), { recursive: true });
+  yield* fs.writeFileString(displacedPath, "an earlier database\n");
+  return { baseDir, dbPath, fromRuntime, launcherPath, displacedPath };
+});
+
+const pointsDirOf = (path: Path.Path, baseDir: string) => path.join(baseDir, "recovery", "points");
+
+it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
+  it.effect.each([
+    ["the version the service serving this home runs", true],
+    ["the running version when no service serves this home", false],
+  ] as const)("keeps one recovery point from %s before publishing", ([, withService]) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const fromVersion = withService ? SERVICE_VERSION : packageJson.version;
+      const fromArchiveSha256 = withService ? SERVICE_ARCHIVE_SHA256 : undefined;
+      const home = yield* makeHomeWithDatabase({ fromVersion, fromArchiveSha256 });
+      const targetDir = path.join(home.baseDir, "runtime", "versions", "0.0.47");
+      const pointsAtPublish: string[][] = [];
+
+      const run = yield* runFakeUpdate({
+        version: "0.0.47",
+        baseDir: home.baseDir,
+        launcherPath: home.launcherPath,
+        ...(withService ? { service: { version: SERVICE_VERSION } } : {}),
+        onRename: (_from, to) =>
+          to === targetDir
+            ? fs
+                .readDirectory(pointsDirOf(path, home.baseDir))
+                .pipe(Effect.map((names) => void pointsAtPublish.push(names)))
+            : Effect.void,
+      });
+
+      assert.equal(run.exit._tag, "Success");
+      const points = yield* fs.readDirectory(pointsDirOf(path, home.baseDir));
+      assert.lengthOf(points, 1);
+      const [id] = points;
+      assert.match(id ?? "", new RegExp(`^19700101T000000000Z-${fromVersion}-to-0\\.0\\.47$`));
+      // The point was already in place when the new runtime was published.
+      assert.deepEqual(pointsAtPublish, [points]);
+      const pointDir = path.join(pointsDirOf(path, home.baseDir), id ?? "");
+      assert.deepEqual((yield* fs.readDirectory(pointDir)).toSorted(), [
+        "recovery.json",
+        "statev2.sqlite",
+      ]);
+      const record: unknown = JSON.parse(
+        yield* fs.readFileString(path.join(pointDir, "recovery.json")),
+      );
+      const snapshotPath = path.join(pointDir, "statev2.sqlite");
+      assert.deepEqual(record, {
+        id,
+        createdAt: "1970-01-01T00:00:00.000Z",
+        from: {
+          version: fromVersion,
+          runtimePath: home.fromRuntime,
+          archiveSha256: fromArchiveSha256 ?? null,
+        },
+        to: { version: "0.0.47" },
+        snapshot: {
+          size: NodeFS.statSync(snapshotPath).size,
+          sha256: fileSha256(snapshotPath),
+        },
+        actions: [],
+      });
+      const snapshot = new NodeSqlite.DatabaseSync(snapshotPath, { readOnly: true });
+      try {
+        assert.deepEqual(
+          snapshot
+            .prepare("select value from notes")
+            .all()
+            .map((row) => row["value"]),
+          ["kept"],
+        );
+      } finally {
+        snapshot.close();
+      }
+      assert.isTrue(
+        (yield* TestConsole.logLines).some((line) =>
+          String(line).includes(`Kept recovery point ${id} (${pointDir})`),
+        ),
+      );
+      assert.equal(yield* fs.readLink(home.launcherPath), path.join(targetDir, "t3"));
+      assert.deepEqual(run.serviceCalls, withService ? ["install start=true"] : []);
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect(
+    "keeps a point from the live server's version while a deferred restart already names the target",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        // An earlier update moved t3 and the service's state to this build and
+        // declined the restart, so the service still runs the version before.
+        const runningVersion = "0.0.44";
+        const home = yield* makeHomeWithDatabase({
+          fromVersion: runningVersion,
+          fromArchiveSha256: SERVICE_ARCHIVE_SHA256,
+        });
+        yield* fs.writeFileString(
+          path.join(home.baseDir, "server-runtime.json"),
+          JSON.stringify({
+            version: 1,
+            // A pid that is certainly alive: this test's own process.
+            pid: process.pid,
+            port: 3773,
+            origin: "http://127.0.0.1:3773",
+            startedAt: "1970-01-01T00:00:00.000Z",
+            serviceManaged: true,
+          }),
+        );
+
+        const run = yield* runFakeUpdate({
+          version: packageJson.version,
+          baseDir: home.baseDir,
+          service: { version: packageJson.version, problems: ["restart-pending"] },
+          files: {
+            [`/proc/${process.pid}/cmdline`]: `${path.join(home.fromRuntime, "t3")}\0serve\0`,
+          },
+        });
+
+        assert.equal(run.exit._tag, "Success", failureReason(run.exit));
+        const points = yield* fs.readDirectory(pointsDirOf(path, home.baseDir));
+        assert.deepEqual(points, [
+          `19700101T000000000Z-${runningVersion}-to-${packageJson.version}`,
+        ]);
+        const record: { readonly from: unknown } = JSON.parse(
+          yield* fs.readFileString(
+            path.join(pointsDirOf(path, home.baseDir), points[0] ?? "", "recovery.json"),
+          ),
+        );
+        assert.deepEqual(record.from, {
+          version: runningVersion,
+          runtimePath: home.fromRuntime,
+          archiveSha256: SERVICE_ARCHIVE_SHA256,
+        });
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect("keeps a single point when a concurrent publish makes validation run twice", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* makeHomeWithDatabase({ fromVersion: packageJson.version });
+      const targetDir = path.join(home.baseDir, "runtime", "versions", "0.0.47");
+
+      const run = yield* runFakeUpdate({
+        version: "0.0.47",
+        baseDir: home.baseDir,
+        // Another update publishes the same version first, so this one
+        // validates the published runtime again instead of its own.
+        onRename: (from, to) =>
+          to === targetDir
+            ? Effect.gen(function* () {
+                yield* fs.makeDirectory(targetDir, { recursive: true });
+                yield* fs.writeFileString(path.join(targetDir, "t3"), "#!/bin/sh\n");
+                yield* fs.writeFileString(path.join(targetDir, ".install-complete"), "0.0.47\n");
+                return yield* PlatformError.systemError({
+                  _tag: "AlreadyExists",
+                  module: "FileSystem",
+                  method: "rename",
+                  pathOrDescriptor: from,
+                });
+              })
+            : Effect.void,
+      });
+
+      assert.equal(run.exit._tag, "Success");
+      assert.lengthOf(
+        run.commands.filter((command) => command.includes("__service-preflight")),
+        2,
+      );
+      assert.lengthOf(yield* fs.readDirectory(pointsDirOf(path, home.baseDir)), 1);
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect("keeps a point when switching to a cached runtime", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* makeHomeWithDatabase({ fromVersion: packageJson.version });
+      const digest = yield* archiveSha256;
+
+      const run = yield* runFakeUpdate({
+        version: "0.0.47-atli.1",
+        admission: { archiveSha256: digest },
+        cachedDigest: digest,
+        baseDir: home.baseDir,
+      });
+
+      assert.equal(run.exit._tag, "Success");
+      assert.isFalse(run.commands.some(([command]) => command === "tar"));
+      assert.deepEqual(yield* fs.readDirectory(pointsDirOf(path, home.baseDir)), [
+        `19700101T000000000Z-${packageJson.version}-to-0.0.47-atli.1`,
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect("prunes only the oldest point on the fourth update", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* makeHomeWithDatabase({ fromVersion: packageJson.version });
+      const versions = ["0.0.47", "0.0.48", "0.0.49", "0.0.50"];
+      for (const version of versions) {
+        const run = yield* runFakeUpdate({ version, baseDir: home.baseDir });
+        assert.equal(run.exit._tag, "Success", version);
+        yield* TestClock.adjust(Duration.seconds(1));
+      }
+
+      assert.deepEqual((yield* fs.readDirectory(pointsDirOf(path, home.baseDir))).toSorted(), [
+        `19700101T000001000Z-${packageJson.version}-to-0.0.48`,
+        `19700101T000002000Z-${packageJson.version}-to-0.0.49`,
+        `19700101T000003000Z-${packageJson.version}-to-0.0.50`,
+      ]);
+      assert.deepEqual(
+        (yield* fs.readDirectory(path.join(home.baseDir, "runtime", "versions"))).toSorted(),
+        [packageJson.version, ...versions].toSorted(),
+      );
+      assert.equal(yield* fs.readFileString(home.displacedPath), "an earlier database\n");
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect.each([
+    ["the backup fails", "garbage"],
+    ["the recovery directory cannot be written", "points-file"],
+  ] as const)("refuses the update and changes nothing when %s", ([, failure]) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* makeHomeWithDatabase({
+        fromVersion: SERVICE_VERSION,
+        fromArchiveSha256: SERVICE_ARCHIVE_SHA256,
+        database: failure === "garbage" ? "garbage" : "sqlite",
+      });
+      const pointsDir = pointsDirOf(path, home.baseDir);
+      if (failure === "points-file") yield* fs.writeFileString(pointsDir, "not a directory\n");
+      const databaseSha256 = fileSha256(home.dbPath);
+
+      const run = yield* runFakeUpdate({
+        version: "0.0.47",
+        baseDir: home.baseDir,
+        launcherPath: home.launcherPath,
+        service: { version: SERVICE_VERSION },
+      });
+
+      assert.equal(run.exit._tag, "Failure");
+      assert.include(
+        failureReason(run.exit),
+        "Not switching to t3@0.0.47: could not keep a recovery point of the database",
+      );
+      // The preflight ran, so the point was what refused the update.
+      assert.isTrue(run.commands.some((command) => command.includes("__service-preflight")));
+      assert.deepEqual(run.published, [SERVICE_VERSION]);
+      assert.equal(yield* fs.readLink(home.launcherPath), path.join(home.fromRuntime, "t3"));
+      assert.deepEqual(run.serviceCalls, []);
+      assert.equal(fileSha256(home.dbPath), databaseSha256);
+      assert.equal(yield* fs.readFileString(home.displacedPath), "an earlier database\n");
+      if (failure === "points-file") {
+        assert.equal(yield* fs.readFileString(pointsDir), "not a directory\n");
+      } else {
+        assert.deepEqual(yield* fs.readDirectory(pointsDir), []);
+      }
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 });

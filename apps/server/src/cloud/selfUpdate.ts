@@ -21,10 +21,12 @@ import { HttpClient } from "effect/http";
 
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { ADMITTED_ARCHIVE_MISMATCH_STEP, ensurePinnedRuntimeInstalled } from "./pinnedRuntime.ts";
+import { createRecoveryPoint, RECOVERY_POINT_STEP } from "./recoveryPoint.ts";
 import { verifyReleaseAdmission } from "./releaseAdmission.ts";
 import { runStagedServicePreflight } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
@@ -215,6 +217,32 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }
 
     return yield* Effect.gen(function* () {
+      // A recovery point of the database and the version the service runs
+      // now, kept inside validation after the preflight so a failed backup
+      // means the new runtime is never published. Cached so a second
+      // validation in this update reuses the point instead of taking another.
+      // This process is the service's running server, so its own version is
+      // the one running; service-state.json can already name a version that
+      // `t3 update` installed with its restart deferred.
+      const keepRecoveryPoint = yield* Effect.cached(
+        createRecoveryPoint({
+          baseDir: serverConfig.baseDir,
+          dbPath: serverConfig.dbPath,
+          fromVersion: packageJson.version,
+          toVersion: targetVersion,
+        }).pipe(
+          Effect.tap((point) =>
+            Option.isSome(point)
+              ? Effect.logInfo("Kept a recovery point before the server update.", {
+                  recoveryPointId: point.value.id,
+                  recoveryPointPath: point.value.dir,
+                })
+              : Effect.void,
+          ),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+        ),
+      );
       yield* reportProgress("downloading");
       // A fork version installs only with an admission record for its exact
       // archive. Unlike `t3 update`, there is no override here.
@@ -242,17 +270,22 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             runtime,
             databasePath: serverConfig.dbPath,
             targetVersion,
-          }),
+          }).pipe(Effect.andThen(keepRecoveryPoint), Effect.asVoid),
       }).pipe(
         Effect.mapError((error) =>
           error._tag === "PinnedRuntimePreflightBlockedError"
             ? failWith(error.reason, error)
-            : error.step === ADMITTED_ARCHIVE_MISMATCH_STEP
+            : error.step === RECOVERY_POINT_STEP
               ? failWith(
-                  `The archive downloaded for t3@${targetVersion} is not the one its admission record admitted.`,
+                  `Not switching to t3@${targetVersion}: could not keep a recovery point of the database.`,
                   error,
                 )
-              : failWith(`Could not prepare t3@${targetVersion}.`, error),
+              : error.step === ADMITTED_ARCHIVE_MISMATCH_STEP
+                ? failWith(
+                    `The archive downloaded for t3@${targetVersion} is not the one its admission record admitted.`,
+                    error,
+                  )
+                : failWith(`Could not prepare t3@${targetVersion}.`, error),
         ),
       );
 
