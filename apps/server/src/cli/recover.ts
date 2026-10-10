@@ -16,6 +16,7 @@ import {
   pinnedRuntimeVersionsDir,
 } from "../cloud/pinnedRuntime.ts";
 import {
+  acquireRecoverLock,
   appendRecoveryAction,
   discardPreparedRestore,
   displaceDatabase,
@@ -27,7 +28,7 @@ import {
   verifySnapshot,
 } from "../cloud/recoveryPoint.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import { isProcessAlive, readPersistedServerRuntimeStateStrict } from "../serverRuntimeState.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "./config.ts";
 import * as CliService from "./service.ts";
 import { findForegroundServer, repointLauncher, resolveLauncherPath } from "./update.ts";
@@ -113,13 +114,15 @@ const listPoints = Effect.fn("cli.recover.list")(function* (baseDir: string) {
 });
 
 /**
- * `t3 recover`: lists recovery points, or restores one. Every check runs
- * before anything stops or moves. When this home's service serves it, the
- * service is stopped, the database swapped, and the service pointed at and
- * restarted on the prior runtime; otherwise only the database and launcher
- * change. The restored database keeps every revocation the current one
- * records. `serviceForVersion` builds the service that installs and restarts
- * on the point's prior version.
+ * `t3 recover`: lists recovery points, or restores one. A restore holds this
+ * home's recover lock from its first check to its last step, so a second
+ * `t3 recover` refuses meanwhile. Every check runs before anything stops or
+ * moves. When this home's service serves it, the service is stopped, the
+ * database swapped, and the service pointed at and restarted on the prior
+ * runtime; otherwise only the database and launcher change. The restored
+ * database keeps every revocation the current one records, and revokes every
+ * session and pairing link it no longer has. `serviceForVersion` builds the
+ * service that installs and restarts on the point's prior version.
  */
 export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
   readonly baseDir: string;
@@ -147,6 +150,7 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
     );
   }
   const id = input.id;
+  yield* acquireRecoverLock(input.baseDir).pipe(Effect.mapError((error) => refuse(error.message)));
 
   const point = yield* loadRecoveryPoint(input.baseDir, id).pipe(
     Effect.mapError((error) => refuse(error.message)),
@@ -183,6 +187,15 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
     );
   }
 
+  // Whether a server runs on this home is read from its runtime state; one
+  // that cannot be read or decoded leaves that unknown, so recover refuses.
+  const readRuntimeState = readPersistedServerRuntimeStateStrict(input.serverRuntimeStatePath);
+  const unknownServer = (detail: string) =>
+    `Not recovering: cannot tell whether a server is running on this T3 home. ${detail} Once no server is running, remove ${input.serverRuntimeStatePath} and run t3 recover again.`;
+  const runtimeState = yield* readRuntimeState.pipe(
+    Effect.mapError((error) => refuse(unknownServer(`${error.message} Nothing was changed.`))),
+  );
+
   const status = yield* service.status.pipe(Effect.mapError((error) => refuse(error.message)));
   const servesThisHome =
     status.supported &&
@@ -201,7 +214,6 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
   // A service-managed server is only stopped here when the service serves
   // this home; one still running without such a unit would keep the
   // database open under the swap.
-  const runtimeState = yield* readPersistedServerRuntimeState(input.serverRuntimeStatePath);
   if (!servesThisHome && Option.isSome(runtimeState) && isProcessAlive(runtimeState.value.pid)) {
     return yield* refuse(
       `A server is running on this T3 home at ${runtimeState.value.origin} (pid ${runtimeState.value.pid}) and no background service for this home can stop it. Stop it, then run t3 recover again.`,
@@ -259,7 +271,15 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
         }
         // The service manager reporting a stop is not proof the server let go of
         // the database; a server still recorded alive here would keep it open.
-        const afterStop = yield* readPersistedServerRuntimeState(input.serverRuntimeStatePath);
+        const afterStop = yield* readRuntimeState.pipe(
+          Effect.mapError((error) =>
+            refuse(
+              unknownServer(
+                `${error.message} The database was not moved. The background service is stopped.`,
+              ),
+            ),
+          ),
+        );
         if (Option.isSome(afterStop) && isProcessAlive(afterStop.value.pid)) {
           return yield* refuse(
             `Not recovering: the background service reported stopped but a server is still running on this T3 home (pid ${afterStop.value.pid}); the database was not moved. Stop that process, then run t3 recover again.`,
@@ -336,7 +356,11 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
       yield* recordAfterSwap(`moved the current database to ${displacedDir}`);
       yield* recordAfterSwap(`restored the database from recovery point ${id}`);
       yield* recordAfterSwap(
-        `carried ${counted(prepared.revocations, "revocation")} and ${counted(prepared.usedPairingLinks, "used pairing link")} from the current database`,
+        `carried ${counted(prepared.revocations, "revocation")} and ${counted(prepared.usedPairingLinks, "used pairing link")} from the current database${
+          prepared.revokedMissing === 0
+            ? ""
+            : `, and revoked ${counted(prepared.revokedMissing, "session or pairing link")} it no longer has`
+        }`,
       );
 
       // From here on the restored database stays: a step that fails is reported
@@ -427,4 +451,4 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
       yield* Console.log(`Recovered to t3@${from.version}.`);
     }),
   );
-});
+}, Effect.scoped);

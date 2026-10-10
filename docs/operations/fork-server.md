@@ -328,16 +328,21 @@ service first, then points it at the prior runtime and restarts it; otherwise
 it changes only the database and the `t3` launcher. The database it replaces
 is kept under `~/.t3/recovery/displaced/` and never pruned, so later work is
 not lost. Recover refuses before changing anything when the backup or the
-prior runtime does not match the point's record, or while a server started by
-hand runs on this home. A prior runtime installed without a recorded archive
+prior runtime does not match the point's record, while a server started by
+hand runs on this home, when `server-runtime.json` cannot be read to tell
+whether one does, or while another `t3 recover` holds this home's
+`~/.t3/recovery/recover.lock`. A lock left by a recover that is no longer
+running is taken over. A prior runtime installed without a recorded archive
 sha256 is restored only with `--allow-unverified-runtime`, which the point's
 `recovery.json` records.
 
 Revocations made after the point was kept are carried over into the restored
 database: before anything moves, recover copies the point's backup beside the
 database and applies to that copy every session and pairing-link revocation,
-and every pairing-link use, the current database records. A session created
-after the point is not in the restored database at all. When those
+and every pairing-link use, the current database records. A session or
+pairing link the current database no longer has, for example because a
+migration recreated the auth tables, is revoked in the restored database. A
+session created after the point is not in the restored database at all. When those
 revocations cannot be read, recover refuses with the current database in
 place.
 

@@ -75,6 +75,20 @@ const execSql = (databasePath: string, statements: string) => {
 const sessionRow = (id: string) =>
   `insert into auth_sessions (session_id, subject, scopes, method, issued_at, expires_at) values ('${id}', 'owner', '[]', 'browser-session-cookie', '2026-10-09T10:00:00.000Z', '2026-11-09T10:00:00.000Z');`;
 
+const pairingLinkRow = (id: string) =>
+  `insert into auth_pairing_links (id, credential, method, scopes, subject, created_at, expires_at) values ('${id}', 'credential-${id}', 'one-time-token', '[]', 'owner', '2026-10-09T10:00:00.000Z', '2026-11-09T10:00:00.000Z');`;
+
+const readPairingLinks = (databasePath: string) => {
+  const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+  try {
+    return database
+      .prepare("select id, consumed_at, revoked_at from auth_pairing_links order by id")
+      .all();
+  } finally {
+    database.close();
+  }
+};
+
 const readSessions = (databasePath: string) => {
   const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
   try {
@@ -272,9 +286,15 @@ const readRecord = (home: Home) =>
     .readFileString(home.path.join(home.point.dir, "recovery.json"))
     .pipe(Effect.map((text): Record<string, unknown> => JSON.parse(text)));
 
-// The restored database recover prepares beside the live one.
-const preparedPath = (home: Home) =>
-  home.path.join(home.path.dirname(home.dbPath), `.statev2.sqlite.recover-${POINT_ID}`);
+// Whether `filePath` is a restored database recover prepared beside the live one.
+const isPrepared = (home: Home, filePath: string) =>
+  home.path.dirname(filePath) === home.path.dirname(home.dbPath) &&
+  home.path.basename(filePath).startsWith(`.statev2.sqlite.recover-${POINT_ID}.`);
+
+const preparedLeft = (home: Home) =>
+  home.fs
+    .readDirectory(home.path.dirname(home.dbPath))
+    .pipe(Effect.map((names) => names.filter((name) => name.includes(".recover-"))));
 
 const displacedDir = (home: Home) =>
   home.path.join(home.baseDir, "recovery", "displaced", `20261009T101212123Z-${POINT_ID}`);
@@ -621,7 +641,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
           fs: (fs) => ({
             ...fs,
             rename: (from, to) =>
-              from === preparedPath(home) ? refusedBy("rename", from) : fs.rename(from, to),
+              isPrepared(home, from) ? refusedBy("rename", from) : fs.rename(from, to),
           }),
         });
 
@@ -756,9 +776,17 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
       const later = "2026-10-09T12:00:00.000Z";
       const home = yield* makeUpdatedHome({
         auth: {
-          before: [sessionRow("active"), sessionRow("revoked-later")].join(" "),
+          before: [
+            sessionRow("active"),
+            sessionRow("revoked-later"),
+            sessionRow("deleted-later"),
+            pairingLinkRow("link-open"),
+            pairingLinkRow("link-used-later"),
+          ].join(" "),
           after: [
             `update auth_sessions set revoked_at = '${later}' where session_id = 'revoked-later';`,
+            "delete from auth_sessions where session_id = 'deleted-later';",
+            `update auth_pairing_links set consumed_at = '${later}' where id = 'link-used-later';`,
             sessionRow("created-later"),
           ].join(" "),
         },
@@ -772,24 +800,35 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         "install (allowDowngrade: true, start: false)",
         "restart",
       ]);
-      // Revoked after the point stays revoked, active in both stays active,
-      // and one created after the point is not in the restored database.
+      // Revoked after the point stays revoked, deleted after it is revoked at
+      // recover's time, active in both stays active, and one created after the
+      // point is not in the restored database. A pairing link used after the
+      // point stays used.
       assert.deepEqual(readSessions(home.dbPath), [
         { session_id: "active", revoked_at: null },
+        { session_id: "deleted-later", revoked_at: "2026-10-09T10:12:12.123Z" },
         { session_id: "revoked-later", revoked_at: later },
+      ]);
+      assert.deepEqual(readPairingLinks(home.dbPath), [
+        { id: "link-open", consumed_at: null, revoked_at: null },
+        { id: "link-used-later", consumed_at: later, revoked_at: null },
       ]);
       assert.deepEqual(readRows(home.dbPath), [{ value: "before" }]);
       // The replaced database keeps the later work, and the point is unchanged.
       const displaced = home.path.join(displacedDir(home), "statev2.sqlite");
       assert.deepEqual(yield* home.fs.readFile(displaced), home.liveBytes);
       assert.lengthOf(readSessions(displaced), 3);
+      assert.deepEqual(readPairingLinks(displaced), [
+        { id: "link-open", consumed_at: null, revoked_at: null },
+        { id: "link-used-later", consumed_at: later, revoked_at: null },
+      ]);
       assert.isTrue(yield* verifySnapshot(home.point));
       const record = yield* readRecord(home);
       assert.include(
         (record["actions"] as ReadonlyArray<{ readonly action: string }>).map(
           (entry) => entry.action,
         ),
-        "carried 1 revocation and 0 used pairing links from the current database",
+        "carried 1 revocation and 1 used pairing link from the current database, and revoked 1 session or pairing link it no longer has",
       );
     }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
@@ -797,6 +836,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
   it.effect.each([
     { name: "has no auth_sessions table", damage: "drop-table" },
     { name: "is not a readable database", damage: "corrupt" },
+    { name: "cannot be opened", damage: "unreadable" },
   ] as const)(
     "refuses before any move when the current database $name, so no revocation is lost",
     ({ damage }) =>
@@ -814,7 +854,13 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
           );
         }
         const liveBytes = yield* home.fs.readFile(home.dbPath);
+        if (damage === "unreadable") {
+          yield* home.fs.chmod(home.dbPath, 0o000);
+        }
         const { exit, events } = yield* recover(home, { service: "serves-this-home" });
+        if (damage === "unreadable") {
+          yield* home.fs.chmod(home.dbPath, 0o600);
+        }
 
         assert.equal(exit._tag, "Failure");
         const reason = failureReason(exit);
@@ -832,7 +878,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         assert.isFalse(
           yield* home.fs.exists(home.path.join(home.baseDir, "recovery", "displaced")),
         );
-        assert.isFalse(yield* home.fs.exists(preparedPath(home)));
+        assert.deepEqual(yield* preparedLeft(home), []);
         assert.equal(yield* home.fs.readLink(home.launcher), home.toEntry);
         assert.isTrue(yield* verifySnapshot(home.point));
       }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
@@ -878,7 +924,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
           fs: (fs) => ({
             ...fs,
             rename: (from, to) => {
-              if (from === preparedPath(home)) {
+              if (isPrepared(home, from)) {
                 restoreFailed = true;
                 return refusedBy("rename", from);
               }
@@ -903,8 +949,135 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         assert.deepEqual(yield* home.fs.readFile(home.dbPath), home.liveBytes);
         assert.equal(yield* home.fs.readFileString(displaced("-wal")), "wal");
         assert.equal(yield* home.fs.readFileString(displaced("-shm")), "shm");
-        assert.isFalse(yield* home.fs.exists(preparedPath(home)));
+        assert.deepEqual(yield* preparedLeft(home), []);
         assert.equal(yield* home.fs.readLink(home.launcher), home.toEntry);
       }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+  it.effect.each([
+    { name: "cannot be read", damage: "unreadable" },
+    { name: "cannot be decoded", damage: "undecodable" },
+  ] as const)("refuses before any stop or move when the server runtime state $name", ({ damage }) =>
+    Effect.gen(function* () {
+      const home = yield* makeUpdatedHome();
+      const statePath = home.path.join(home.baseDir, "server-runtime.json");
+      // A directory where the file belongs fails the read, not as absent.
+      if (damage === "unreadable") yield* home.fs.makeDirectory(statePath);
+      else yield* home.fs.writeFileString(statePath, "{ not runtime state");
+      const { exit, events } = yield* recover(home, { service: "serves-this-home" });
+
+      assert.equal(exit._tag, "Failure");
+      const reason = failureReason(exit);
+      assert.include(
+        reason,
+        "Not recovering: cannot tell whether a server is running on this T3 home.",
+      );
+      assert.include(
+        reason,
+        `Failed to ${damage === "unreadable" ? "read" : "decode"} server runtime state at ${statePath}. Nothing was changed.`,
+      );
+      assert.deepEqual(events, []);
+      yield* assertUntouched(home);
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect(
+    "refuses before any move when the server runtime state cannot be decoded after the service stop",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeUpdatedHome();
+        const statePath = home.path.join(home.baseDir, "server-runtime.json");
+        const { exit, events } = yield* recover(home, {
+          service: "serves-this-home",
+          stop: home.fs
+            .writeFileString(statePath, "{ not runtime state")
+            .pipe(Effect.orDie, Effect.as(true)),
+        });
+
+        assert.equal(exit._tag, "Failure");
+        const reason = failureReason(exit);
+        assert.include(reason, "cannot tell whether a server is running on this T3 home.");
+        assert.include(reason, "The database was not moved. The background service is stopped.");
+        assert.deepEqual(events, ["stop (database in place: true)"]);
+        yield* assertUntouched(home);
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect("refuses a second recover on the same home while the first holds the lock", () =>
+    Effect.gen(function* () {
+      const home = yield* makeUpdatedHome();
+      const lockPath = home.path.join(home.baseDir, "recovery", "recover.lock");
+      const stopping = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const first = yield* Effect.forkChild(
+        recover(home, {
+          service: "serves-this-home",
+          stop: Deferred.succeed(stopping, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+            Effect.as(true),
+          ),
+        }),
+      );
+      yield* Deferred.await(stopping);
+      assert.equal((yield* home.fs.readFileString(lockPath)).trim(), String(process.pid));
+
+      const second = yield* recover(home, { service: "serves-this-home" });
+
+      assert.equal(second.exit._tag, "Failure");
+      assert.include(
+        failureReason(second.exit),
+        `Another t3 recover (pid ${process.pid}) is running on this T3 home.`,
+      );
+      assert.deepEqual(second.events, []);
+      assert.deepEqual(yield* home.fs.readFile(home.dbPath), home.liveBytes);
+
+      yield* Deferred.succeed(release, undefined);
+      const { exit } = yield* Fiber.join(first);
+      assert.equal(exit._tag, "Success", failureReason(exit));
+      yield* assertSwapped(home);
+      // The first run's lock is gone once it finishes.
+      assert.isFalse(yield* home.fs.exists(lockPath));
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect.each([
+    { name: "a live process", holder: "live" },
+    { name: "an unreadable pid", holder: "garbage" },
+  ] as const)("refuses before any stop or move while $name holds the lock", ({ holder }) =>
+    Effect.gen(function* () {
+      const home = yield* makeUpdatedHome();
+      const lockPath = home.path.join(home.baseDir, "recovery", "recover.lock");
+      // The test runner's parent is certainly alive and is not this process.
+      const contents = holder === "live" ? `${process.ppid}\n` : "not a pid";
+      yield* home.fs.writeFileString(lockPath, contents);
+      const { exit, events } = yield* recover(home, { service: "serves-this-home" });
+
+      assert.equal(exit._tag, "Failure");
+      assert.include(
+        failureReason(exit),
+        holder === "live"
+          ? `Another t3 recover (pid ${process.ppid}) is running on this T3 home.`
+          : `Another t3 recover holds this T3 home's lock ${lockPath}. If none is running, remove that file`,
+      );
+      assert.deepEqual(events, []);
+      yield* assertUntouched(home);
+      assert.equal(yield* home.fs.readFileString(lockPath), contents);
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect("takes over a lock left by a recover that is no longer running", () =>
+    Effect.gen(function* () {
+      const home = yield* makeUpdatedHome();
+      const lockPath = home.path.join(home.baseDir, "recovery", "recover.lock");
+      // Above every pid macOS and Linux hand out by default.
+      yield* home.fs.writeFileString(lockPath, "99999999\n");
+      const { exit } = yield* recover(home, { service: "serves-this-home" });
+
+      assert.equal(exit._tag, "Success", failureReason(exit));
+      yield* assertSwapped(home);
+      assert.deepEqual((yield* home.fs.readDirectory(home.path.dirname(lockPath))).toSorted(), [
+        "displaced",
+        "points",
+      ]);
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 });

@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 
+import { isProcessAlive } from "../serverRuntimeState.ts";
 import { PinnedRuntimeInstallError, pinnedRuntimeVersionsDir } from "./pinnedRuntime.ts";
 import { snapshotDatabase } from "./servicePreflight.ts";
 
@@ -25,6 +26,7 @@ const RECOVERY_DIR = "recovery";
 const POINTS_DIR = "points";
 const DISPLACED_DIR = "displaced";
 const RECORD_FILE = "recovery.json";
+const LOCK_FILE = "recover.lock";
 const SNAPSHOT_FILE = "statev2.sqlite";
 // Mirrors pinnedRuntime.ts: the sha256 of the archive a runtime was unpacked from.
 const ARCHIVE_DIGEST_FILE = ".archive-sha256";
@@ -334,6 +336,77 @@ export const appendRecoveryAction = Effect.fn("cloud.recovery_point.append_actio
   return record;
 });
 
+const readLockHolder = (fs: FileSystem.FileSystem, lockPath: string) =>
+  fs.readFileString(lockPath).pipe(
+    Effect.map((contents) => {
+      const pid = Number(contents.trim());
+      return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
+    }),
+  );
+
+/**
+ * Holds this home's recover lock, <baseDir>/recovery/recover.lock, for the
+ * rest of the scope. The lock is created exclusively and names this process's
+ * pid; a lock whose pid is no longer running was left by a recover that died
+ * and is taken over. Refuses while another live process holds it.
+ */
+export const acquireRecoverLock = Effect.fn("cloud.recovery_point.acquire_recover_lock")(function* (
+  baseDir: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const { recoveryDir } = recoveryPaths(path, baseDir);
+  const lockPath = path.join(recoveryDir, LOCK_FILE);
+  const pid = process.pid;
+  const fail = (cause: unknown) =>
+    new RecoveryPointError({ detail: `Could not take the recover lock ${lockPath}.`, cause });
+  const create = fs.writeFileString(lockPath, `${pid}\n`, { flag: "wx", mode: 0o600 }).pipe(
+    Effect.as(true),
+    Effect.catchReason("PlatformError", "AlreadyExists", () => Effect.succeed(false)),
+    Effect.mapError(fail),
+  );
+  const held = (holder: number | undefined) =>
+    new RecoveryPointError({
+      detail:
+        holder === undefined
+          ? `Another t3 recover holds this T3 home's lock ${lockPath}. If none is running, remove that file and run t3 recover again.`
+          : `Another t3 recover (pid ${holder}) is running on this T3 home. Wait for it to finish, then run t3 recover again.`,
+    });
+
+  yield* makePrivateDirectory(recoveryDir).pipe(Effect.mapError(fail));
+  yield* Effect.acquireRelease(
+    Effect.gen(function* () {
+      if (yield* create) return;
+      const holder = yield* readLockHolder(fs, lockPath).pipe(Effect.mapError(fail));
+      if (holder === undefined || isProcessAlive(holder)) return yield* held(holder);
+      // The holder died. The stale lock is moved to a name of this run's own
+      // and read again there, so a lock another run took meanwhile is put
+      // back rather than removed.
+      const stalePath = `${lockPath}.stale-${pid}-${NodeCrypto.randomUUID()}`;
+      yield* fs.rename(lockPath, stalePath).pipe(Effect.mapError(fail));
+      const moved = yield* readLockHolder(fs, stalePath).pipe(Effect.mapError(fail));
+      if (moved !== holder) {
+        yield* fs.rename(stalePath, lockPath).pipe(Effect.ignore);
+        return yield* held(moved);
+      }
+      yield* fs.remove(stalePath, { force: true }).pipe(Effect.ignore);
+      if (!(yield* create)) {
+        return yield* held(
+          yield* readLockHolder(fs, lockPath).pipe(Effect.orElseSucceed(() => undefined)),
+        );
+      }
+    }),
+    // Only this run's own lock is removed.
+    () =>
+      readLockHolder(fs, lockPath).pipe(
+        Effect.flatMap((holder) =>
+          holder === pid ? fs.remove(lockPath, { force: true }) : Effect.void,
+        ),
+        Effect.ignore,
+      ),
+  );
+});
+
 /**
  * A database that could not be moved aside. `rolledBack` says every file that
  * moved was put back at its live path; otherwise `leftDisplaced` names the
@@ -512,8 +585,10 @@ export const returnDisplacedDatabase = Effect.fn("cloud.recovery_point.return_di
 /**
  * Auth state a restored database keeps from the current one: a session or a
  * pairing link revoked after the point, and a pairing link used after it,
- * would otherwise be valid again in the snapshot. Each row is matched by the
- * id the server looks it up by.
+ * would otherwise be valid again in the snapshot. So would one whose row the
+ * current database no longer has (a migration can drop and recreate these
+ * tables), so those are revoked. Each row is matched by the id the server
+ * looks it up by, and both tables have revoked_at.
  */
 const CARRIED_AUTH_STATE = [
   { table: "auth_sessions", key: "session_id", columns: ["revoked_at"] },
@@ -525,6 +600,8 @@ interface CarriedAuthState {
   readonly revocations: number;
   /** Pairing links whose consumed_at the restored database took from the current one. */
   readonly usedPairingLinks: number;
+  /** Sessions and pairing links the current database no longer has, revoked in the restored one. */
+  readonly revokedMissing: number;
 }
 
 const columnsOf = (database: NodeSqlite.DatabaseSync, table: string) =>
@@ -537,13 +614,15 @@ const columnsOf = (database: NodeSqlite.DatabaseSync, table: string) =>
 
 /**
  * Applies to the database at `restoredPath` every revocation and pairing-link
- * use recorded in the database at `currentPath`, in one transaction. The
- * current database is only read. Throws when it cannot: a table the snapshot
- * has that the current database lacks, or a missing column, is refused rather
- * than skipped, so no revocation is silently dropped. A table the snapshot
- * predates holds nothing to revoke.
+ * use recorded in the database at `currentPath`, and revokes at `now` every
+ * session and pairing link the current database does not have, in one
+ * transaction. No current database has none of them. The current database is
+ * only read. Throws when it cannot: a table the snapshot has that the current
+ * database lacks, or a missing column, is refused rather than skipped, so no
+ * revocation is silently dropped. A table the snapshot predates holds nothing
+ * to revoke.
  */
-const carryAuthState = (restoredPath: string, currentPath: string | undefined) => {
+const carryAuthState = (restoredPath: string, currentPath: string | undefined, now: string) => {
   const restored = new NodeSqlite.DatabaseSync(restoredPath);
   try {
     const current =
@@ -552,52 +631,73 @@ const carryAuthState = (restoredPath: string, currentPath: string | undefined) =
         : new NodeSqlite.DatabaseSync(currentPath, { readOnly: true });
     try {
       const updates: Array<{
-        readonly column: string;
-        readonly rows: ReadonlyArray<Record<string, NodeSqlite.SQLOutputValue>>;
+        readonly counts: keyof CarriedAuthState;
+        readonly rows: ReadonlyArray<{
+          readonly id: NodeSqlite.SQLOutputValue;
+          readonly value: NodeSqlite.SQLOutputValue;
+        }>;
         readonly update: NodeSqlite.StatementSync;
       }> = [];
       for (const { table, key, columns } of CARRIED_AUTH_STATE) {
         const restoredColumns = columnsOf(restored, table);
-        if (restoredColumns.size === 0 || current === undefined) continue;
-        const currentColumns = columnsOf(current, table);
-        if (currentColumns.size === 0) {
-          throw new Error(`the current database has no ${table} table, which the snapshot has`);
-        }
+        if (restoredColumns.size === 0) continue;
         for (const column of [key, ...columns]) {
           if (!restoredColumns.has(column)) {
             throw new Error(`the snapshot's ${table} table has no ${column} column`);
           }
-          if (!currentColumns.has(column)) {
-            throw new Error(`the current database's ${table} table has no ${column} column`);
+        }
+        const update = (column: string) =>
+          restored.prepare(
+            `update ${table} set ${column} = ? where ${key} = ? and ${column} is null`,
+          );
+        const currentIds = new Set<NodeSqlite.SQLOutputValue>();
+        if (current !== undefined) {
+          const currentColumns = columnsOf(current, table);
+          if (currentColumns.size === 0) {
+            throw new Error(`the current database has no ${table} table, which the snapshot has`);
+          }
+          for (const column of [key, ...columns]) {
+            if (!currentColumns.has(column)) {
+              throw new Error(`the current database's ${table} table has no ${column} column`);
+            }
+          }
+          for (const row of current.prepare(`select ${key} as id from ${table}`).all()) {
+            currentIds.add(row["id"] ?? null);
+          }
+          for (const column of columns) {
+            updates.push({
+              counts: column === "consumed_at" ? "usedPairingLinks" : "revocations",
+              rows: current
+                .prepare(
+                  `select ${key} as id, ${column} as value from ${table} where ${column} is not null`,
+                )
+                .all()
+                .map((row) => ({ id: row["id"] ?? null, value: row["value"] ?? null })),
+              update: update(column),
+            });
           }
         }
-        for (const column of columns) {
-          updates.push({
-            column,
-            rows: current
-              .prepare(
-                `select ${key} as id, ${column} as value from ${table} where ${column} is not null`,
-              )
-              .all(),
-            update: restored.prepare(
-              `update ${table} set ${column} = ? where ${key} = ? and ${column} is null`,
-            ),
-          });
-        }
+        updates.push({
+          counts: "revokedMissing",
+          rows: restored
+            .prepare(`select ${key} as id from ${table} where revoked_at is null`)
+            .all()
+            .map((row) => row["id"] ?? null)
+            .filter((id) => !currentIds.has(id))
+            .map((id) => ({ id, value: now })),
+          update: update("revoked_at"),
+        });
       }
-      let revocations = 0;
-      let usedPairingLinks = 0;
+      const carried = { revocations: 0, usedPairingLinks: 0, revokedMissing: 0 };
       // Nothing to carry leaves the copy byte for byte the point's snapshot.
       if (updates.every(({ rows }) => rows.length === 0)) {
-        return { revocations, usedPairingLinks } satisfies CarriedAuthState;
+        return carried satisfies CarriedAuthState;
       }
       restored.exec("begin immediate");
       try {
-        for (const { column, rows, update } of updates) {
+        for (const { counts, rows, update } of updates) {
           for (const row of rows) {
-            const changes = Number(update.run(row["value"] ?? null, row["id"] ?? null).changes);
-            if (column === "consumed_at") usedPairingLinks += changes;
-            else revocations += changes;
+            carried[counts] += Number(update.run(row.value, row.id).changes);
           }
         }
         restored.exec("commit");
@@ -605,7 +705,7 @@ const carryAuthState = (restoredPath: string, currentPath: string | undefined) =
         restored.exec("rollback");
         throw error;
       }
-      return { revocations, usedPairingLinks } satisfies CarriedAuthState;
+      return carried satisfies CarriedAuthState;
     } finally {
       current?.close();
     }
@@ -628,11 +728,12 @@ const removeDatabaseFiles = (fs: FileSystem.FileSystem, databasePath: string) =>
   );
 
 /**
- * Copies the point's snapshot to a hidden file beside `dbPath`, readable only
- * by its owner, and carries into that copy every revocation and pairing-link
- * use the current database at `dbPath` records, reading it without writing.
- * The point's own snapshot is never opened. Nothing at `dbPath` moves; a
- * failure removes the copy.
+ * Copies the point's snapshot to a hidden file of this run's own beside
+ * `dbPath`, readable only by its owner, and carries into that copy every
+ * revocation and pairing-link use the current database at `dbPath` records,
+ * reading it without writing, and revokes every session and pairing link it
+ * no longer has. The point's own snapshot is never opened. Nothing at
+ * `dbPath` moves; a failure removes the copy.
  */
 export const prepareRestore = Effect.fn("cloud.recovery_point.prepare_restore")(function* (
   baseDir: string,
@@ -642,9 +743,12 @@ export const prepareRestore = Effect.fn("cloud.recovery_point.prepare_restore")(
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const point = yield* loadRecoveryPoint(baseDir, id);
-  const tempPath = path.join(path.dirname(dbPath), `.${path.basename(dbPath)}.recover-${id}`);
+  const tempPath = path.join(
+    path.dirname(dbPath),
+    `.${path.basename(dbPath)}.recover-${id}.${process.pid}-${NodeCrypto.randomUUID()}`,
+  );
+  const now = yield* nowIso;
   const copied = Effect.gen(function* () {
-    yield* removeDatabaseFiles(fs, tempPath);
     yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
     yield* fs.copyFile(point.snapshotPath, tempPath);
     yield* fs.chmod(tempPath, 0o600);
@@ -661,7 +765,7 @@ export const prepareRestore = Effect.fn("cloud.recovery_point.prepare_restore")(
   return yield* Effect.gen(function* () {
     const currentExists = yield* copied;
     const carried = yield* Effect.try({
-      try: () => carryAuthState(tempPath, currentExists ? dbPath : undefined),
+      try: () => carryAuthState(tempPath, currentExists ? dbPath : undefined, now),
       catch: (cause) =>
         new RecoveryPointError({
           detail: `Could not carry the current database's revocations into the restored database: ${

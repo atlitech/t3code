@@ -342,10 +342,15 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
       expect(refused.message).toContain("Refusing to restore");
       expect(yield* fs.exists(early.path)).toBe(false);
 
+      // Each run prepares its own copy, so two runs never share one.
       const prepared = yield* prepareRestore(baseDir, point.id, dbPath);
-      expect(prepared.path).toBe(
-        path.join(path.dirname(dbPath), `.statev2.sqlite.recover-${point.id}`),
+      expect(path.dirname(prepared.path)).toBe(path.dirname(dbPath));
+      expect(path.basename(prepared.path)).toMatch(
+        new RegExp(
+          `^\\.statev2\\.sqlite\\.recover-${point.id.replace(/\./g, "\\.")}\\.${process.pid}-`,
+        ),
       );
+      expect(prepared.path).not.toBe(early.path);
       expect(prepared.revocations).toBe(0);
       expect(fileMode(prepared.path)).toBe(0o600);
 
@@ -371,9 +376,11 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
       expect(fileSha256(dbPath)).toBe(point.record.snapshot.sha256);
       expect(fileMode(dbPath)).toBe(0o600);
       expect(readRows(dbPath)).toEqual([{ value: "kept" }]);
-      expect(yield* fs.readDirectory(path.dirname(dbPath))).not.toContain(
-        `.statev2.sqlite.recover-${point.id}`,
-      );
+      expect(
+        (yield* fs.readDirectory(path.dirname(dbPath))).filter((name) =>
+          name.includes(".recover-"),
+        ),
+      ).toEqual([]);
       expect(yield* listRecoveryPoints(baseDir)).toEqual([point]);
     }),
   );
@@ -539,6 +546,92 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
         expect(yield* verifySnapshot(point)).toBe(true);
         expect(yield* fs.readFile(dbPath)).toEqual(liveBytes);
       }),
+  );
+
+  it.effect.each([
+    {
+      name: "a session whose row was deleted",
+      change: "delete from auth_sessions where session_id = 'gone';",
+      revokedMissing: 1,
+    },
+    {
+      name: "a pairing link whose row was deleted",
+      change: "delete from auth_pairing_links where id = 'link-gone';",
+      revokedMissing: 1,
+    },
+    {
+      // As migration 031_AuthAuthorizationScopes does.
+      name: "every credential, when the auth tables were recreated empty",
+      change: "recreate",
+      revokedMissing: 5,
+    },
+    {
+      name: "every credential, when there is no current database",
+      change: "remove",
+      revokedMissing: 5,
+    },
+  ])("revokes $name in the prepared copy, timestamped now", ({ change, revokedMissing }) =>
+    Effect.gen(function* () {
+      const { fs, baseDir, dbPath } = yield* makeHome();
+      yield* migrate(dbPath);
+      execSql(
+        dbPath,
+        [
+          sessionRow("kept"),
+          sessionRow("gone"),
+          sessionRow("revoked-before", "2026-10-09T09:00:00.000Z"),
+          pairingLinkRow("link-kept"),
+          pairingLinkRow("link-gone"),
+          pairingLinkRow("link-used-before"),
+          "update auth_pairing_links set consumed_at = '2026-10-09T09:00:00.000Z' where id = 'link-used-before';",
+        ].join("\n"),
+      );
+      const point = Option.getOrThrow(yield* createPoint(baseDir, dbPath));
+      if (change === "remove") {
+        yield* fs.remove(dbPath);
+      } else if (change === "recreate") {
+        const database = new NodeSqlite.DatabaseSync(dbPath);
+        try {
+          for (const table of ["auth_sessions", "auth_pairing_links"]) {
+            const { sql } = database
+              .prepare("select sql from sqlite_master where type = 'table' and name = ?")
+              .get(table) as { readonly sql: string };
+            database.exec(`drop table ${table}; ${sql};`);
+          }
+        } finally {
+          database.close();
+        }
+      } else {
+        execSql(dbPath, change);
+      }
+      yield* TestClock.adjust(Duration.hours(2));
+      const now = "2026-10-09T12:11:12.123Z";
+
+      const prepared = yield* prepareRestore(baseDir, point.id, dbPath);
+
+      const missing = (id: string) =>
+        change === "recreate" || change === "remove" || change.includes(`'${id}'`);
+      expect(prepared.revokedMissing).toBe(revokedMissing);
+      expect(prepared.revocations).toBe(0);
+      expect(prepared.usedPairingLinks).toBe(0);
+      expect(readAuth(prepared.path)).toEqual({
+        sessions: [
+          { session_id: "gone", revoked_at: missing("gone") ? now : null },
+          { session_id: "kept", revoked_at: missing("kept") ? now : null },
+          { session_id: "revoked-before", revoked_at: "2026-10-09T09:00:00.000Z" },
+        ],
+        pairingLinks: [
+          { id: "link-gone", consumed_at: null, revoked_at: missing("link-gone") ? now : null },
+          { id: "link-kept", consumed_at: null, revoked_at: missing("link-kept") ? now : null },
+          {
+            id: "link-used-before",
+            consumed_at: "2026-10-09T09:00:00.000Z",
+            revoked_at: missing("link-used-before") ? now : null,
+          },
+        ],
+      });
+      expect(yield* verifySnapshot(point)).toBe(true);
+    }),
   );
 
   it.effect("skips an auth table the snapshot predates: it holds nothing to revoke", () =>
