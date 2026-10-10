@@ -75,9 +75,14 @@ async function validateBridgeTopology(profile: BridgeProfile): Promise<void> {
   if (!account) return refuse("unsupported-topology");
   if (!["/usr/sbin/nologin", "/sbin/nologin", "/bin/false"].includes(account[6]!))
     refuse("unsupported-topology");
+  // PID 1 executable links require ptrace access; custody admission must need no such capability.
+  const init = await NodeFSP.lstat("/proc/1");
   if (
     process.ppid !== 1 ||
-    !(await NodeFSP.readlink("/proc/1/exe")).endsWith("/systemd") ||
+    !init.isDirectory() ||
+    init.isSymbolicLink() ||
+    init.uid !== 0 ||
+    (await NodeFSP.readFile("/proc/1/comm", "utf8")).trim() !== "systemd" ||
     (await NodeFSP.readFile("/proc/self/cgroup", "utf8")).trim() !== `0::${profile.cgroup}` ||
     profile.cgroup !== `/system.slice/${NodePath.basename(profile.serviceUnit)}`
   )
