@@ -1,0 +1,157 @@
+name: Fork recovery drill
+
+# Fork-only (atlitech/t3code). Upgrades a scratch T3 home on Linux from an
+# admitted fork release's prior version to that release, writes new work with
+# the upgrade, declares the upgrade failed, and recovers with `t3 recover`. The
+# drill job records what it did in RECOVERY.json and uploads it with the drilled
+# home; the verify job, on a fresh runner, re-observes that home against the
+# record and writes VERIFICATION.json, the drill's verdict.
+# Runbook: docs/operations/fork-server.md#recovery-drill.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target-version:
+        description: "Admitted fork release to upgrade to (for example 0.0.46-atli.5). Leave empty for the newest admitted release."
+        required: false
+        default: ""
+        type: string
+
+concurrency:
+  group: fork-recovery-drill
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Upgrades from the target's ADMISSION.json priorVersion to the target, then
+  # recovers. Verifiers: scripts/linux-recovery/.
+  drill:
+    name: Drill a failed upgrade and its recovery
+    if: github.repository == 'atlitech/t3code' && github.ref == 'refs/heads/atli'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - name: Install sqlite3
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v sqlite3 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y sqlite3
+          fi
+          sqlite3 --version
+
+      - name: Choose the release to upgrade to
+        id: target
+        env:
+          TARGET_INPUT: ${{ inputs.target-version }}
+        run: node scripts/linux-recovery/drill-target.ts --repo "$GH_REPO" --target-version "$TARGET_INPUT"
+
+      - name: Upgrade, declare the upgrade failed, and recover
+        env:
+          TARGET_VERSION: ${{ steps.target.outputs.version }}
+          T3CODE_RELEASE_BASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download
+          DRILL_COMMIT: ${{ github.sha }}
+          WORKDIR: ${{ runner.temp }}/drill
+          OUT_DIR: ${{ runner.temp }}/drill-record
+        run: bash scripts/linux-recovery/run-drill.sh
+
+      - name: Upload recovery record and drilled home
+        uses: actions/upload-artifact@v7
+        with:
+          name: recovery-drill
+          path: |
+            ${{ runner.temp }}/drill-record/RECOVERY.json
+            ${{ runner.temp }}/drill-record/drilled-home.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  # Never grades the drill job's own run: on a fresh runner, re-observes the
+  # drilled home and passes only when its binary and data match the recorded
+  # recovery point.
+  verify:
+    name: Verify the recovery record
+    needs: drill
+    if: github.repository == 'atlitech/t3code' && github.ref == 'refs/heads/atli'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@250f29ce396baf5e8f24498e17c0dfdebabc26eb # v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=@t3tools/scripts...
+
+      - name: Install sqlite3
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v sqlite3 >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y sqlite3
+          fi
+          sqlite3 --version
+
+      - name: Download recovery record and drilled home
+        uses: actions/download-artifact@v8
+        with:
+          name: recovery-drill
+          path: ${{ runner.temp }}/drill-record
+
+      - name: Re-observe the drilled home against the record
+        env:
+          RECORD: ${{ runner.temp }}/drill-record/RECOVERY.json
+          DRILLED_HOME_ARCHIVE: ${{ runner.temp }}/drill-record/drilled-home.tar.gz
+          T3CODE_RELEASE_BASE_URL: ${{ github.server_url }}/${{ github.repository }}/releases/download
+          WORKDIR: ${{ runner.temp }}/verify
+          OUT_DIR: ${{ runner.temp }}/verify-record
+        run: bash scripts/linux-recovery/run-verify.sh
+
+      # Uploads a failing verification too, so its failed checks can be read.
+      - name: Upload verification record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: recovery-verification
+          path: ${{ runner.temp }}/verify-record/VERIFICATION.json
+          if-no-files-found: error
+          retention-days: 30

@@ -351,19 +351,31 @@ database. An official build keeps no recovery point, so back up
 Before `t3 update` or the in-app update switches this home to another server
 version, it keeps a recovery point under `~/.t3/recovery/points/`: a backup of
 the database and a record of the version it came from. The newest three
-points are kept. List them, then restore one by its id:
+points are kept. To go back to one:
 
-```sh
-t3 recover --list
-t3 recover <id>
-```
+1. List the points and pick the one kept before the failed update:
+
+   ```sh
+   t3 recover --list
+   ```
+
+2. Restore it by its id:
+
+   ```sh
+   t3 recover <id>
+   ```
+
+3. Check the result. `t3 --version` names the prior version. When this home's
+   background service serves it, `t3 service status` shows it running again;
+   otherwise start the server as you did before.
 
 `t3 recover <id>` puts back that point's database and the prior runtime it
 records. When this home's background service serves it, recover stops the
 service first, then points it at the prior runtime and restarts it; otherwise
 it changes only the database and the `t3` launcher. The database it replaces
 is kept under `~/.t3/recovery/displaced/` and never pruned, so later work is
-not lost. Recover refuses before changing anything when the backup or the
+not lost. The [recovery drill](#recovery-drill) rehearses these steps on a
+scratch home. Recover refuses before changing anything when the backup or the
 prior runtime does not match the point's record, while a server started by
 hand runs on this home, when `server-runtime.json` cannot be read to tell
 whether one does, or while another `t3 recover` holds this home's
@@ -382,6 +394,42 @@ migration recreated the auth tables, is revoked in the restored database. A
 session created after the point is not in the restored database at all. When those
 revocations cannot be read, recover refuses with the current database in
 place.
+
+## Recovery drill
+
+[`fork-recovery-drill.yml`](../../.github/workflows/fork-recovery-drill.yml)
+proves on Linux that [recovering a failed update](#recovering-a-failed-update)
+works between two admitted fork releases. On a scratch T3 home, it installs the
+prior release, writes data, upgrades to the target release, writes new work
+with it, declares the upgrade failed, and runs `t3 recover <id>`. The server
+runs in the foreground on the runner, not as a service.
+
+The target is an admitted release, by default the newest one. The prior is the
+`priorVersion` in the target's `ADMISSION.json`, and it must already carry
+`t3 recover`. Dispatch the workflow from `atli`; nothing else starts it:
+
+```sh
+gh workflow run fork-recovery-drill.yml --repo atlitech/t3code --ref atli
+gh workflow run fork-recovery-drill.yml --repo atlitech/t3code --ref atli -f target-version=0.0.46-atli.5
+```
+
+The drill job uploads `RECOVERY.json` with the drilled home. A separate verify
+job, on a fresh runner, unpacks that home, re-observes its runtime and
+database, and uploads `VERIFICATION.json`. Download both records:
+
+```sh
+gh run download <run-id> --repo atlitech/t3code -n recovery-drill -n recovery-verification
+```
+
+`RECOVERY.json` names the drill's commit and host, the prior and target
+versions with each archive's sha256, the recovery point it restored, the
+database's sha256 at that point and after recover, the environment id from
+before the upgrade, where the displaced database went, and every command the
+drill ran with its UTC start and end and exit code.
+`VERIFICATION.json` says whether it `passed` and lists each check with its
+result. The verdict is `VERIFICATION.json` from the verify job, never the
+drill job's own grading: the drill passes only when the prior binary and data
+in the drilled home match the recorded recovery point.
 
 ## Updating `atli` from upstream
 
