@@ -3,6 +3,8 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
+import { FORK_VERIFICATION_SCOPE } from "./fork-release-manifest.ts";
+
 // A fork release is dispatched from atli, guarded before any build, admitted
 // by upgrading over the prior release's data, and published once: the tag and
 // an immutable release with every asset, each asset carrying a build
@@ -312,7 +314,7 @@ describe("fork server release workflow", () => {
     expect(prior).toMatch(/--bootstrap "\$BOOTSTRAP"/);
   });
 
-  it("ships ADMISSION.json from the admission artifact, added after the manifest", () => {
+  it("ships ADMISSION.json from the admission artifact, downloaded before the manifest", () => {
     const upload = stepsOf(job("admission")).find((step) =>
       /uses: actions\/upload-artifact@/.test(step),
     );
@@ -330,8 +332,53 @@ describe("fork server release workflow", () => {
         /name: admission\n/.test(`${step}\n`) &&
         /path: release\b/.test(step),
     );
-    expect(download).toBeGreaterThan(manifest);
-    expect(manifest).toBeGreaterThan(-1);
+    expect(download).toBeGreaterThan(-1);
+    expect(manifest).toBeGreaterThan(download);
+    // The manifest step checks the Linux archive against it and leaves it out
+    // of SHA256SUMS and the assets.
+    expect(steps[manifest]).toMatch(
+      /node scripts\/fork-release-manifest\.ts --dir release --commit "\$SHA" --release-version "\$VERSION" --admission release\/ADMISSION\.json\n/,
+    );
+  });
+
+  it("checks the verification scope after the manifest and before attesting it", () => {
+    const steps = stepsOf(job("publish"));
+    const manifest = stepIndex(steps, /node scripts\/fork-release-manifest\.ts/);
+    const scope = stepIndex(
+      steps,
+      /run: node scripts\/fork-release-scope\.ts --manifest release\/manifest\.json --admission release\/ADMISSION\.json$/m,
+    );
+    const attest = stepIndex(steps, ATTEST);
+    expect(scope).toBeGreaterThan(manifest);
+    expect(attest).toBeGreaterThan(scope);
+  });
+
+  it("creates the release with notes generated from the manifest, written outside release/", () => {
+    const steps = stepsOf(job("publish"));
+    const attest = stepIndex(steps, ATTEST);
+    const notes = stepIndex(steps, /node scripts\/fork-release-notes\.ts/);
+    const create = stepIndex(steps, /gh release create /);
+    expect(notes).toBeGreaterThan(attest);
+    expect(create).toBeGreaterThan(notes);
+    const out =
+      /node scripts\/fork-release-notes\.ts --manifest release\/manifest\.json --out "([^"]+)"/.exec(
+        steps[notes]!,
+      )?.[1];
+    expect(out).toBe("$RUNNER_TEMP/release-notes.md");
+    expect(out).not.toMatch(/^release\//);
+    expect(steps[create]).toContain(`--notes-file "${out}"`);
+    expect(steps[create]).not.toMatch(/--notes /);
+  });
+
+  it("runs every check the verification scope claims, as a step of the named job", () => {
+    const stepNames = (name: string) =>
+      stepsOf(job(name)).map((step) => /^ {6}- name: (.+)$/m.exec(step)?.[1]);
+    for (const platform of FORK_VERIFICATION_SCOPE) {
+      expect(platform.checks.length, platform.platform).toBeGreaterThan(0);
+      for (const check of platform.checks) {
+        expect(stepNames(check.job), `${platform.platform}: ${check.job}`).toContain(check.step);
+      }
+    }
   });
 
   it("attests ADMISSION.json before creating the release with it", () => {
