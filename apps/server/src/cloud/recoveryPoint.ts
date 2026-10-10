@@ -11,7 +11,6 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
 
-import { isProcessAlive } from "../serverRuntimeState.ts";
 import { PinnedRuntimeInstallError, pinnedRuntimeVersionsDir } from "./pinnedRuntime.ts";
 import { snapshotDatabase } from "./servicePreflight.ts";
 
@@ -335,6 +334,18 @@ export const appendRecoveryAction = Effect.fn("cloud.recovery_point.append_actio
   );
   return record;
 });
+
+// Whether `pid` is running; EPERM means it runs as another user. Kept here
+// rather than imported from serverRuntimeState.ts, whose imports reach back
+// to this module through the auth layer and would make an import cycle.
+const isProcessAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error instanceof Error && "code" in error && error.code === "EPERM";
+  }
+};
 
 // The pid a lock file names: null when there is no file, undefined when its
 // contents are not a pid (a lock still being written).
