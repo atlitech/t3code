@@ -6,8 +6,10 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -17,6 +19,7 @@ import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
+  acquireRecoverLock,
   appendRecoveryAction,
   createRecoveryPoint,
   DatabaseDisplaceError,
@@ -135,6 +138,29 @@ const readAuth = (databasePath: string) => {
 };
 
 const LATER = "2026-10-09T12:00:00.000Z";
+
+// Above every pid macOS and Linux hand out by default, so never running.
+const DEAD_PID = 99999999;
+
+// Records what the lock at `lockPath` names each time it is renamed or
+// removed, on the file system a lock taker runs on.
+const recordingLockMoves =
+  (lockPath: string, moved: Array<string>) =>
+  (fs: FileSystem.FileSystem): FileSystem.FileSystem => {
+    const record = (filePath: string) =>
+      filePath === lockPath
+        ? fs.readFileString(filePath).pipe(
+            Effect.tap((contents) => Effect.sync(() => moved.push(contents.trim()))),
+            Effect.ignore,
+          )
+        : Effect.void;
+    return {
+      ...fs,
+      rename: (from, to) => record(from).pipe(Effect.andThen(fs.rename(from, to))),
+      remove: (filePath, options) =>
+        record(filePath).pipe(Effect.andThen(fs.remove(filePath, options))),
+    };
+  };
 
 it.layer(NodeServices.layer)("recovery point", (it) => {
   it.effect("keeps only an online backup and its record before an update", () =>
@@ -748,6 +774,124 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
       expect(fileSha256(dbPath)).toBe(liveSha256);
       expect(yield* fs.readFileString(displaced("-wal"))).toBe("wal");
       expect(yield* fs.exists(`${dbPath}-wal`)).toBe(false);
+    }),
+  );
+  it.effect("a taker that found the lock stale refuses and keeps the lock another run took", () =>
+    Effect.gen(function* () {
+      const { fs, path, baseDir } = yield* makeHome();
+      const lockPath = path.join(baseDir, "recovery", "recover.lock");
+      yield* fs.makeDirectory(path.dirname(lockPath), { recursive: true });
+      yield* fs.writeFileString(lockPath, `${DEAD_PID}\n`);
+      const stale = yield* Deferred.make<void>();
+      const resume = yield* Deferred.make<void>();
+      const moved: Array<string> = [];
+      const taker = yield* Effect.forkChild(
+        acquireRecoverLock(baseDir, {
+          beforeTakeover: Deferred.succeed(stale, undefined).pipe(
+            Effect.andThen(Deferred.await(resume)),
+          ),
+        }).pipe(
+          Effect.scoped,
+          Effect.exit,
+          Effect.provideService(FileSystem.FileSystem, recordingLockMoves(lockPath, moved)(fs)),
+        ),
+      );
+      yield* Deferred.await(stale);
+      // Another run, a live process other than this one, takes the lock the
+      // way a fresh acquirer does once the stale one is gone.
+      yield* fs.remove(lockPath);
+      yield* fs.writeFileString(lockPath, `${process.ppid}\n`, { flag: "wx" });
+      yield* Deferred.succeed(resume, undefined);
+
+      const exit = yield* Fiber.join(taker);
+      expect(exit._tag).toBe("Failure");
+      expect(String(exit._tag === "Failure" ? exit.cause : "")).toContain(
+        `Another t3 recover (pid ${process.ppid}) is running on this T3 home.`,
+      );
+      // The other run's lock was never moved, not even for a moment.
+      expect(moved).toEqual([]);
+      expect(yield* fs.readFileString(lockPath)).toBe(`${process.ppid}\n`);
+      expect(yield* fs.exists(`${lockPath}.takeover`)).toBe(false);
+    }),
+  );
+
+  it.effect.each([
+    { name: "one after the other", together: false },
+    { name: "at once", together: true },
+  ])("two takeovers of the same stale lock, $name, leave exactly one winner", ({ together }) =>
+    Effect.gen(function* () {
+      const { fs, path, baseDir } = yield* makeHome();
+      const lockPath = path.join(baseDir, "recovery", "recover.lock");
+      yield* fs.makeDirectory(path.dirname(lockPath), { recursive: true });
+      yield* fs.writeFileString(lockPath, `${DEAD_PID}\n`);
+      const finish = yield* Deferred.make<void>();
+      const moved: Array<string> = [];
+      const takers = yield* Effect.forEach([0, 1], () =>
+        Effect.gen(function* () {
+          const stale = yield* Deferred.make<void>();
+          const resume = yield* Deferred.make<void>();
+          const attempted = yield* Deferred.make<"Success" | "Failure">();
+          const fiber = yield* Effect.forkChild(
+            Effect.gen(function* () {
+              const exit = yield* Effect.exit(
+                acquireRecoverLock(baseDir, {
+                  beforeTakeover: Deferred.succeed(stale, undefined).pipe(
+                    Effect.andThen(Deferred.await(resume)),
+                  ),
+                }).pipe(
+                  Effect.provideService(
+                    FileSystem.FileSystem,
+                    recordingLockMoves(lockPath, moved)(fs),
+                  ),
+                ),
+              );
+              yield* Deferred.succeed(attempted, exit._tag);
+              // The winner holds the lock until the test is done looking.
+              if (exit._tag === "Success") yield* Deferred.await(finish);
+            }).pipe(Effect.scoped),
+          );
+          return { stale, resume, attempted, fiber };
+        }),
+      );
+      // Both found the lock stale before either takes it over.
+      yield* Effect.forEach(takers, ({ stale }) => Deferred.await(stale));
+      const outcomes = together
+        ? yield* Effect.gen(function* () {
+            yield* Effect.forEach(takers, ({ resume }) => Deferred.succeed(resume, undefined));
+            return yield* Effect.forEach(takers, ({ attempted }) => Deferred.await(attempted));
+          })
+        : // The first finishes its takeover before the second goes on.
+          yield* Effect.forEach(takers, ({ resume, attempted }) =>
+            Deferred.succeed(resume, undefined).pipe(Effect.andThen(Deferred.await(attempted))),
+          );
+      expect(outcomes.toSorted()).toEqual(["Failure", "Success"]);
+      if (!together) expect(outcomes).toEqual(["Success", "Failure"]);
+      // Only the stale lock was ever removed, never the winner's.
+      expect(moved.every((holder) => holder === String(DEAD_PID))).toBe(true);
+      expect(yield* fs.readFileString(lockPath)).toBe(`${process.pid}\n`);
+      expect(yield* fs.exists(`${lockPath}.takeover`)).toBe(false);
+
+      yield* Deferred.succeed(finish, undefined);
+      yield* Effect.forEach(takers, ({ fiber }) => Fiber.join(fiber));
+      expect(yield* fs.exists(lockPath)).toBe(false);
+    }),
+  );
+
+  it.effect("names a takeover file left by a recover that died, and moves nothing", () =>
+    Effect.gen(function* () {
+      const { fs, path, baseDir } = yield* makeHome();
+      const lockPath = path.join(baseDir, "recovery", "recover.lock");
+      yield* fs.makeDirectory(path.dirname(lockPath), { recursive: true });
+      yield* fs.writeFileString(lockPath, `${DEAD_PID}\n`);
+      yield* fs.writeFileString(`${lockPath}.takeover`, `${DEAD_PID - 1}\n`);
+
+      const error = yield* acquireRecoverLock(baseDir).pipe(Effect.scoped, Effect.flip);
+
+      expect(error.message).toBe(
+        `A t3 recover (pid ${DEAD_PID - 1}) that is no longer running left ${lockPath}.takeover. Remove it, then run t3 recover again.`,
+      );
+      expect(yield* fs.readFileString(lockPath)).toBe(`${DEAD_PID}\n`);
+      expect(yield* fs.readFileString(`${lockPath}.takeover`)).toBe(`${DEAD_PID - 1}\n`);
     }),
   );
 });

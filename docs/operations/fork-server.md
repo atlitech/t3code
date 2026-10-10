@@ -332,7 +332,8 @@ prior runtime does not match the point's record, while a server started by
 hand runs on this home, when `server-runtime.json` cannot be read to tell
 whether one does, or while another `t3 recover` holds this home's
 `~/.t3/recovery/recover.lock`. A lock left by a recover that is no longer
-running is taken over. A prior runtime installed without a recorded archive
+running is taken over; if a recover dies during that takeover, the next one
+names the `recover.lock.takeover` file to remove. A prior runtime installed without a recorded archive
 sha256 is restored only with `--allow-unverified-runtime`, which the point's
 `recovery.json` records.
 

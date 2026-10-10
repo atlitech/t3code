@@ -336,65 +336,98 @@ export const appendRecoveryAction = Effect.fn("cloud.recovery_point.append_actio
   return record;
 });
 
+// The pid a lock file names: null when there is no file, undefined when its
+// contents are not a pid (a lock still being written).
 const readLockHolder = (fs: FileSystem.FileSystem, lockPath: string) =>
   fs.readFileString(lockPath).pipe(
-    Effect.map((contents) => {
+    Effect.map((contents): number | null | undefined => {
       const pid = Number(contents.trim());
       return Number.isSafeInteger(pid) && pid > 0 ? pid : undefined;
     }),
+    Effect.catchReason("PlatformError", "NotFound", () => Effect.succeed(null)),
   );
 
 /**
  * Holds this home's recover lock, <baseDir>/recovery/recover.lock, for the
  * rest of the scope. The lock is created exclusively and names this process's
- * pid; a lock whose pid is no longer running was left by a recover that died
- * and is taken over. Refuses while another live process holds it.
+ * pid. Refuses while another live process holds it.
+ *
+ * A lock whose pid is no longer running was left by a recover that died and
+ * is taken over, one takeover at a time: the taker exclusively creates
+ * recover.lock.takeover, then removes the lock only if it still names that
+ * dead pid, and creates its own exclusively. A run that took the lock
+ * meanwhile keeps it and the taker refuses. A takeover file is never taken
+ * over; one left by a recover that died is named for the user to remove.
+ * `beforeTakeover` runs once a lock is found stale, before the takeover.
  */
 export const acquireRecoverLock = Effect.fn("cloud.recovery_point.acquire_recover_lock")(function* (
   baseDir: string,
+  options?: { readonly beforeTakeover?: Effect.Effect<void> },
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const { recoveryDir } = recoveryPaths(path, baseDir);
   const lockPath = path.join(recoveryDir, LOCK_FILE);
+  const takeoverPath = `${lockPath}.takeover`;
   const pid = process.pid;
   const fail = (cause: unknown) =>
     new RecoveryPointError({ detail: `Could not take the recover lock ${lockPath}.`, cause });
-  const create = fs.writeFileString(lockPath, `${pid}\n`, { flag: "wx", mode: 0o600 }).pipe(
-    Effect.as(true),
-    Effect.catchReason("PlatformError", "AlreadyExists", () => Effect.succeed(false)),
-    Effect.mapError(fail),
-  );
-  const held = (holder: number | undefined) =>
+  const create = (filePath: string) =>
+    fs.writeFileString(filePath, `${pid}\n`, { flag: "wx", mode: 0o600 }).pipe(
+      Effect.as(true),
+      Effect.catchReason("PlatformError", "AlreadyExists", () => Effect.succeed(false)),
+      Effect.mapError(fail),
+    );
+  const readHolder = (filePath: string) => readLockHolder(fs, filePath).pipe(Effect.mapError(fail));
+  const held = (holder: number | null | undefined) =>
     new RecoveryPointError({
       detail:
-        holder === undefined
-          ? `Another t3 recover holds this T3 home's lock ${lockPath}. If none is running, remove that file and run t3 recover again.`
-          : `Another t3 recover (pid ${holder}) is running on this T3 home. Wait for it to finish, then run t3 recover again.`,
+        typeof holder === "number"
+          ? `Another t3 recover (pid ${holder}) is running on this T3 home. Wait for it to finish, then run t3 recover again.`
+          : `Another t3 recover holds this T3 home's lock ${lockPath}. If none is running, remove that file and run t3 recover again.`,
     });
+
+  // Takes the lock from `stale`, a pid no longer running, while holding the
+  // takeover file, so no two takers act on the same stale lock.
+  const takeOver = (stale: number) =>
+    Effect.acquireUseRelease(
+      Effect.gen(function* () {
+        if (yield* create(takeoverPath)) return;
+        const taker = yield* readHolder(takeoverPath);
+        // Another takeover just finished: try once more.
+        if (taker === null && (yield* create(takeoverPath))) return;
+        if (typeof taker === "number" && !isProcessAlive(taker)) {
+          return yield* new RecoveryPointError({
+            detail: `A t3 recover (pid ${taker}) that is no longer running left ${takeoverPath}. Remove it, then run t3 recover again.`,
+          });
+        }
+        return yield* held(taker);
+      }),
+      () =>
+        Effect.gen(function* () {
+          const holder = yield* readHolder(lockPath);
+          if (holder === stale) yield* fs.remove(lockPath).pipe(Effect.mapError(fail));
+          else if (holder !== null) return yield* held(holder);
+          // A run that created the lock since it was read keeps it.
+          if (!(yield* create(lockPath))) return yield* held(yield* readHolder(lockPath));
+        }),
+      // Nobody else removes a takeover file, so this one is this run's own.
+      () => fs.remove(takeoverPath, { force: true }).pipe(Effect.ignore),
+    );
 
   yield* makePrivateDirectory(recoveryDir).pipe(Effect.mapError(fail));
   yield* Effect.acquireRelease(
     Effect.gen(function* () {
-      if (yield* create) return;
-      const holder = yield* readLockHolder(fs, lockPath).pipe(Effect.mapError(fail));
+      if (yield* create(lockPath)) return;
+      const holder = yield* readHolder(lockPath);
+      // Released since the create: try once more.
+      if (holder === null) {
+        if (yield* create(lockPath)) return;
+        return yield* held(yield* readHolder(lockPath));
+      }
       if (holder === undefined || isProcessAlive(holder)) return yield* held(holder);
-      // The holder died. The stale lock is moved to a name of this run's own
-      // and read again there, so a lock another run took meanwhile is put
-      // back rather than removed.
-      const stalePath = `${lockPath}.stale-${pid}-${NodeCrypto.randomUUID()}`;
-      yield* fs.rename(lockPath, stalePath).pipe(Effect.mapError(fail));
-      const moved = yield* readLockHolder(fs, stalePath).pipe(Effect.mapError(fail));
-      if (moved !== holder) {
-        yield* fs.rename(stalePath, lockPath).pipe(Effect.ignore);
-        return yield* held(moved);
-      }
-      yield* fs.remove(stalePath, { force: true }).pipe(Effect.ignore);
-      if (!(yield* create)) {
-        return yield* held(
-          yield* readLockHolder(fs, lockPath).pipe(Effect.orElseSucceed(() => undefined)),
-        );
-      }
+      if (options?.beforeTakeover !== undefined) yield* options.beforeTakeover;
+      yield* takeOver(holder);
     }),
     // Only this run's own lock is removed.
     () =>
