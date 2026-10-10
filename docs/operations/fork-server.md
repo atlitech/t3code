@@ -333,9 +333,13 @@ hand runs on this home. A prior runtime installed without a recorded archive
 sha256 is restored only with `--allow-unverified-runtime`, which the point's
 `recovery.json` records.
 
-The restored database includes its auth sessions, so a session revoked or
-signed out after the point was kept is valid again. Recover warns with the
-point's UTC time; revoke those sessions again.
+Revocations made after the point was kept are carried over into the restored
+database: before anything moves, recover copies the point's backup beside the
+database and applies to that copy every session and pairing-link revocation,
+and every pairing-link use, the current database records. A session created
+after the point is not in the restored database at all. When those
+revocations cannot be read, recover refuses with the current database in
+place.
 
 ## Updating `atli` from upstream
 

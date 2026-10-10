@@ -9,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
@@ -19,15 +20,18 @@ import {
   appendRecoveryAction,
   createRecoveryPoint,
   DatabaseDisplaceError,
+  DatabaseReturnError,
   displaceDatabase,
   listRecoveryPoints,
   loadRecoveryPoint,
+  prepareRestore,
   RECOVERY_POINT_STEP,
   RecoveryPointError,
   restoreSnapshot,
   returnDisplacedDatabase,
   verifySnapshot,
 } from "./recoveryPoint.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 
 const START = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-10-09T10:11:12.123Z"));
 
@@ -92,6 +96,45 @@ const withFailingRenames =
     rename: (from, to) =>
       failFrom.includes(from) ? refusedBy("rename", from) : fs.rename(from, to),
   });
+
+const isDatabaseReturnError = Schema.is(DatabaseReturnError);
+
+// Builds the server's real schema on the database at `dbPath`, as startup does.
+const migrate = (dbPath: string) =>
+  Layer.build(SqlitePersistence.layerFromPath(dbPath)).pipe(Effect.scoped, Effect.asVoid);
+
+const execSql = (databasePath: string, statements: string) => {
+  const database = new NodeSqlite.DatabaseSync(databasePath);
+  try {
+    database.exec(statements);
+  } finally {
+    database.close();
+  }
+};
+
+const sessionRow = (id: string, revokedAt: string | null = null) =>
+  `insert into auth_sessions (session_id, subject, scopes, method, issued_at, expires_at, revoked_at) values ('${id}', 'owner', '[]', 'browser-session-cookie', '2026-10-09T10:00:00.000Z', '2026-11-09T10:00:00.000Z', ${revokedAt === null ? "null" : `'${revokedAt}'`});`;
+
+const pairingLinkRow = (id: string) =>
+  `insert into auth_pairing_links (id, credential, method, scopes, subject, created_at, expires_at) values ('${id}', 'credential-${id}', 'one-time-token', '[]', 'owner', '2026-10-09T10:00:00.000Z', '2026-11-09T10:00:00.000Z');`;
+
+const readAuth = (databasePath: string) => {
+  const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+  try {
+    return {
+      sessions: database
+        .prepare("select session_id, revoked_at from auth_sessions order by session_id")
+        .all(),
+      pairingLinks: database
+        .prepare("select id, consumed_at, revoked_at from auth_pairing_links order by id")
+        .all(),
+    };
+  } finally {
+    database.close();
+  }
+};
+
+const LATER = "2026-10-09T12:00:00.000Z";
 
 it.layer(NodeServices.layer)("recovery point", (it) => {
   it.effect("keeps only an online backup and its record before an update", () =>
@@ -293,8 +336,18 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
       yield* fs.writeFileString(`${dbPath}-wal`, "wal");
       yield* fs.writeFileString(`${dbPath}-shm`, "shm");
 
-      const refused = yield* restoreSnapshot(baseDir, point.id, dbPath).pipe(Effect.flip);
+      // A prepared restore is never renamed over a database, and is removed.
+      const early = yield* prepareRestore(baseDir, point.id, dbPath);
+      const refused = yield* restoreSnapshot(early, dbPath).pipe(Effect.flip);
       expect(refused.message).toContain("Refusing to restore");
+      expect(yield* fs.exists(early.path)).toBe(false);
+
+      const prepared = yield* prepareRestore(baseDir, point.id, dbPath);
+      expect(prepared.path).toBe(
+        path.join(path.dirname(dbPath), `.statev2.sqlite.recover-${point.id}`),
+      );
+      expect(prepared.revocations).toBe(0);
+      expect(fileMode(prepared.path)).toBe(0o600);
 
       yield* TestClock.adjust(Duration.minutes(5));
       const displacedDir = yield* displaceDatabase(baseDir, dbPath, point.id);
@@ -313,7 +366,7 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
         expect(yield* fs.exists(`${dbPath}${suffix}`)).toBe(false);
       }
 
-      yield* restoreSnapshot(baseDir, point.id, dbPath);
+      yield* restoreSnapshot(prepared, dbPath);
 
       expect(fileSha256(dbPath)).toBe(point.record.snapshot.sha256);
       expect(fileMode(dbPath)).toBe(0o600);
@@ -427,6 +480,181 @@ it.layer(NodeServices.layer)("recovery point", (it) => {
       expect(fileSha256(strandedPath)).toBe(liveSha256);
       expect(yield* fs.exists(dbPath)).toBe(false);
       expect(yield* fs.readFileString(`${dbPath}-wal`)).toBe("wal");
+    }),
+  );
+
+  it.effect(
+    "carries revocations and pairing-link uses into the prepared copy, never the point's snapshot",
+    () =>
+      Effect.gen(function* () {
+        const { fs, baseDir, dbPath } = yield* makeHome();
+        yield* migrate(dbPath);
+        execSql(
+          dbPath,
+          [
+            sessionRow("active"),
+            sessionRow("revoked-before", "2026-10-09T09:00:00.000Z"),
+            sessionRow("revoked-later"),
+            pairingLinkRow("link-open"),
+            pairingLinkRow("link-revoked-later"),
+            pairingLinkRow("link-used-later"),
+          ].join("\n"),
+        );
+        const point = Option.getOrThrow(yield* createPoint(baseDir, dbPath));
+
+        // After the point: revocations, a use, a new session, and a later
+        // revocation of a session the snapshot already records as revoked.
+        execSql(
+          dbPath,
+          [
+            `update auth_sessions set revoked_at = '${LATER}' where session_id in ('revoked-later', 'revoked-before');`,
+            `update auth_pairing_links set revoked_at = '${LATER}' where id = 'link-revoked-later';`,
+            `update auth_pairing_links set consumed_at = '${LATER}' where id = 'link-used-later';`,
+            sessionRow("created-later"),
+          ].join("\n"),
+        );
+        const liveBytes = yield* fs.readFile(dbPath);
+
+        const prepared = yield* prepareRestore(baseDir, point.id, dbPath);
+
+        expect(prepared.revocations).toBe(2);
+        expect(prepared.usedPairingLinks).toBe(1);
+        // Every change is in the copy's main file, the only one renamed into place.
+        for (const suffix of ["-wal", "-shm", "-journal"]) {
+          expect(yield* fs.exists(`${prepared.path}${suffix}`)).toBe(false);
+        }
+        expect(readAuth(prepared.path)).toEqual({
+          sessions: [
+            { session_id: "active", revoked_at: null },
+            { session_id: "revoked-before", revoked_at: "2026-10-09T09:00:00.000Z" },
+            { session_id: "revoked-later", revoked_at: LATER },
+          ],
+          pairingLinks: [
+            { id: "link-open", consumed_at: null, revoked_at: null },
+            { id: "link-revoked-later", consumed_at: null, revoked_at: LATER },
+            { id: "link-used-later", consumed_at: LATER, revoked_at: null },
+          ],
+        });
+        expect(readRows(prepared.path)).toEqual([{ value: "kept" }]);
+        expect(yield* verifySnapshot(point)).toBe(true);
+        expect(yield* fs.readFile(dbPath)).toEqual(liveBytes);
+      }),
+  );
+
+  it.effect("skips an auth table the snapshot predates: it holds nothing to revoke", () =>
+    Effect.gen(function* () {
+      const { fs, baseDir, dbPath } = yield* makeHome();
+      const point = Option.getOrThrow(yield* createPoint(baseDir, dbPath));
+      yield* migrate(dbPath);
+      execSql(dbPath, sessionRow("revoked-later", LATER));
+
+      const prepared = yield* prepareRestore(baseDir, point.id, dbPath);
+
+      expect(prepared.revocations).toBe(0);
+      expect(yield* fs.readFile(prepared.path)).toEqual(yield* fs.readFile(point.snapshotPath));
+    }),
+  );
+
+  it.effect.each([
+    {
+      name: "a table the snapshot has",
+      change: "drop table auth_sessions;",
+      reason: "the current database has no auth_sessions table, which the snapshot has",
+    },
+    {
+      name: "a column the snapshot has",
+      change:
+        "drop index idx_auth_pairing_links_active; alter table auth_pairing_links drop column consumed_at;",
+      reason: "the current database's auth_pairing_links table has no consumed_at column",
+    },
+    { name: "a readable database", change: "corrupt", reason: "into the restored database: " },
+  ])("refuses to prepare a restore when the current database lacks $name", ({ change, reason }) =>
+    Effect.gen(function* () {
+      const { fs, path, baseDir, dbPath } = yield* makeHome();
+      yield* migrate(dbPath);
+      execSql(dbPath, sessionRow("revoked-later"));
+      const point = Option.getOrThrow(yield* createPoint(baseDir, dbPath));
+      if (change === "corrupt") {
+        yield* fs.writeFileString(dbPath, "not a database, and long enough to have a header");
+      } else {
+        execSql(dbPath, change);
+      }
+      const liveBytes = yield* fs.readFile(dbPath);
+
+      const error = yield* prepareRestore(baseDir, point.id, dbPath).pipe(Effect.flip);
+
+      expect(error.message).toContain(
+        "Could not carry the current database's revocations into the restored database: ",
+      );
+      expect(error.message).toContain(reason);
+      expect(yield* fs.readFile(dbPath)).toEqual(liveBytes);
+      expect(
+        (yield* fs.readDirectory(path.dirname(dbPath))).filter((name) =>
+          name.includes(".recover-"),
+        ),
+      ).toEqual([]);
+      expect(yield* verifySnapshot(point)).toBe(true);
+    }),
+  );
+
+  it.effect("puts a database it cannot fully move back aside again, and says so", () =>
+    Effect.gen(function* () {
+      const { fs, path, baseDir, dbPath } = yield* makeHome();
+      const point = Option.getOrThrow(yield* createPoint(baseDir, dbPath));
+      yield* fs.writeFileString(`${dbPath}-wal`, "wal");
+      yield* fs.writeFileString(`${dbPath}-shm`, "shm");
+      const liveSha256 = fileSha256(dbPath);
+      const displacedDir = yield* displaceDatabase(baseDir, dbPath, point.id);
+      const displaced = (suffix: string) => path.join(displacedDir, `statev2.sqlite${suffix}`);
+
+      // The database moves back, then its -wal cannot.
+      const error = yield* returnDisplacedDatabase(displacedDir, dbPath).pipe(
+        Effect.provideService(FileSystem.FileSystem, withFailingRenames([displaced("-wal")])(fs)),
+        Effect.flip,
+      );
+
+      if (!isDatabaseReturnError(error)) return expect.unreachable(error.message);
+      expect(error.atLivePath).toEqual([]);
+      expect(error.leftDisplaced).toEqual([displaced(""), displaced("-wal"), displaced("-shm")]);
+      expect(error.message).toBe(
+        `Could not move the database back into place; all of its files are still in ${displacedDir}: ${displaced("")}, ${displaced("-wal")}, ${displaced("-shm")}.`,
+      );
+      expect(fileSha256(displaced(""))).toBe(liveSha256);
+      for (const suffix of ["", "-wal", "-shm"]) {
+        expect(yield* fs.exists(`${dbPath}${suffix}`)).toBe(false);
+      }
+    }),
+  );
+
+  it.effect("names where each file is when putting a partial return aside fails too", () =>
+    Effect.gen(function* () {
+      const { fs, path, baseDir, dbPath } = yield* makeHome();
+      const point = Option.getOrThrow(yield* createPoint(baseDir, dbPath));
+      yield* fs.writeFileString(`${dbPath}-wal`, "wal");
+      yield* fs.writeFileString(`${dbPath}-shm`, "shm");
+      const liveSha256 = fileSha256(dbPath);
+      const displacedDir = yield* displaceDatabase(baseDir, dbPath, point.id);
+      const displaced = (suffix: string) => path.join(displacedDir, `statev2.sqlite${suffix}`);
+
+      // The database moves back, its -wal cannot, and the database cannot move aside again.
+      const error = yield* returnDisplacedDatabase(displacedDir, dbPath).pipe(
+        Effect.provideService(
+          FileSystem.FileSystem,
+          withFailingRenames([displaced("-wal"), dbPath])(fs),
+        ),
+        Effect.flip,
+      );
+
+      if (!isDatabaseReturnError(error)) return expect.unreachable(error.message);
+      expect(error.atLivePath).toEqual([dbPath]);
+      expect(error.leftDisplaced).toEqual([displaced("-wal"), displaced("-shm")]);
+      expect(error.message).toContain(`At ${path.dirname(dbPath)}: ${dbPath}.`);
+      expect(error.message).toContain(
+        `Still in ${displacedDir}: ${displaced("-wal")}, ${displaced("-shm")}.`,
+      );
+      expect(fileSha256(dbPath)).toBe(liveSha256);
+      expect(yield* fs.readFileString(displaced("-wal"))).toBe("wal");
+      expect(yield* fs.exists(`${dbPath}-wal`)).toBe(false);
     }),
   );
 });

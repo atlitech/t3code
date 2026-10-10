@@ -4,9 +4,11 @@ import * as NodeSqlite from "node:sqlite";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -24,7 +26,8 @@ import {
 } from "@t3tools/shared/hostProcess";
 
 import * as BootService from "../cloud/bootService.ts";
-import { createRecoveryPoint } from "../cloud/recoveryPoint.ts";
+import { createRecoveryPoint, verifySnapshot } from "../cloud/recoveryPoint.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import { runRecover } from "./recover.ts";
 
@@ -32,9 +35,7 @@ const START = DateTime.toEpochMillis(DateTime.makeUnsafe("2026-10-09T10:11:12.12
 const POINT_ID = "20261009T101112123Z-1.2.3-to-1.2.4";
 const FROM_DIGEST = "abcdef0123";
 
-// The point was kept at START, before the session changes this warns about.
-const SESSIONS_WARNING =
-  "  Warning: sessions revoked or signed out after 2026-10-09T10:11:12.123Z (UTC), when this point was kept, are valid again; revoke them again.";
+const NOTHING_CARRIED = "carried 0 revocations and 0 used pairing links from the current database";
 
 const readRows = (databasePath: string) => {
   const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
@@ -62,13 +63,40 @@ const writeRuntime = Effect.fn("test.write_runtime")(function* (
   return path.join(versionDir, "t3");
 });
 
+const execSql = (databasePath: string, statements: string) => {
+  const database = new NodeSqlite.DatabaseSync(databasePath);
+  try {
+    database.exec(statements);
+  } finally {
+    database.close();
+  }
+};
+
+const sessionRow = (id: string) =>
+  `insert into auth_sessions (session_id, subject, scopes, method, issued_at, expires_at) values ('${id}', 'owner', '[]', 'browser-session-cookie', '2026-10-09T10:00:00.000Z', '2026-11-09T10:00:00.000Z');`;
+
+const readSessions = (databasePath: string) => {
+  const database = new NodeSqlite.DatabaseSync(databasePath, { readOnly: true });
+  try {
+    return database
+      .prepare("select session_id, revoked_at from auth_sessions order by session_id")
+      .all();
+  } finally {
+    database.close();
+  }
+};
+
 /**
  * A T3 home that was updated from 1.2.3 to 1.2.4: a recovery point taken
  * from the database before the update, later work written to the live
  * database with its -wal and -shm, and a launcher that points at 1.2.4.
+ * With `auth`, the database has the server's real schema, `auth.before`
+ * runs before the point is kept and `auth.after` after it, and the live
+ * database keeps only its own journal.
  */
 const makeUpdatedHome = Effect.fn("test.make_updated_home")(function* (options?: {
   readonly fromDigest?: string | null;
+  readonly auth?: { readonly before: string; readonly after: string };
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -76,9 +104,13 @@ const makeUpdatedHome = Effect.fn("test.make_updated_home")(function* (options?:
   const baseDir = path.join(root, "home");
   const dbPath = path.join(baseDir, "userdata", "statev2.sqlite");
   yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
-  const database = new NodeSqlite.DatabaseSync(dbPath);
-  database.exec("create table notes (value text); insert into notes values ('before');");
-  database.close();
+  if (options?.auth !== undefined) {
+    yield* Layer.build(SqlitePersistence.layerFromPath(dbPath)).pipe(Effect.scoped);
+  }
+  execSql(
+    dbPath,
+    `create table notes (value text); insert into notes values ('before'); ${options?.auth?.before ?? ""}`,
+  );
   const fromEntry = yield* writeRuntime(
     baseDir,
     "1.2.3",
@@ -91,11 +123,11 @@ const makeUpdatedHome = Effect.fn("test.make_updated_home")(function* (options?:
     yield* createRecoveryPoint({ baseDir, dbPath, fromVersion: "1.2.3", toVersion: "1.2.4" }),
   );
 
-  const later = new NodeSqlite.DatabaseSync(dbPath);
-  later.exec("insert into notes values ('after');");
-  later.close();
-  yield* fs.writeFileString(`${dbPath}-wal`, "wal");
-  yield* fs.writeFileString(`${dbPath}-shm`, "shm");
+  execSql(dbPath, `insert into notes values ('after'); ${options?.auth?.after ?? ""}`);
+  if (options?.auth === undefined) {
+    yield* fs.writeFileString(`${dbPath}-wal`, "wal");
+    yield* fs.writeFileString(`${dbPath}-shm`, "shm");
+  }
   // Compared by bytes from here on: opening the database would rewrite its -shm.
   const liveBytes = yield* fs.readFile(dbPath);
 
@@ -140,9 +172,12 @@ const recover = Effect.fn("test.recover")(function* (
     readonly stop?: Effect.Effect<boolean, BootService.BootServiceError>;
     /** Wraps the file system recover runs on, to make one write fail. */
     readonly fs?: (fs: FileSystem.FileSystem) => FileSystem.FileSystem;
+    /** Interrupts recover as soon as the service has stopped. */
+    readonly interruptAfterStop?: boolean;
   },
 ) {
   const events: string[] = [];
+  const stopped = yield* Deferred.make<void>();
   // The console's lines outlive one test, so only this run's are returned.
   const logsBefore = (yield* TestConsole.logLines).length;
   const errorsBefore = (yield* TestConsole.errorLines).length;
@@ -154,7 +189,9 @@ const recover = Effect.fn("test.recover")(function* (
       events.push(
         `stop (database in place: ${yield* home.fs.exists(home.dbPath).pipe(Effect.orDie)})`,
       );
-      return yield* options.stop ?? Effect.succeed(true);
+      const result = yield* options.stop ?? Effect.succeed(true);
+      yield* Deferred.succeed(stopped, undefined);
+      return result;
     }),
     uninstall: unexpected("uninstall"),
     status: Effect.succeed(homeStatus(home, options.service)),
@@ -178,7 +215,7 @@ const recover = Effect.fn("test.recover")(function* (
   const runner = ProcessRunner.ProcessRunner.of({
     run: () => Effect.die("recover runs no processes here"),
   });
-  const exit = yield* runRecover({
+  const program = runRecover({
     baseDir: home.baseDir,
     serverRuntimeStatePath: home.path.join(home.baseDir, "server-runtime.json"),
     dbPath: home.dbPath,
@@ -203,8 +240,15 @@ const recover = Effect.fn("test.recover")(function* (
     Effect.provideService(HostProcessInvokedAs, home.launcher),
     Effect.provideService(HostProcessWorkingDirectory, home.root),
     Effect.provideService(HostProcessEnvironment, { PATH: "" }),
-    Effect.exit,
   );
+  const exit = options.interruptAfterStop
+    ? yield* Effect.gen(function* () {
+        const fiber = yield* Effect.forkChild(program);
+        yield* Deferred.await(stopped);
+        yield* Fiber.interrupt(fiber);
+        return yield* Fiber.await(fiber);
+      })
+    : yield* Effect.exit(program);
   const logs = (yield* TestConsole.logLines).slice(logsBefore);
   const errors = (yield* TestConsole.errorLines).slice(errorsBefore);
   return { exit, events, logs, errors };
@@ -227,6 +271,10 @@ const readRecord = (home: Home) =>
   home.fs
     .readFileString(home.path.join(home.point.dir, "recovery.json"))
     .pipe(Effect.map((text): Record<string, unknown> => JSON.parse(text)));
+
+// The restored database recover prepares beside the live one.
+const preparedPath = (home: Home) =>
+  home.path.join(home.path.dirname(home.dbPath), `.statev2.sqlite.recover-${POINT_ID}`);
 
 const displacedDir = (home: Home) =>
   home.path.join(home.baseDir, "recovery", "displaced", `20261009T101212123Z-${POINT_ID}`);
@@ -323,6 +371,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
           { at, action: "stopped the background service" },
           { at, action: `moved the current database to ${displacedDir(home)}` },
           { at, action: `restored the database from recovery point ${POINT_ID}` },
+          { at, action: NOTHING_CARRIED },
           { at, action: `pointed the launcher ${home.launcher} at t3@1.2.3` },
           { at, action: "pointed the background service at t3@1.2.3" },
           { at, action: "restarted the background service on t3@1.2.3" },
@@ -331,7 +380,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         const lines = yield* TestConsole.logLines;
         assert.include(lines, "  stopped the background service");
         assert.include(lines, "  restarted the background service on t3@1.2.3");
-        assert.deepEqual(errors, [SESSIONS_WARNING]);
+        assert.deepEqual(errors, []);
       }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 
@@ -401,6 +450,7 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         [
           `moved the current database to ${displacedDir(home)}`,
           `restored the database from recovery point ${POINT_ID}`,
+          NOTHING_CARRIED,
           `pointed the launcher ${home.launcher} at t3@1.2.3`,
         ],
       );
@@ -551,10 +601,8 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         const lines = yield* TestConsole.logLines;
         assert.include(lines, `  restored the database from recovery point ${POINT_ID}`);
         assert.include(lines, "Recovered to t3@1.2.3.");
-        const warnings = errors.filter((warning) => warning !== SESSIONS_WARNING);
-        assert.include(errors, SESSIONS_WARNING);
-        assert.lengthOf(warnings, 5);
-        for (const warning of warnings) {
+        assert.lengthOf(errors, 6);
+        for (const warning of errors) {
           assert.include(
             String(warning),
             `Warning: could not record this action in ${home.path.join(home.point.dir, "recovery.json")}`,
@@ -572,10 +620,8 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
           service: "serves-this-home",
           fs: (fs) => ({
             ...fs,
-            copyFile: (from, to) =>
-              from === home.point.snapshotPath
-                ? refusedBy("copyFile", from)
-                : fs.copyFile(from, to),
+            rename: (from, to) =>
+              from === preparedPath(home) ? refusedBy("rename", from) : fs.rename(from, to),
           }),
         });
 
@@ -651,11 +697,11 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
             "stopped the background service",
             `moved the current database to ${displacedDir(home)}`,
             `restored the database from recovery point ${POINT_ID}`,
+            NOTHING_CARRIED,
             "pointed the background service at t3@1.2.3",
             "restarted the background service on t3@1.2.3",
           ],
         );
-        assert.include(errors, SESSIONS_WARNING);
         assert.isTrue(
           errors.some((warning) =>
             String(warning).startsWith("  Warning: the launcher was not pointed at t3@1.2.3"),
@@ -696,7 +742,169 @@ it.layer(NodeServices.layer)("t3 recover", (it) => {
         assert.isFalse(yield* home.fs.exists(home.dbPath));
         assert.equal(yield* home.fs.readFileString(`${home.dbPath}-wal`), "wal");
         assert.equal(yield* home.fs.readLink(home.launcher), home.toEntry);
-        assert.notInclude(errors, SESSIONS_WARNING);
+        assert.deepEqual(errors, []);
+        // The prepared restore is removed, so nothing stray is beside the database.
+        assert.deepEqual(
+          (yield* home.fs.readDirectory(home.path.dirname(home.dbPath))).toSorted(),
+          ["statev2.sqlite-shm", "statev2.sqlite-wal"],
+        );
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect("keeps every revocation made after the point revoked in the restored database", () =>
+    Effect.gen(function* () {
+      const later = "2026-10-09T12:00:00.000Z";
+      const home = yield* makeUpdatedHome({
+        auth: {
+          before: [sessionRow("active"), sessionRow("revoked-later")].join(" "),
+          after: [
+            `update auth_sessions set revoked_at = '${later}' where session_id = 'revoked-later';`,
+            sessionRow("created-later"),
+          ].join(" "),
+        },
+      });
+      const { exit, events } = yield* recover(home, { service: "serves-this-home" });
+
+      assert.equal(exit._tag, "Success", failureReason(exit));
+      assert.deepEqual(events, [
+        "stop (database in place: true)",
+        "service for 1.2.3",
+        "install (allowDowngrade: true, start: false)",
+        "restart",
+      ]);
+      // Revoked after the point stays revoked, active in both stays active,
+      // and one created after the point is not in the restored database.
+      assert.deepEqual(readSessions(home.dbPath), [
+        { session_id: "active", revoked_at: null },
+        { session_id: "revoked-later", revoked_at: later },
+      ]);
+      assert.deepEqual(readRows(home.dbPath), [{ value: "before" }]);
+      // The replaced database keeps the later work, and the point is unchanged.
+      const displaced = home.path.join(displacedDir(home), "statev2.sqlite");
+      assert.deepEqual(yield* home.fs.readFile(displaced), home.liveBytes);
+      assert.lengthOf(readSessions(displaced), 3);
+      assert.isTrue(yield* verifySnapshot(home.point));
+      const record = yield* readRecord(home);
+      assert.include(
+        (record["actions"] as ReadonlyArray<{ readonly action: string }>).map(
+          (entry) => entry.action,
+        ),
+        "carried 1 revocation and 0 used pairing links from the current database",
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect.each([
+    { name: "has no auth_sessions table", damage: "drop-table" },
+    { name: "is not a readable database", damage: "corrupt" },
+  ] as const)(
+    "refuses before any move when the current database $name, so no revocation is lost",
+    ({ damage }) =>
+      Effect.gen(function* () {
+        const home = yield* makeUpdatedHome({
+          auth: {
+            before: sessionRow("revoked-later"),
+            after: damage === "drop-table" ? "drop table auth_sessions;" : "",
+          },
+        });
+        if (damage === "corrupt") {
+          yield* home.fs.writeFileString(
+            home.dbPath,
+            "not a database, and long enough for a header",
+          );
+        }
+        const liveBytes = yield* home.fs.readFile(home.dbPath);
+        const { exit, events } = yield* recover(home, { service: "serves-this-home" });
+
+        assert.equal(exit._tag, "Failure");
+        const reason = failureReason(exit);
+        assert.include(
+          reason,
+          "Not recovering: Could not carry the current database's revocations into the restored database: ",
+        );
+        if (damage === "drop-table") {
+          assert.include(reason, "the current database has no auth_sessions table");
+        }
+        assert.include(reason, "The database was not moved.");
+        assert.include(reason, "run `t3 service restart` to start it again");
+        assert.deepEqual(events, ["stop (database in place: true)"]);
+        assert.deepEqual(yield* home.fs.readFile(home.dbPath), liveBytes);
+        assert.isFalse(
+          yield* home.fs.exists(home.path.join(home.baseDir, "recovery", "displaced")),
+        );
+        assert.isFalse(yield* home.fs.exists(preparedPath(home)));
+        assert.equal(yield* home.fs.readLink(home.launcher), home.toEntry);
+        assert.isTrue(yield* verifySnapshot(home.point));
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect("finishes every step once the service has stopped, even when interrupted", () =>
+    Effect.gen(function* () {
+      const home = yield* makeUpdatedHome();
+      const { events } = yield* recover(home, {
+        service: "serves-this-home",
+        interruptAfterStop: true,
+      });
+
+      assert.deepEqual(events, [
+        "stop (database in place: true)",
+        "service for 1.2.3",
+        "install (allowDowngrade: true, start: false)",
+        "restart",
+      ]);
+      yield* assertSwapped(home);
+      const record = yield* readRecord(home);
+      assert.include(
+        (record["actions"] as ReadonlyArray<{ readonly action: string }>).map(
+          (entry) => entry.action,
+        ),
+        "restarted the background service on t3@1.2.3",
+      );
+    }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+  );
+
+  it.effect(
+    "names where each file is and suggests no restart when the database cannot be moved back",
+    () =>
+      Effect.gen(function* () {
+        const home = yield* makeUpdatedHome();
+        const displaced = (suffix: string) =>
+          home.path.join(displacedDir(home), `statev2.sqlite${suffix}`);
+        // The restore fails, the database moves back, its -wal cannot, and the
+        // database cannot move aside again.
+        let restoreFailed = false;
+        const { exit, events } = yield* recover(home, {
+          service: "serves-this-home",
+          fs: (fs) => ({
+            ...fs,
+            rename: (from, to) => {
+              if (from === preparedPath(home)) {
+                restoreFailed = true;
+                return refusedBy("rename", from);
+              }
+              return from === displaced("-wal") || (restoreFailed && from === home.dbPath)
+                ? refusedBy("rename", from)
+                : fs.rename(from, to);
+            },
+          }),
+        });
+
+        assert.equal(exit._tag, "Failure");
+        const reason = failureReason(exit);
+        assert.include(reason, "Could not restore the recovery point's snapshot.");
+        assert.include(reason, `At ${home.path.dirname(home.dbPath)}: ${home.dbPath}.`);
+        assert.include(
+          reason,
+          `Move statev2.sqlite-wal, statev2.sqlite-shm from ${displacedDir(home)} back to ${home.path.dirname(home.dbPath)}, where statev2.sqlite already is, before starting any server.`,
+        );
+        assert.include(reason, "leave it stopped until then");
+        assert.notInclude(reason, "t3 service restart");
+        assert.deepEqual(events, ["stop (database in place: true)"]);
+        assert.deepEqual(yield* home.fs.readFile(home.dbPath), home.liveBytes);
+        assert.equal(yield* home.fs.readFileString(displaced("-wal")), "wal");
+        assert.equal(yield* home.fs.readFileString(displaced("-shm")), "shm");
+        assert.isFalse(yield* home.fs.exists(preparedPath(home)));
+        assert.equal(yield* home.fs.readLink(home.launcher), home.toEntry);
       }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 });

@@ -1,5 +1,6 @@
-// @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest.
+// @effect-diagnostics nodeBuiltinImport:off - Effect has no incremental digest or synchronous SQLite client.
 import * as NodeCrypto from "node:crypto";
+import * as NodeSqlite from "node:sqlite";
 
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -422,39 +423,218 @@ export const displaceDatabase = Effect.fn("cloud.recovery_point.displace_databas
 });
 
 /**
+ * A database that could not be moved back from `displacedDir`. A failed move
+ * puts what already moved back aside, so the files stay together; when that
+ * fails too, `atLivePath` names the files at the live path and `leftDisplaced`
+ * the ones still in `displacedDir`.
+ */
+export class DatabaseReturnError extends Schema.TaggedError<DatabaseReturnError>()(
+  "DatabaseReturnError",
+  {
+    detail: Schema.String,
+    displacedDir: Schema.String,
+    leftDisplaced: Schema.Array(Schema.String),
+    atLivePath: Schema.Array(Schema.String),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
+/**
  * Moves a database that `displaceDatabase` set aside in `displacedDir` back to
  * `dbPath`, with its -wal and -shm when present. Refuses while a database or
- * its -wal or -shm is at `dbPath`, so it never overwrites one.
+ * its -wal or -shm is at `dbPath`, so it never overwrites one. A failed move
+ * puts what already moved back aside, and the error names where each file is.
  */
 export const returnDisplacedDatabase = Effect.fn("cloud.recovery_point.return_displaced_database")(
   function* (displacedDir: string, dbPath: string) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+    const fail = (cause: unknown) =>
+      new RecoveryPointError({ detail: "Could not move the database back into place.", cause });
     for (const suffix of DATABASE_COMPANION_SUFFIXES) {
-      if (yield* fs.exists(`${dbPath}${suffix}`)) {
+      if (yield* fs.exists(`${dbPath}${suffix}`).pipe(Effect.mapError(fail))) {
         return yield* new RecoveryPointError({
           detail: `Refusing to move the database back over ${dbPath}${suffix}.`,
         });
       }
     }
+    const present: Array<{ readonly from: string; readonly to: string }> = [];
     for (const suffix of DATABASE_COMPANION_SUFFIXES) {
       const from = path.join(displacedDir, `${path.basename(dbPath)}${suffix}`);
-      if (!(yield* fs.exists(from))) continue;
-      yield* fs.rename(from, `${dbPath}${suffix}`);
+      if (yield* fs.exists(from).pipe(Effect.mapError(fail))) {
+        present.push({ from, to: `${dbPath}${suffix}` });
+      }
     }
+    const moved: Array<{ readonly from: string; readonly to: string }> = [];
+    const failed = yield* Effect.gen(function* () {
+      for (const entry of present) {
+        yield* fs.rename(entry.from, entry.to);
+        moved.push(entry);
+      }
+    }).pipe(
+      Effect.as(undefined),
+      Effect.catch((cause) => Effect.succeed({ cause })),
+    );
+    if (failed === undefined) return;
+
+    // Put aside again newest first; a file whose move fails stays at the live path.
+    const stranded: Array<{ readonly from: string; readonly to: string }> = [];
+    for (const entry of moved.toReversed()) {
+      const aside = yield* fs.rename(entry.to, entry.from).pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
+      if (!aside) stranded.push(entry);
+    }
+    const atLivePath = stranded.map((entry) => entry.to).toReversed();
+    const leftDisplaced = present
+      .filter((entry) => !stranded.some((other) => other.from === entry.from))
+      .map((entry) => entry.from);
+    return yield* new DatabaseReturnError({
+      detail:
+        stranded.length === 0
+          ? `Could not move the database back into place; all of its files are still in ${displacedDir}: ${leftDisplaced.join(", ")}.`
+          : `Could not move the database back into place, and putting it back aside failed too. At ${path.dirname(dbPath)}: ${atLivePath.join(", ")}. Still in ${displacedDir}: ${
+              leftDisplaced.length === 0 ? "none of its files" : leftDisplaced.join(", ")
+            }.`,
+      displacedDir,
+      leftDisplaced,
+      atLivePath,
+      cause: failed.cause,
+    });
   },
-  Effect.mapError((cause) =>
-    cause._tag === "RecoveryPointError"
-      ? cause
-      : new RecoveryPointError({ detail: "Could not move the database back into place.", cause }),
-  ),
 );
 
 /**
- * Copies the point's snapshot to `dbPath`, readable only by its owner. Refuses
- * while a database or its -wal or -shm is still there: displace it first.
+ * Auth state a restored database keeps from the current one: a session or a
+ * pairing link revoked after the point, and a pairing link used after it,
+ * would otherwise be valid again in the snapshot. Each row is matched by the
+ * id the server looks it up by.
  */
-export const restoreSnapshot = Effect.fn("cloud.recovery_point.restore_snapshot")(function* (
+const CARRIED_AUTH_STATE = [
+  { table: "auth_sessions", key: "session_id", columns: ["revoked_at"] },
+  { table: "auth_pairing_links", key: "id", columns: ["revoked_at", "consumed_at"] },
+] as const;
+
+interface CarriedAuthState {
+  /** Rows whose revoked_at the restored database took from the current one. */
+  readonly revocations: number;
+  /** Pairing links whose consumed_at the restored database took from the current one. */
+  readonly usedPairingLinks: number;
+}
+
+const columnsOf = (database: NodeSqlite.DatabaseSync, table: string) =>
+  new Set(
+    database
+      .prepare("select name from pragma_table_info(?)")
+      .all(table)
+      .map((row) => String(row["name"])),
+  );
+
+/**
+ * Applies to the database at `restoredPath` every revocation and pairing-link
+ * use recorded in the database at `currentPath`, in one transaction. The
+ * current database is only read. Throws when it cannot: a table the snapshot
+ * has that the current database lacks, or a missing column, is refused rather
+ * than skipped, so no revocation is silently dropped. A table the snapshot
+ * predates holds nothing to revoke.
+ */
+const carryAuthState = (restoredPath: string, currentPath: string | undefined) => {
+  const restored = new NodeSqlite.DatabaseSync(restoredPath);
+  try {
+    const current =
+      currentPath === undefined
+        ? undefined
+        : new NodeSqlite.DatabaseSync(currentPath, { readOnly: true });
+    try {
+      const updates: Array<{
+        readonly column: string;
+        readonly rows: ReadonlyArray<Record<string, NodeSqlite.SQLOutputValue>>;
+        readonly update: NodeSqlite.StatementSync;
+      }> = [];
+      for (const { table, key, columns } of CARRIED_AUTH_STATE) {
+        const restoredColumns = columnsOf(restored, table);
+        if (restoredColumns.size === 0 || current === undefined) continue;
+        const currentColumns = columnsOf(current, table);
+        if (currentColumns.size === 0) {
+          throw new Error(`the current database has no ${table} table, which the snapshot has`);
+        }
+        for (const column of [key, ...columns]) {
+          if (!restoredColumns.has(column)) {
+            throw new Error(`the snapshot's ${table} table has no ${column} column`);
+          }
+          if (!currentColumns.has(column)) {
+            throw new Error(`the current database's ${table} table has no ${column} column`);
+          }
+        }
+        for (const column of columns) {
+          updates.push({
+            column,
+            rows: current
+              .prepare(
+                `select ${key} as id, ${column} as value from ${table} where ${column} is not null`,
+              )
+              .all(),
+            update: restored.prepare(
+              `update ${table} set ${column} = ? where ${key} = ? and ${column} is null`,
+            ),
+          });
+        }
+      }
+      let revocations = 0;
+      let usedPairingLinks = 0;
+      // Nothing to carry leaves the copy byte for byte the point's snapshot.
+      if (updates.every(({ rows }) => rows.length === 0)) {
+        return { revocations, usedPairingLinks } satisfies CarriedAuthState;
+      }
+      restored.exec("begin immediate");
+      try {
+        for (const { column, rows, update } of updates) {
+          for (const row of rows) {
+            const changes = Number(update.run(row["value"] ?? null, row["id"] ?? null).changes);
+            if (column === "consumed_at") usedPairingLinks += changes;
+            else revocations += changes;
+          }
+        }
+        restored.exec("commit");
+      } catch (error) {
+        restored.exec("rollback");
+        throw error;
+      }
+      return { revocations, usedPairingLinks } satisfies CarriedAuthState;
+    } finally {
+      current?.close();
+    }
+  } finally {
+    restored.close();
+  }
+};
+
+/** The restored database recover renames into place once the live one is aside. */
+export interface PreparedRestore extends CarriedAuthState {
+  /** A hidden copy of the snapshot beside the database. */
+  readonly path: string;
+}
+
+const removeDatabaseFiles = (fs: FileSystem.FileSystem, databasePath: string) =>
+  Effect.forEach(
+    DATABASE_COMPANION_SUFFIXES,
+    (suffix) => fs.remove(`${databasePath}${suffix}`, { force: true }).pipe(Effect.ignore),
+    { discard: true },
+  );
+
+/**
+ * Copies the point's snapshot to a hidden file beside `dbPath`, readable only
+ * by its owner, and carries into that copy every revocation and pairing-link
+ * use the current database at `dbPath` records, reading it without writing.
+ * The point's own snapshot is never opened. Nothing at `dbPath` moves; a
+ * failure removes the copy.
+ */
+export const prepareRestore = Effect.fn("cloud.recovery_point.prepare_restore")(function* (
   baseDir: string,
   id: string,
   dbPath: string,
@@ -462,23 +642,73 @@ export const restoreSnapshot = Effect.fn("cloud.recovery_point.restore_snapshot"
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const point = yield* loadRecoveryPoint(baseDir, id);
-  const fail = (cause: unknown) =>
-    new RecoveryPointError({ detail: "Could not restore the recovery point's snapshot.", cause });
-  for (const suffix of DATABASE_COMPANION_SUFFIXES) {
-    if (yield* fs.exists(`${dbPath}${suffix}`).pipe(Effect.mapError(fail))) {
-      return yield* new RecoveryPointError({
-        detail: `Refusing to restore over ${dbPath}${suffix}; move the current database aside first.`,
-      });
-    }
-  }
   const tempPath = path.join(path.dirname(dbPath), `.${path.basename(dbPath)}.recover-${id}`);
-  yield* Effect.gen(function* () {
+  const copied = Effect.gen(function* () {
+    yield* removeDatabaseFiles(fs, tempPath);
     yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
     yield* fs.copyFile(point.snapshotPath, tempPath);
     yield* fs.chmod(tempPath, 0o600);
-    yield* fs.rename(tempPath, dbPath);
+    return yield* fs.exists(dbPath);
   }).pipe(
-    Effect.tapError(() => fs.remove(tempPath, { force: true }).pipe(Effect.ignore)),
-    Effect.mapError(fail),
+    Effect.mapError(
+      (cause) =>
+        new RecoveryPointError({
+          detail: "Could not restore the recovery point's snapshot.",
+          cause,
+        }),
+    ),
   );
+  return yield* Effect.gen(function* () {
+    const currentExists = yield* copied;
+    const carried = yield* Effect.try({
+      try: () => carryAuthState(tempPath, currentExists ? dbPath : undefined),
+      catch: (cause) =>
+        new RecoveryPointError({
+          detail: `Could not carry the current database's revocations into the restored database: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }.`,
+          cause,
+        }),
+    });
+    // The copy's changes must all be in its main file, the only one renamed into place.
+    if (yield* fs.exists(`${tempPath}-wal`).pipe(Effect.orElseSucceed(() => true))) {
+      return yield* new RecoveryPointError({
+        detail: `Could not carry the current database's revocations into the restored database: ${tempPath}-wal was left behind.`,
+      });
+    }
+    yield* fs.remove(`${tempPath}-shm`, { force: true }).pipe(Effect.ignore);
+    return { path: tempPath, ...carried } satisfies PreparedRestore;
+  }).pipe(Effect.tapError(() => removeDatabaseFiles(fs, tempPath)));
+});
+
+/** Removes a prepared restore that will not be put in place. */
+export const discardPreparedRestore = Effect.fn("cloud.recovery_point.discard_prepared_restore")(
+  function* (prepared: PreparedRestore) {
+    const fs = yield* FileSystem.FileSystem;
+    yield* removeDatabaseFiles(fs, prepared.path);
+  },
+);
+
+/**
+ * Renames a prepared restore into place at `dbPath`. Refuses while a database
+ * or its -wal or -shm is still there: displace it first. A failure removes the
+ * prepared copy.
+ */
+export const restoreSnapshot = Effect.fn("cloud.recovery_point.restore_snapshot")(function* (
+  prepared: PreparedRestore,
+  dbPath: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const fail = (cause: unknown) =>
+    new RecoveryPointError({ detail: "Could not restore the recovery point's snapshot.", cause });
+  yield* Effect.gen(function* () {
+    for (const suffix of DATABASE_COMPANION_SUFFIXES) {
+      if (yield* fs.exists(`${dbPath}${suffix}`).pipe(Effect.mapError(fail))) {
+        return yield* new RecoveryPointError({
+          detail: `Refusing to restore over ${dbPath}${suffix}; move the current database aside first.`,
+        });
+      }
+    }
+    yield* fs.rename(prepared.path, dbPath).pipe(Effect.mapError(fail));
+  }).pipe(Effect.tapError(() => removeDatabaseFiles(fs, prepared.path)));
 });
