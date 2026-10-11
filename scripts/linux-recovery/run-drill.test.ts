@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalConsole:off globalDate:off - Drives run-drill.sh against a fake release server; the stub t3 it serializes into each archive runs outside Effect.
-import { HostProcessArchitecture, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
@@ -8,8 +8,8 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
-const hostPlatform = HostProcessPlatform.defaultValue();
-const platformArch = `${hostPlatform}-${HostProcessArchitecture.defaultValue()}`;
+const hostPlatform = HostProcess.Platform.defaultValue();
+const platformArch = `${hostPlatform}-${HostProcess.Architecture.defaultValue()}`;
 const PRIOR = "0.0.46-atli.3";
 const TARGET = "0.0.46-atli.4";
 const templateDatabase = NodePath.join(

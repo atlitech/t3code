@@ -1,0 +1,65 @@
+diff --git a/dist/reactivity/Atom.js b/dist/reactivity/Atom.js
+--- a/dist/reactivity/Atom.js
++++ b/dist/reactivity/Atom.js
+@@ -656,7 +656,19 @@ const makeStreamPull = (pullSignal, pullAtom) => writable(pullAtom.read, functio
+  * @since 4.0.0
+  */
+ export const family = typeof WeakRef === "undefined" || typeof FinalizationRegistry === "undefined" ? f => {
++  // PATCH: bound the fallback cache.
++  //
++  // This branch runs wherever FinalizationRegistry is missing — notably Hermes,
++  // so every React Native build. Upstream keeps a strong reference to every atom
++  // it ever creates here, and since nothing evicts them the map grows for the
++  // lifetime of the process. Keyed by thread/project id that is an unbounded leak.
++  //
++  // Capacity is set far above any realistic live working set and eviction is
++  // insertion-ordered, so only cold keys are dropped. Evicting a key that is still
++  // mounted would hand out a second atom for it, so do not lower this without
++  // checking the largest number of simultaneously-live keys in a family.
+   const atoms = MutableHashMap.empty();
++  const insertionOrder = [];
+   return function (arg) {
+     const atomEntry = MutableHashMap.get(atoms, arg);
+     if (atomEntry._tag === "Some") {
+@@ -664,6 +676,10 @@ export const family = typeof WeakRef === "undefined" || typeof FinalizationRegis
+     }
+     const newAtom = f(arg);
+     MutableHashMap.set(atoms, arg, newAtom);
++    insertionOrder.push(arg);
++    if (insertionOrder.length > 1024) {
++      MutableHashMap.remove(atoms, insertionOrder.shift());
++    }
+     return newAtom;
+   };
+ } : f => {
+diff --git a/dist/rpc/RpcClient.d.ts b/dist/rpc/RpcClient.d.ts
+index ebfe86f..3ff235d 100644
+--- a/dist/rpc/RpcClient.d.ts
++++ b/dist/rpc/RpcClient.d.ts
+@@ -320,6 +320,8 @@ export declare const layerProtocolWorker: (options: {
+ declare const ConnectionHooks_base: Context.ServiceClass<ConnectionHooks, "effect/rpc/RpcClient/ConnectionHooks", {
+     readonly onConnect: Effect.Effect<void>;
+     readonly onDisconnect: Effect.Effect<void>;
++    /** Runs when the socket is dropped because the server stopped answering, before `onDisconnect`. */
++    readonly onPingTimeout?: Effect.Effect<void> | undefined;
+ }>;
+ /**
+  * Represents optional client protocol hooks that run when a transport connects
+diff --git a/dist/rpc/RpcClient.js b/dist/rpc/RpcClient.js
+index f5b14ef..cccf0a4 100644
+--- a/dist/rpc/RpcClient.js
++++ b/dist/rpc/RpcClient.js
+@@ -688,11 +688,11 @@ export const makeProtocolSocket = options => Protocol.make(Effect.fnUntraced(fun
+           yield* processData(frames[i]);
+         }
+       }
+-    }).pipe(Effect.scoped, Effect.raceFirst(Effect.flatMap(pinger.timeout, () => Effect.fail(new Socket.SocketError({
++    }).pipe(Effect.scoped, Effect.raceFirst(Effect.flatMap(pinger.timeout, () => (Option.isSome(hooks) && hooks.value.onPingTimeout ? hooks.value.onPingTimeout : Effect.void).pipe(Effect.andThen(Effect.fail(new Socket.SocketError({
+       reason: new Socket.SocketReadError({
+         cause: new Error("ping timeout")
+       })
+-    })))));
++    })))))));
+   }).pipe(Option.isSome(hooks) ? Effect.ensuring(hooks.value.onDisconnect) : identity, Effect.tapCause(cause => {
+     const error = Cause.findError(cause);
+     const hasError = Result.isSuccess(error);

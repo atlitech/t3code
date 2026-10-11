@@ -17,13 +17,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient } from "effect/http";
 import * as TestConsole from "effect/testing/TestConsole";
-import {
-  HostProcessEnvironment,
-  HostProcessInvokedAs,
-  HostProcessIsExecutable,
-  HostProcessPlatform,
-  HostProcessWorkingDirectory,
-} from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as BootService from "../cloud/bootService.ts";
 import { createRecoveryPoint, verifySnapshot } from "../cloud/recoveryPoint.ts";
@@ -249,11 +243,11 @@ const recover = Effect.fn("test.recover")(function* (
       HttpClient.HttpClient,
       HttpClient.make(() => Effect.die("recover downloads nothing here")),
     ),
-    Effect.provideService(HostProcessPlatform, "linux"),
-    Effect.provideService(HostProcessIsExecutable, true),
-    Effect.provideService(HostProcessInvokedAs, home.launcher),
-    Effect.provideService(HostProcessWorkingDirectory, home.root),
-    Effect.provideService(HostProcessEnvironment, { PATH: "" }),
+    Effect.provideService(HostProcess.Platform, "linux"),
+    Effect.provideService(HostProcess.IsExecutable, true),
+    Effect.provideService(HostProcess.InvokedAs, home.launcher),
+    Effect.provideService(HostProcess.WorkingDirectory, home.root),
+    Effect.provideService(HostProcess.Environment, { PATH: "" }),
   );
   const exit = options.interruptAfterStop
     ? yield* Effect.gen(function* () {
