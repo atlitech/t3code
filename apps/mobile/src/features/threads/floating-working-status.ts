@@ -9,6 +9,12 @@ export type FloatingWorkingStatus =
   | { readonly kind: "working"; readonly startedAt: string }
   | { readonly kind: "syncing"; readonly label: string }
   | { readonly kind: "compacting" }
+  | {
+      readonly kind: "child-input";
+      readonly label: string;
+      readonly accessibilityLabel: string;
+      readonly onPress: () => void;
+    }
   // The turn settled while provider-managed work, including commands, still runs.
   | {
       readonly kind: "background";

@@ -1,4 +1,4 @@
-import { HostProcessIsExecutable, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -135,7 +135,7 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const platform = yield* HostProcessPlatform;
+  const platform = yield* HostProcess.Platform;
   const service = yield* BootService.BootService;
 
   if (input.list) {
@@ -368,7 +368,7 @@ export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
       // service stopped on the newer runtime.
       const runtime = pinnedRuntimePaths(path, input.baseDir, from.version, platform);
       const launcherFailure = yield* Effect.gen(function* () {
-        const launchedAs = (yield* HostProcessIsExecutable)
+        const launchedAs = (yield* HostProcess.IsExecutable)
           ? yield* resolveLauncherPath
           : undefined;
         return yield* repointLauncher({

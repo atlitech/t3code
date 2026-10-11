@@ -18,14 +18,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as TestClock from "effect/testing/TestClock";
 import * as TestConsole from "effect/testing/TestConsole";
-import {
-  HostProcessArchitecture,
-  HostProcessEnvironment,
-  HostProcessInvokedAs,
-  HostProcessIsExecutable,
-  HostProcessPlatform,
-  HostProcessWorkingDirectory,
-} from "@t3tools/shared/hostProcess";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { afterEach, vi } from "vite-plus/test";
 
 import packageJson from "../../package.json" with { type: "json" };
@@ -60,7 +53,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
 
       assert.deepStrictEqual(Option.getOrUndefined(repointed), launcher);
       assert.equal(yield* fs.readLink(launcher), newExe);
-    }).pipe(Effect.scoped, Effect.provideService(HostProcessPlatform, "linux")),
+    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("leaves a plain copy or a foreign symlink alone", () =>
@@ -94,7 +87,7 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       }
       assert.equal(yield* fs.readLink(foreign), elsewhere);
       assert.equal(yield* fs.readLink(otherLauncher), otherHome);
-    }).pipe(Effect.scoped, Effect.provideService(HostProcessPlatform, "linux")),
+    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("finds the launcher a bare command name resolved to on PATH", () =>
@@ -107,27 +100,27 @@ it.layer(NodeServices.layer)("t3 update launcher", (it) => {
       yield* fs.writeFileString(launcher, "");
 
       const bare = yield* resolveLauncherPath.pipe(
-        Effect.provideService(HostProcessInvokedAs, "t3"),
-        Effect.provideService(HostProcessEnvironment, {
+        Effect.provideService(HostProcess.InvokedAs, "t3"),
+        Effect.provideService(HostProcess.Environment, {
           PATH: `${path.join(root, "missing")}:${path.join(root, "bin")}`,
         }),
-        Effect.provideService(HostProcessWorkingDirectory, root),
+        Effect.provideService(HostProcess.WorkingDirectory, root),
       );
       const relative = yield* resolveLauncherPath.pipe(
-        Effect.provideService(HostProcessInvokedAs, "./bin/t3"),
-        Effect.provideService(HostProcessEnvironment, { PATH: "" }),
-        Effect.provideService(HostProcessWorkingDirectory, root),
+        Effect.provideService(HostProcess.InvokedAs, "./bin/t3"),
+        Effect.provideService(HostProcess.Environment, { PATH: "" }),
+        Effect.provideService(HostProcess.WorkingDirectory, root),
       );
       const absent = yield* resolveLauncherPath.pipe(
-        Effect.provideService(HostProcessInvokedAs, "t3"),
-        Effect.provideService(HostProcessEnvironment, { PATH: path.join(root, "missing") }),
-        Effect.provideService(HostProcessWorkingDirectory, root),
+        Effect.provideService(HostProcess.InvokedAs, "t3"),
+        Effect.provideService(HostProcess.Environment, { PATH: path.join(root, "missing") }),
+        Effect.provideService(HostProcess.WorkingDirectory, root),
       );
 
       assert.equal(bare, launcher);
       assert.equal(relative, launcher);
       assert.equal(absent, undefined);
-    }).pipe(Effect.scoped, Effect.provideService(HostProcessPlatform, "linux")),
+    }).pipe(Effect.scoped, Effect.provideService(HostProcess.Platform, "linux")),
   );
 });
 
@@ -340,11 +333,11 @@ const runFakeUpdate = Effect.fn("test.run_fake_update")(function* (options: {
     Effect.provideService(HttpClient.HttpClient, httpClient),
     Effect.provideService(BootService.BootService, bootService),
     Effect.provideService(FileSystem.FileSystem, updateFs),
-    Effect.provideService(HostProcessIsExecutable, options.launcherPath !== undefined),
-    Effect.provideService(HostProcessInvokedAs, options.launcherPath ?? "t3"),
-    Effect.provideService(HostProcessPlatform, "linux"),
-    Effect.provideService(HostProcessArchitecture, "x64"),
-    Effect.provideService(HostProcessEnvironment, {
+    Effect.provideService(HostProcess.IsExecutable, options.launcherPath !== undefined),
+    Effect.provideService(HostProcess.InvokedAs, options.launcherPath ?? "t3"),
+    Effect.provideService(HostProcess.Platform, "linux"),
+    Effect.provideService(HostProcess.Architecture, "x64"),
+    Effect.provideService(HostProcess.Environment, {
       T3CODE_RELEASE_BASE_URL: "https://releases.example/download",
     }),
     Effect.provide(
