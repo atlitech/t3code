@@ -72,6 +72,7 @@ it.effect.each([
                 offer: () => Effect.void,
                 setModel: () => Effect.void,
                 setPermissionMode: () => Effect.void,
+                stopTask: () => Effect.void,
                 interrupt: Effect.void,
                 close: Queue.shutdown(sdkMessages),
               };
