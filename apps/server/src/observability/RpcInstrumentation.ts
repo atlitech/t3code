@@ -17,6 +17,7 @@ type WsRpcMethod = RpcGroup.Rpcs<typeof WsRpcGroup>["_tag"];
 const RPC_AGGREGATES = {
   [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: "orchestrationV2",
   [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: "orchestration",
+  [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getTurnItem]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getTurnDiff]: "orchestration",
   [ORCHESTRATION_V2_WS_METHODS.getFullThreadDiff]: "orchestration",
@@ -106,6 +107,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.pullRequestsPreview]: "pull-requests",
   [WS_METHODS.pullRequestsChecks]: "pull-requests",
   [WS_METHODS.pullRequestsActivity]: "pull-requests",
+  [WS_METHODS.pullRequestsReviewGuide]: "pull-requests",
+  [WS_METHODS.pullRequestsGenerateReviewGuide]: "pull-requests",
   [WS_METHODS.pullRequestsThreadComments]: "pull-requests",
   [WS_METHODS.pullRequestsDiffFileContents]: "pull-requests",
   [WS_METHODS.pullRequestsFilesViewed]: "pull-requests",
