@@ -5038,6 +5038,109 @@ it.layer(McpProviderSessions.layer)("OpenCode2 adapter", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("stops the subagent a cleared wake's held reply started", () =>
+    Effect.gen(function* () {
+      const CHILD_B = "ses_f1485c529ffeBBBBBBBBBBBBBB";
+      const SPAWNED = "ses_f1485c529ffeDDDDDDDDDDDDDD";
+      const toolB = { sessionID: SESSION, assistantMessageID: "msg_assistant", id: "call-b" };
+      const spawn = { sessionID: SESSION, assistantMessageID: "msg_reply", id: "call-spawn" };
+      const offers =
+        yield* Queue.unbounded<ProviderContinuationRequests.ProviderContinuationRequest>();
+      const gate = makeProviderReplayGate(["stopped"]);
+      const { runtime, thread } = yield* resumed(
+        [
+          ...backgroundLaunch(CHILD),
+          // A second background subagent runs on; its live text marks when the
+          // held reply below has been handled.
+          event("session.tool.input.started", { ...toolB, name: "subagent" }),
+          event("session.tool.called", {
+            ...toolB,
+            name: "subagent",
+            input: { description: "Sleep", prompt: "sleep", background: true },
+            executed: false,
+          }),
+          event("session.created", { ...childCreated(CHILD_B), sessionID: CHILD_B }),
+          event("session.tool.progress", {
+            ...toolB,
+            metadata: { sessionID: CHILD_B, status: "running" },
+          }),
+          event("session.execution.succeeded", { sessionID: SESSION }),
+          event("session.execution.started", { sessionID: CHILD_B }),
+          // The first subagent's report wakes the parent into a reply T3 holds
+          // for its continuation, and that reply starts a subagent of its own.
+          event("session.execution.succeeded", { sessionID: CHILD }),
+          event("session.inbox.enqueued", {
+            inboxID: "msg_report",
+            sessionID: SESSION,
+            item: {
+              type: "synthetic",
+              payload: {
+                text: `<subagent sessionID="${CHILD}" state="completed" description="Sleep">\nOK\n</subagent>`,
+                description: "Sleep",
+                metadata: {
+                  source: "subagent",
+                  childID: CHILD,
+                  agent: "General",
+                  state: "completed",
+                },
+              },
+              delivery: "steer",
+            },
+          }),
+          event("session.execution.started", { sessionID: SESSION }),
+          event("session.tool.input.started", { ...spawn, name: "subagent" }),
+          event("session.tool.called", {
+            ...spawn,
+            name: "subagent",
+            input: { description: "Sleep", prompt: "sleep", background: true },
+            executed: false,
+          }),
+          event("session.created", { ...childCreated(SPAWNED), sessionID: SPAWNED }),
+          event("session.tool.progress", {
+            ...spawn,
+            metadata: { sessionID: SPAWNED, status: "running" },
+          }),
+          event("session.execution.succeeded", { sessionID: SESSION }),
+          event("session.text.ended", {
+            sessionID: CHILD_B,
+            assistantMessageID: "msg_child_b",
+            ordinal: 0,
+            text: "B_WORKING",
+          }),
+          // Clearing the wake drops the reply, so the subagent only it named is
+          // stopped; the replay fails on any other request.
+          out("session.interrupt", { sessionID: SPAWNED }),
+          reply("session.interrupt", { interrupted: true }),
+          event("session.execution.interrupted", { sessionID: SPAWNED }, "stopped"),
+        ],
+        { replayGate: gate },
+      ).pipe(
+        Effect.provideService(ProviderContinuationRequests.ProviderContinuationRequests, {
+          offer: (request) => Queue.offer(offers, request).pipe(Effect.asVoid),
+          take: Effect.never,
+        }),
+      );
+      const replyHandled = yield* Deferred.make<void>();
+      yield* runtime.events.pipe(
+        Stream.tap((event) =>
+          event.type === "turn_item.updated" &&
+          event.turnItem.type === "assistant_message" &&
+          event.turnItem.text === "B_WORKING"
+            ? Deferred.succeed(replyHandled, undefined)
+            : Effect.void,
+        ),
+        Stream.runDrain,
+        Effect.forkScoped,
+      );
+      yield* runtime.startTurn(withLineage(thread));
+      yield* Deferred.await(replyHandled);
+      const offer = yield* Queue.take(offers);
+      yield* offer.clearIfCurrent!();
+      assert.isTrue(yield* Effect.promise(() => gate.waitForReached("stopped")));
+      gate.release("stopped");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("replays only its own background reply into a continuation turn", () =>
     Effect.gen(function* () {
       const CHILD_B = "ses_f1485c529ffeBBBBBBBBBBBBBB";

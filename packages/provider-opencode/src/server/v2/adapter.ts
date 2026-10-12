@@ -1711,12 +1711,17 @@ export const make = Effect.fn("OpenCode2Adapter.make")(function* (instanceId: Pr
         ...(notification === null ? {} : { notification }),
         dispatchIfCurrent: (dispatch) =>
           wake.dropped ? Effect.succeed(Option.none()) : Effect.map(dispatch, Option.some),
+        // A wake a turn already took keeps its subagents; only a held one retires them.
         clearIfCurrent: () =>
-          Effect.sync(() => {
-            wake.dropped = true;
-            const index = state.wakes.indexOf(wake);
-            if (index !== -1) state.wakes.splice(index, 1);
-          }),
+          lock.withPermit(
+            Effect.gen(function* () {
+              wake.dropped = true;
+              const index = state.wakes.indexOf(wake);
+              if (index === -1) return;
+              discardWakes(state, state.wakes.splice(index, 1));
+              yield* Effect.forkIn(stopStrays(state), sessionScope);
+            }),
+          ),
       });
     });
 
