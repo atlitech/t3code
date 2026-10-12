@@ -53,6 +53,7 @@ import {
   orchestrationV2RunWorkStartedAt,
   ProviderInstanceId,
   ProviderInteractionMode,
+  resolveProviderInstanceEnabled,
   type ProviderSessionId,
   RunId,
   RuntimeMode,
@@ -131,6 +132,7 @@ import {
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ServerSettings from "../serverSettings.ts";
 
 export class OrchestratorDispatchError extends Schema.TaggedError<OrchestratorDispatchError>()(
   "OrchestratorDispatchError",
@@ -865,6 +867,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
   const providerSessions = yield* ProviderSessionManagerV2;
   const providerSwitchService = yield* ProviderSwitchServiceV2;
+  const serverSettings = yield* ServerSettings.ServerSettingsService;
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -1513,8 +1516,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         failedRun?.id === options?.endedRunId &&
         failedRun?.workspacePreparation?.type === "worktree" &&
         projection.thread.worktreePath === null;
+      // A project can turn a provider off while a message waits in the queue,
+      // including between a run ending and this check, or while the queue is
+      // held and someone clicks resume. Neither path may start that run. Only
+      // an explicit turn-off holds the queue: an instance with no settings
+      // entry was already admitted when the message was queued.
+      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+      const projectOverride =
+        settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
+          queuedRun.providerInstanceId
+        ]?.enabled;
+      const machineInstance = Object.hasOwn(
+        settings.providerInstances,
+        queuedRun.providerInstanceId,
+      )
+        ? settings.providerInstances[queuedRun.providerInstanceId]
+        : undefined;
+      const instanceDisabledForProject =
+        projectOverride !== undefined
+          ? !projectOverride
+          : machineInstance !== undefined && !resolveProviderInstanceEnabled(machineInstance);
       if (
         worktreeMissing ||
+        instanceDisabledForProject ||
         (failureClass !== undefined &&
           failureClass !== "validation_error" &&
           failedRun?.providerInstanceId === queuedRun.providerInstanceId)
@@ -8813,7 +8837,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             OrchestrationV2ThreadProjection,
             "nodes" | "subagents" | "turnItems"
           >;
-          readonly subagent: Extract<OrchestrationV2TurnItem, { readonly type: "subagent" }>;
+          readonly subagent: Pick<
+            Extract<OrchestrationV2TurnItem, { readonly type: "subagent" }>,
+            "subagentId" | "origin" | "childThreadId" | "providerInstanceId"
+          >;
         }> = [{ projection: input.projection, subagent: item }];
         for (const { projection, subagent } of dying) {
           const ended = yield* endOrphanedNativeSubagent({
@@ -8857,6 +8884,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           yield* Ref.update(input.events, (events) => [...events, ...childEnded]);
           for (const nested of child.turnItems) {
             if (nested.type === "subagent") dying.push({ projection: child, subagent: nested });
+          }
+          // Workflow members have records and child roots without subagent turn items.
+          for (const nested of child.subagents) {
+            if (nested.origin === "provider_native" && nested.runId === null) {
+              dying.push({
+                projection: child,
+                subagent: {
+                  subagentId: nested.id,
+                  origin: nested.origin,
+                  childThreadId: nested.childThreadId,
+                  providerInstanceId: nested.providerInstanceId,
+                },
+              });
+            }
           }
         }
       }
@@ -11864,6 +11905,7 @@ export const layer: Layer.Layer<
   | ProviderSwitchServiceV2
   | ProjectionStoreV2
   | RuntimePolicyV2
+  | ServerSettings.ServerSettingsService
   | ThreadForkServiceV2
 > = Layer.effect(OrchestratorV2, makeOrchestrator()).pipe(
   Layer.provide(ThreadCommandExecutor.layer),
