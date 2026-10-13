@@ -158,8 +158,11 @@ it.effect("deleting a thread deletes its subagent threads, depth first", () =>
     const parent = ThreadId.make("thread:cascade-parent");
     const child = ThreadId.make("thread:cascade-child");
     const grandchild = ThreadId.make("thread:cascade-grandchild");
+    // Its only child is delegated, so nothing native queues the cleanup for it.
+    const delegatingParent = ThreadId.make("thread:cascade-delegating-parent");
     const delegated = ThreadId.make("thread:cascade-delegated");
     yield* createThread(parent);
+    yield* createThread(delegatingParent);
     yield* addSubagentThread({
       parentThreadId: parent,
       childThreadId: child,
@@ -171,16 +174,18 @@ it.effect("deleting a thread deletes its subagent threads, depth first", () =>
       origin: "provider_native",
     });
     yield* addSubagentThread({
-      parentThreadId: parent,
+      parentThreadId: delegatingParent,
       childThreadId: delegated,
       origin: "app_owned",
     });
 
-    yield* orchestrator.dispatch({
-      type: "thread.delete",
-      commandId: CommandId.make("delete:cascade-parent"),
-      threadId: parent,
-    });
+    for (const threadId of [parent, delegatingParent]) {
+      yield* orchestrator.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make(`delete:${threadId}`),
+        threadId,
+      });
+    }
     yield* worker.drain();
 
     assert.isTrue(yield* isDeleted(parent));
