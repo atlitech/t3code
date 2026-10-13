@@ -10,7 +10,6 @@ import type {
 import {
   type ChatAttachment,
   CommandId,
-  isProviderNativeSubagentThread,
   MessageId,
   OrchestrationV2StopWorkflowError,
   type OrchestrationV2StopWorkflowInput,
@@ -448,7 +447,7 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
   /**
-   * Deletes the provider-native subagent threads under a deleted thread. Each child's own
+   * Deletes the subagent threads, native and delegated, under a deleted thread. Each child's own
    * deletion queues the same cleanup, so the whole tree goes. Command IDs derive from
    * `commandId`, so a retry repeats nothing; all children are tried before it fails.
    */
@@ -460,7 +459,7 @@ export interface ThreadManagementServiceShape {
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
   /**
-   * Deletes live provider-native subagent threads whose parent thread is already deleted,
+   * Deletes live subagent threads whose parent thread is already deleted,
    * left behind by deletions from before subagent threads followed their parent.
    * Returns how many it deleted.
    */
@@ -534,7 +533,7 @@ function latestSteerableRun(
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
 
 /**
- * Deletes a deleted thread's provider-native subagent threads. Built from the two calls it
+ * Deletes a deleted thread's subagent threads. Built from the two calls it
  * needs so the replay harness, whose worker runs against a partial service, runs the same code.
  */
 export const makeSubagentThreadDeletion = <E>(input: {
@@ -561,7 +560,7 @@ export const makeSubagentThreadDeletion = <E>(input: {
       const { subagents } = yield* input.getThreadRecords(request.threadId, ["subagents"]);
       const failures: Array<Orchestrator.OrchestratorV2Error | E> = [];
       for (const task of subagents) {
-        if (task.origin !== "provider_native" || task.childThreadId === null) continue;
+        if (task.childThreadId === null) continue;
         const threadId = task.childThreadId;
         yield* deleteThreadOnce(
           threadId,
@@ -1182,7 +1181,7 @@ const make = Effect.gen(function* () {
       for (const thread of threads) {
         const parentThreadId = thread.lineage.parentThreadId;
         if (
-          !isProviderNativeSubagentThread(thread) ||
+          thread.lineage.relationshipToParent !== "subagent" ||
           parentThreadId === null ||
           shownThreadIds.has(parentThreadId)
         ) {

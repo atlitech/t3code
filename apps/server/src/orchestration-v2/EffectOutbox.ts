@@ -122,7 +122,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("delegated-tasks.stop"),
     reason: Schema.optional(Schema.String),
   }),
-  /** Follows a deletion: deletes the provider-native subagent threads under the deleted thread. */
+  /** Follows a deletion: deletes the subagent threads under the deleted thread. */
   Schema.Struct({
     type: Schema.Literal("subagent-threads.delete"),
   }),

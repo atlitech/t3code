@@ -209,13 +209,9 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
       },
     });
   }
-  // A provider-native subagent's thread is a read-only view of its parent's
-  // work, so it goes with the parent instead of outliving it.
-  if (
-    projection.subagents.some(
-      (task) => task.origin === "provider_native" && task.childThreadId !== null,
-    )
-  ) {
+  // Subagent threads, native or delegate_task, are reached only through their
+  // parent, so they go with it instead of outliving it unseen.
+  if (projection.subagents.some((task) => task.childThreadId !== null)) {
     effects.push({
       id: `effect:${command.commandId}:subagent-threads.delete`,
       commandId: command.commandId,
