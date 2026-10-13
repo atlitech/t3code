@@ -166,6 +166,7 @@ import * as RuntimeLayer from "./orchestration-v2/runtimeLayer.ts";
 import * as ProjectStore from "./orchestration-v2/ProjectStore.ts";
 import * as ThreadSearch from "./orchestration-v2/ThreadSearch.ts";
 import * as ResourceCleanupService from "./orchestration-v2/ResourceCleanupService.ts";
+import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
 import * as ThreadSettlementService from "./orchestration-v2/ThreadSettlementService.ts";
 import * as ThreadPullRequestService from "./orchestration-v2/ThreadPullRequestService.ts";
 import * as RunFinalizationService from "./orchestration-v2/RunFinalizationService.ts";
@@ -515,6 +516,28 @@ const layerThreadPullRequestWorker = Layer.effectDiscard(
   ThreadPullRequestService.make.pipe(Effect.flatMap((service) => service.start())),
 ).pipe(Layer.provide(layerPullRequestService));
 
+// Catches subagent threads left behind by a parent deleted before subagent
+// threads followed their parent, or by a cascade that failed. See
+// ThreadDeletion for the normal (on-delete) path. Best-effort, after
+// activation so it never delays startup; an unfinished sweep resumes next boot.
+const layerOrphanedSubagentThreadSweep = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    yield* ServerActivation.forkParked(
+      threads.deleteOrphanedSubagentThreads.pipe(
+        Effect.tap((deleted) =>
+          deleted === 0
+            ? Effect.void
+            : Effect.logInfo("Deleted orphaned subagent threads.", { deleted }),
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Failed to sweep orphaned subagent threads.", cause),
+        ),
+      ),
+    );
+  }),
+);
+
 const layerProviderInstallationRefresh = Layer.effectDiscard(
   Effect.gen(function* () {
     const antigravity = yield* AntigravityInstallation.AntigravityInstallation;
@@ -583,6 +606,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // existed, or by a cleanup write that failed. See ProjectService.delete
   // for the normal (on-delete) path.
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
+  layerOrphanedSubagentThreadSweep,
 ).pipe(
   // Core Services
   Layer.provideMerge(layerOrchestrationApplication),
