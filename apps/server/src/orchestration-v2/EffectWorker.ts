@@ -557,6 +557,19 @@ export const layerExecutor: Layer.Layer<
                     }),
                 ),
               );
+          case "subagent-threads.delete":
+            return threads
+              .deleteSubagentThreads({ threadId: effect.threadId, commandId: effect.commandId })
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause,
+                    }),
+                ),
+              );
         }
       },
     });

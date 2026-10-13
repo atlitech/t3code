@@ -461,6 +461,10 @@ export function layerWithRegistry<Error>(
       return Layer.mock(ThreadManagementService.ThreadManagementService)({
         dispatch: orchestrator.dispatch,
         getThreadRecords: orchestrator.getThreadRecords,
+        deleteSubagentThreads: ThreadManagementService.makeSubagentThreadDeletion({
+          getThreadRecords: orchestrator.getThreadRecords,
+          dispatch: orchestrator.dispatch,
+        }).deleteSubagentThreads,
         getThreadProjection: orchestrator.getThreadProjection,
         recoverDelegatedTask: orchestrator.recoverDelegatedTask,
         delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,

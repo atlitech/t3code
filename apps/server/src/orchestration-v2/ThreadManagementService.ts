@@ -10,6 +10,7 @@ import type {
 import {
   type ChatAttachment,
   CommandId,
+  isProviderNativeSubagentThread,
   MessageId,
   OrchestrationV2StopWorkflowError,
   type OrchestrationV2StopWorkflowInput,
@@ -446,6 +447,27 @@ export interface ThreadManagementServiceShape {
     // gates; the type stays accurate anyway.
     Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
   >;
+  /**
+   * Deletes the provider-native subagent threads under a deleted thread. Each child's own
+   * deletion queues the same cleanup, so the whole tree goes. Command IDs derive from
+   * `commandId`, so a retry repeats nothing; all children are tried before it fails.
+   */
+  readonly deleteSubagentThreads: (input: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+  }) => Effect.Effect<
+    void,
+    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
+  /**
+   * Deletes live provider-native subagent threads whose parent thread is already deleted,
+   * left behind by deletions from before subagent threads followed their parent.
+   * Returns how many it deleted.
+   */
+  readonly deleteOrphanedSubagentThreads: Effect.Effect<
+    number,
+    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
   readonly getThreadEventSequence: Orchestrator.OrchestratorV2["Service"]["getThreadEventSequence"];
   readonly recoverDelegatedTask: Orchestrator.OrchestratorV2["Service"]["recoverDelegatedTask"];
   readonly delegatedTaskResultPending: Orchestrator.OrchestratorV2["Service"]["delegatedTaskResultPending"];
@@ -510,6 +532,55 @@ function latestSteerableRun(
 }
 
 const SETTLE_AFTER_RUN_WAIT_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Deletes a deleted thread's provider-native subagent threads. Built from the two calls it
+ * needs so the replay harness, whose worker runs against a partial service, runs the same code.
+ */
+export const makeSubagentThreadDeletion = <E>(input: {
+  readonly getThreadRecords: Orchestrator.OrchestratorV2["Service"]["getThreadRecords"];
+  readonly dispatch: (command: OrchestrationV2ServerCommand) => Effect.Effect<unknown, E>;
+}) => {
+  /** Dispatches `thread.delete` unless the thread is already deleted. */
+  const deleteThreadOnce = (threadId: ThreadId, commandId: CommandId) =>
+    input
+      .getThreadRecords(threadId, [])
+      .pipe(
+        Effect.flatMap(({ thread }) =>
+          thread.deletedAt !== null
+            ? Effect.void
+            : input.dispatch({ type: "thread.delete", commandId, threadId }).pipe(Effect.asVoid),
+        ),
+      );
+
+  const deleteSubagentThreads = (request: {
+    readonly threadId: ThreadId;
+    readonly commandId: CommandId;
+  }) =>
+    Effect.gen(function* () {
+      const { subagents } = yield* input.getThreadRecords(request.threadId, ["subagents"]);
+      const failures: Array<Orchestrator.OrchestratorV2Error | E> = [];
+      for (const task of subagents) {
+        if (task.origin !== "provider_native" || task.childThreadId === null) continue;
+        const threadId = task.childThreadId;
+        yield* deleteThreadOnce(
+          threadId,
+          CommandId.make(`${request.commandId}:delete-subagent:${threadId}`),
+        ).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("Unable to delete a subagent thread", {
+              parentThreadId: request.threadId,
+              threadId,
+              error,
+            }).pipe(Effect.andThen(Effect.sync(() => failures.push(error)))),
+          ),
+        );
+      }
+      if (failures[0] !== undefined) return yield* Effect.fail(failures[0]);
+    });
+
+  return { deleteThreadOnce, deleteSubagentThreads };
+};
 
 const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -1097,6 +1168,38 @@ const make = Effect.gen(function* () {
       if (failures[0] !== undefined) return yield* Effect.fail(failures[0]);
     });
 
+  const { deleteThreadOnce, deleteSubagentThreads } = makeSubagentThreadDeletion({
+    getThreadRecords: orchestrator.getThreadRecords,
+    dispatch,
+  });
+
+  const deleteOrphanedSubagentThreads: ThreadManagementServiceShape["deleteOrphanedSubagentThreads"] =
+    Effect.gen(function* () {
+      const snapshot = yield* orchestrator.getShellSnapshot();
+      const threads = [...snapshot.threads, ...snapshot.archivedThreads];
+      const shownThreadIds = new Set(threads.map((thread) => thread.id));
+      let deleted = 0;
+      for (const thread of threads) {
+        const parentThreadId = thread.lineage.parentThreadId;
+        if (
+          !isProviderNativeSubagentThread(thread) ||
+          parentThreadId === null ||
+          shownThreadIds.has(parentThreadId)
+        ) {
+          continue;
+        }
+        // Missing from the shell is not proof: only a recorded deletion orphans the child.
+        const parent = yield* orchestrator.getThreadRecords(parentThreadId, []);
+        if (parent.thread.deletedAt === null) continue;
+        yield* deleteThreadOnce(
+          thread.id,
+          CommandId.make(`orphaned-subagent-thread:delete:${thread.id}`),
+        );
+        deleted += 1;
+      }
+      return deleted;
+    });
+
   return ThreadManagementService.of({
     ensureLegacyTranscript,
     searchThreadStream: (input) =>
@@ -1152,6 +1255,8 @@ const make = Effect.gen(function* () {
     settleThread,
     interruptThread,
     stopDelegatedTasks,
+    deleteSubagentThreads,
+    deleteOrphanedSubagentThreads,
     stopWorkflow,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
