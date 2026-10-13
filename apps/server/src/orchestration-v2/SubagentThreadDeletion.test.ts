@@ -151,15 +151,18 @@ const isDeleted = (threadId: ThreadId) =>
     return thread.deletedAt !== null;
   });
 
-it.effect("deleting a thread deletes its provider subagent threads, depth first", () =>
+it.effect("deleting a thread deletes its subagent threads, depth first", () =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
     const parent = ThreadId.make("thread:cascade-parent");
     const child = ThreadId.make("thread:cascade-child");
     const grandchild = ThreadId.make("thread:cascade-grandchild");
+    // Its only child is delegated, so nothing native queues the cleanup for it.
+    const delegatingParent = ThreadId.make("thread:cascade-delegating-parent");
     const delegated = ThreadId.make("thread:cascade-delegated");
     yield* createThread(parent);
+    yield* createThread(delegatingParent);
     yield* addSubagentThread({
       parentThreadId: parent,
       childThreadId: child,
@@ -171,27 +174,29 @@ it.effect("deleting a thread deletes its provider subagent threads, depth first"
       origin: "provider_native",
     });
     yield* addSubagentThread({
-      parentThreadId: parent,
+      parentThreadId: delegatingParent,
       childThreadId: delegated,
       origin: "app_owned",
     });
 
-    yield* orchestrator.dispatch({
-      type: "thread.delete",
-      commandId: CommandId.make("delete:cascade-parent"),
-      threadId: parent,
-    });
+    for (const threadId of [parent, delegatingParent]) {
+      yield* orchestrator.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make(`delete:${threadId}`),
+        threadId,
+      });
+    }
     yield* worker.drain();
 
     assert.isTrue(yield* isDeleted(parent));
     assert.isTrue(yield* isDeleted(child));
     assert.isTrue(yield* isDeleted(grandchild));
-    // A delegate_task child is a thread the user can still open and continue.
-    assert.isFalse(yield* isDeleted(delegated));
+    // Hidden once its parent is gone, a delegate_task child goes with it too.
+    assert.isTrue(yield* isDeleted(delegated));
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("the sweep deletes only provider subagent threads whose parent is deleted", () =>
+it.effect("the sweep deletes only subagent threads whose parent is deleted", () =>
   Effect.gen(function* () {
     const sink = yield* EventSink.EventSinkV2;
     const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -203,6 +208,7 @@ it.effect("the sweep deletes only provider subagent threads whose parent is dele
     const orphanChild = ThreadId.make("thread:sweep-orphan-child");
     const delegated = ThreadId.make("thread:sweep-delegated");
     const kept = ThreadId.make("thread:sweep-kept");
+    const fork = ThreadId.make("thread:sweep-fork");
     yield* createThread(deletedParent);
     yield* createThread(liveParent);
     yield* addSubagentThread({
@@ -230,6 +236,21 @@ it.effect("the sweep deletes only provider subagent threads whose parent is dele
     yield* sink.write({
       events: [
         {
+          id: EventId.make("fork-created:sweep-fork"),
+          type: "thread.created",
+          threadId: fork,
+          occurredAt: now,
+          payload: {
+            ...thread,
+            id: fork,
+            lineage: {
+              parentThreadId: deletedParent,
+              relationshipToParent: "fork",
+              rootThreadId: deletedParent,
+            },
+          },
+        },
+        {
           id: EventId.make("legacy-delete:sweep-deleted-parent"),
           type: "thread.deleted",
           threadId: deletedParent,
@@ -240,13 +261,15 @@ it.effect("the sweep deletes only provider subagent threads whose parent is dele
       ],
     });
 
-    assert.equal(yield* threads.deleteOrphanedSubagentThreads, 1);
+    assert.equal(yield* threads.deleteOrphanedSubagentThreads, 2);
     yield* worker.drain();
 
     assert.isTrue(yield* isDeleted(orphan));
     assert.isTrue(yield* isDeleted(orphanChild));
-    assert.isFalse(yield* isDeleted(delegated));
+    assert.isTrue(yield* isDeleted(delegated));
     assert.isFalse(yield* isDeleted(kept));
+    // A fork is the user's own conversation, not part of its source thread.
+    assert.isFalse(yield* isDeleted(fork));
     assert.equal(yield* threads.deleteOrphanedSubagentThreads, 0);
   }).pipe(Effect.provide(layerTest)),
 );
