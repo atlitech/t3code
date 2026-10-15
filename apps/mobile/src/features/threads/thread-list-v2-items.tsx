@@ -93,7 +93,7 @@ const STATUS_LABEL_BY_STATUS: Partial<Record<ThreadListV2Status, StatusLabel>> =
   },
   waiting: {
     label: "Waiting",
-    icon: "clock",
+    icon: "circle.dashed.inset.filled",
     className: "text-foreground-muted",
     iconTintClassName: "accent-foreground-muted",
   },
@@ -636,7 +636,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     status === "waiting"
       ? {
           label: pendingBackgroundWorkStatusLabel(thread.pendingBackgroundTasks),
-          icon: "clock" as const,
+          icon: "circle.dashed.inset.filled" as const,
           className: "text-foreground-muted",
           iconTintClassName: "accent-foreground-muted",
         }

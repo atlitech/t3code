@@ -657,6 +657,7 @@ type ThreadStatusInput = Pick<
   | "hasActionableProposedPlan"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
+  | "pendingSubagentRequest"
   | "interactionMode"
   | "latestRun"
   | "runtime"
@@ -981,14 +982,14 @@ export function shouldRecedeSidebarThread(input: {
 
 type SidebarThreadStatusInput = Pick<
   SidebarThreadSummary,
-  "hasPendingApprovals" | "hasPendingUserInput" | "runtime"
+  "hasPendingApprovals" | "hasPendingUserInput" | "pendingSubagentRequest" | "runtime"
 >;
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
-  if (thread.hasPendingApprovals) {
+  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return "approval";
   }
-  if (thread.hasPendingUserInput) {
+  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
     return "input";
   }
   if (
@@ -1185,7 +1186,7 @@ export function resolveThreadStatusPill(input: {
 }): ThreadStatusPill | null {
   const { thread } = input;
 
-  if (thread.hasPendingApprovals) {
+  if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return {
       label: "Pending Approval",
       colorClass: "text-amber-600 dark:text-amber-300/90",
@@ -1194,7 +1195,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.hasPendingUserInput) {
+  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
     return {
       label: "Awaiting Input",
       colorClass: "text-indigo-600 dark:text-indigo-300/90",
