@@ -315,6 +315,8 @@ patchedDependencies:
   "@effect/vitest@4.0.5": patches/@effect__vitest@4.0.5.patch
   "@expo/metro-config@58.0.14": patches/@expo__metro-config@58.0.14.patch
   expo-sharing@58.0.18: patches/expo-sharing@58.0.18.patch
+  # Fork addition to upstream's patch: 58.0.18 still imports the peek library under its old
+  # io.github.jakex7 package; the io.github.expo.peek 0.3.2 artifacts it depends on renamed it.
   expo-widgets@58.0.18: patches/expo-widgets@58.0.18.patch
   "@ff-labs/fff-node@0.11.0": patches/@ff-labs__fff-node@0.11.0.patch
   "@legendapp/list@3.3.5": patches/@legendapp__list@3.3.5.patch
