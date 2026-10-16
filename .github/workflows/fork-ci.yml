@@ -1,0 +1,65 @@
+name: Fork CI
+
+# Fork-only (atlitech/t3code). The fork does not run upstream's CI (ci.yml is
+# disabled here): upstream runs it on every upstream commit, and at that volume
+# GitHub pauses a fork's Actions. `Check` confirms the upstream commit the
+# branch builds on passed upstream's own `Check`, runs the tests the fork added
+# or changed since that commit (scripts/fork-check.ts), then lints and
+# typechecks everything. The atli ruleset requires `Check`, and
+# fork-server-release.yml requires it on the commit it releases. Releases also
+# run upstream's whole suite (fork-full-suite.yml).
+# Runbook: docs/operations/fork-server.md.
+
+on:
+  pull_request:
+    branches:
+      - atli
+  push:
+    branches:
+      - atli
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: Check
+    if: github.repository == 'atlitech/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Commits without blobs: the fork check finds the upstream commit by merge-base.
+          fetch-depth: 0
+          filter: blob:none
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Ensure Electron runtime is installed
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Upstream passed its CI, and the fork's tests pass
+        run: node scripts/fork-check.ts
+
+      - name: Lint and format
+        run: vp check
+
+      - name: Typecheck
+        run: vpr typecheck
