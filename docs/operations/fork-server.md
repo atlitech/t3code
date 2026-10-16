@@ -59,11 +59,18 @@ and restart `<n>` at 1.
   Google Android OAuth client ID. Only when it is set does the APK offer native
   Google sign-in.
 
-- Disable upstream's **Release** workflow:
-  `gh workflow disable Release -R atlitech/t3code`. Its `v*.*.*` tag filter
-  also matches `v*-atli.*`, and it runs on a schedule. It needs upstream's
-  runners and secrets, so it cannot succeed in the fork. Disable any other
-  upstream workflow you do not use in the same way.
+- Disable every upstream workflow; the fork runs only its own `fork-*.yml`
+  (see [Continuous integration](#continuous-integration)). This lists the
+  active ones to disable:
+
+  ```sh
+  gh api repos/atlitech/t3code/actions/workflows \
+    --jq '.workflows[] | select(.state == "active") | select(.path | test("/fork-") | not) | .path'
+  gh workflow disable <path> -R atlitech/t3code
+  ```
+
+  A workflow stays disabled when an update changes its file, but a workflow
+  upstream adds arrives active, so run this after every update.
 
 ## Cutting a release
 
@@ -75,10 +82,11 @@ gh workflow run fork-server-release.yml -R atlitech/t3code --ref atli -f version
 
 A guard job runs before any build. It refuses a dispatch from any other ref, a
 version whose tag or release already exists, and an `atli` tip without a
-passing `Check` run (CI runs on every push to `atli`). Every build checks out
+passing `Check` run (Fork CI runs on every push to `atli`). Every build checks out
 the commit the guard approved, and the publish job creates the tag and the
 release together, with every asset at once. A release publishes only when the
-Linux server, the Mac desktop app, and the Android APK all build. The Android
+Linux server, the Mac desktop app, and the Android APK all build, and every
+package's tests pass on that commit (`fork-full-suite.yml`). The Android
 job checks the app's public config before it builds, and the APK's package,
 signing certificate, and versionCode before it uploads.
 
@@ -437,13 +445,15 @@ in the drilled home match the recorded recovery point.
 history as an ancestor. The ruleset on `atli` refuses force pushes, so never
 rewrite it. `origin` is `atlitech/t3code` and `upstream` is `pingdotgg/t3code`.
 
-Freeze the upstream commit first, so the update does not move while you work
-on it, then build a candidate branch from `atli` plus a merge of that commit:
+Freeze the newest upstream commit whose CI passed, so the update does not move
+while you work on it, then build a candidate branch from `atli` plus a merge of
+that commit. Fork CI refuses a branch built on an upstream commit without a
+passing upstream `Check`:
 
 ```sh
 git fetch origin atli
 git fetch upstream main
-upstream_sha="$(git rev-parse upstream/main)"
+upstream_sha="$(gh api 'repos/pingdotgg/t3code/actions/workflows/ci.yml/runs?branch=main&event=push&status=success&per_page=1' --jq '.workflow_runs[0].head_sha')"
 branch="update/upstream-${upstream_sha:0:12}"
 git switch -c "$branch" origin/atli
 git merge --no-ff "$upstream_sha" -m "Merge upstream ${upstream_sha:0:12} into atli"
@@ -474,5 +484,25 @@ Two files are known to conflict. Resolve them in the candidate branch, then
 Any other conflict stops the update. Run `git merge --abort`, delete the
 candidate branch, and leave the update for the owner.
 
-Then cut a release. If `apps/server/package.json` moved, use its new next patch
-with `-atli.1`.
+After the merge, disable any workflow the update added (see
+[One-time repository setup](#one-time-repository-setup)). Then cut a release. If
+`apps/server/package.json` moved, use its new next patch with `-atli.1`.
+
+## Continuous integration
+
+The fork does not run upstream's CI. Upstream runs it on every upstream commit,
+and running it again on every fork push and pull request got the fork's
+Actions paused by GitHub for usage volume on 2026-10-14 ("Workflows are not
+currently being run on this fork"). Only a repository admin can lift that, from
+the banner on the Actions tab.
+
+- `fork-ci.yml`'s `Check` runs on pull requests into `atli` and pushes to it.
+  It confirms the upstream commit the branch builds on passed upstream's own
+  `Check`, runs every test file the fork added or changed since that commit
+  (`scripts/fork-check.ts`), then lints and typechecks everything. The `atli`
+  ruleset requires it, and the release guard requires it on the released
+  commit.
+- `fork-full-suite.yml` runs every package's tests. A release runs it on the
+  commit it publishes, which catches an upstream test that breaks against fork
+  code. Dispatch it by hand after a large update:
+  `gh workflow run fork-full-suite.yml -R atlitech/t3code --ref atli`.

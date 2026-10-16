@@ -1,0 +1,84 @@
+name: Fork full suite
+
+# Fork-only (atlitech/t3code). Every package's tests, which fork-ci.yml does
+# not run per pull request: it runs only the tests the fork added or changed,
+# on top of an upstream commit upstream's CI already passed. This catches an
+# upstream test that breaks against fork code. fork-server-release.yml runs it
+# on the commit it publishes; dispatch it by hand after a large sync.
+# Runbook: docs/operations/fork-server.md.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Commit to test.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit or branch to test.
+        required: false
+        default: atli
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test ${{ matrix.suite }}
+    if: github.repository == 'atlitech/t3code'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: packages
+            run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' test
+          - suite: web
+            run: vp run --filter @t3tools/web test
+          - suite: server 1/4
+            run: vp run --filter t3 test --shard 1/4
+          - suite: server 2/4
+            run: vp run --filter t3 test --shard 2/4
+          - suite: server 3/4
+            run: vp run --filter t3 test --shard 3/4
+          - suite: server 4/4
+            run: vp run --filter t3 test --shard 4/4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      # Desktop tests compile the browser secret helper, and the ACP
+      # process-tree tests compile a pthread fixture with `cc`.
+      - name: Install build tools
+        if: matrix.suite == 'packages'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libsecret-1-dev pkg-config
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Ensure Electron runtime is installed
+        if: matrix.suite == 'packages'
+        run: vp run --filter @t3tools/desktop ensure:electron
+
+      - name: Install Chromium for server browser integration tests
+        if: startsWith(matrix.suite, 'server')
+        run: node apps/server/node_modules/playwright-core/cli.js install --with-deps --only-shell chromium
+
+      - name: Test
+        run: ${{ matrix.run }}

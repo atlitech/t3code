@@ -149,6 +149,14 @@ describe("fork server release workflow", () => {
     for (const name of buildJobs()) expect(needs, name).toContain(name);
   });
 
+  it("publishes only after the full test suite passed on the guarded commit", () => {
+    const body = job("test-full").join("\n");
+    expect(needsOf(job("test-full"))).toEqual(["guard"]);
+    expect(body).toMatch(/uses: \.\/\.github\/workflows\/fork-full-suite\.yml/);
+    expect(body).toMatch(/ref: \$\{\{ needs\.guard\.outputs\.sha \}\}/);
+    expect(needsOf(job("publish"))).toContain("test-full");
+  });
+
   it("publishes nothing unless the Mac desktop app built", () => {
     expect(needsOf(job("publish"))).toEqual(
       expect.arrayContaining(["guard", "build-linux", "admission", "build-mac"]),
