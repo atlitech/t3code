@@ -100,7 +100,6 @@ describe("createInboxReturnTracker", () => {
 
     tracker.observe(null);
     expect(tracker.returnedAt(thread("b", false))).toBeUndefined();
-    // After a reset the next call is a fresh baseline again.
     tracker.observe([thread("b", true)]);
     tracker.observe([thread("b", false)]);
     expect(tracker.returnedAt(thread("b", false))).toBeDefined();
@@ -112,7 +111,6 @@ describe("sortWorkingThreadsBySend", () => {
     const sentFirst = {
       ...thread("sent-first", true),
       latestUserAuthoredMessageAt: "2026-06-01T01:00:00.000Z",
-      // A wake run requested after the other thread's send.
       latestRun: {
         runId: RunId.make("run:wake"),
         status: "running" as const,
@@ -126,7 +124,6 @@ describe("sortWorkingThreadsBySend", () => {
       ...thread("sent-last", true),
       latestUserAuthoredMessageAt: "2026-06-01T02:00:00.000Z",
     };
-    // Launched by an agent: no user message, so creation time is the send.
     const launched = { ...thread("launched", true), latestUserAuthoredMessageAt: null };
     expect(
       sortWorkingThreadsBySend([launched, sentFirst, sentLast]).map((thread) => thread.id),

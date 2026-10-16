@@ -54,7 +54,6 @@ export interface ProjectThreadAwarenessV2Input {
   >;
 }
 
-/** Build relay activity directly from the V2 shell projection. */
 export function projectThreadAwarenessV2(
   input: ProjectThreadAwarenessV2Input,
 ): AgentAwarenessState | null {
@@ -104,7 +103,6 @@ function resolveThreadAwarenessPhaseV2(
     case "waiting":
       return "running";
     case "completed":
-      // Tracked background work can resume the agent after the root turn ends.
       return backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? [])
         ? "running"
         : "completed";

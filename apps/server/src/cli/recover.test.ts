@@ -201,6 +201,7 @@ const recover = Effect.fn("test.recover")(function* (
       yield* Deferred.succeed(stopped, undefined);
       return result;
     }),
+    withStopped: () => unexpected("withStopped"),
     uninstall: unexpected("uninstall"),
     status: Effect.succeed(homeStatus(home, options.service)),
   });
@@ -217,6 +218,7 @@ const recover = Effect.fn("test.recover")(function* (
       return true;
     }),
     stop: unexpected("stop on the prior version's service"),
+    withStopped: () => unexpected("withStopped"),
     uninstall: unexpected("uninstall"),
     status: unexpected("status on the prior version's service"),
   });

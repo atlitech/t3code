@@ -125,7 +125,6 @@ const migrateDatabaseCopy = Effect.fn("cloud.service_preflight.migrate_database_
  * existing database. Callers read exactly one JSON line of this from stdout.
  */
 export const runServicePreflight = Effect.fn("cloud.service_preflight.run")(function* (input: {
-  /** Older servers always pass this flag when invoking a staged preflight. */
   readonly databasePath: string;
   readonly launcherProtocol: number;
   readonly version?: string;

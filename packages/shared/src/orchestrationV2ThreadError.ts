@@ -6,7 +6,6 @@ import type {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-/** Only a failed root turn of the current run owns the thread's failure state. */
 export function latestRootProviderFailure(
   run: OrchestrationV2Run | null,
   turnItems: ReadonlyArray<OrchestrationV2TurnItem>,
@@ -33,7 +32,6 @@ export function latestRootProviderFailure(
   return latest?.failure ?? null;
 }
 
-/** A distinct session failure supersedes the turn's classification. */
 export function threadErrorSummary(
   failure: OrchestrationV2ProviderFailure | null,
   sessionError: string | null,
@@ -62,10 +60,10 @@ export function latestExecutedRun(
 }
 
 /**
- * Whether started `run` ran after `other`. Ordinals follow submission, but a
- * run can start ahead of a held queue (a restart continuation, or a message
- * sent while the queue is held), so a queued run resumed later can have a
- * lower ordinal than one that already ended. An unfinished run is the latest.
+ * Ordinals follow submission, but a run can start ahead of a held queue (a
+ * restart continuation, or a message sent while the queue is held), so a queued
+ * run resumed later can have a lower ordinal than one that already ended. An
+ * unfinished run is the latest.
  */
 export function runRanAfter(
   run: Pick<OrchestrationV2Run, "ordinal" | "completedAt">,
@@ -113,11 +111,6 @@ export function usageLimitRunPresentedAsLatest(
   return blocked !== null && runs.some((run) => run.ordinal > blocked.ordinal) ? blocked : null;
 }
 
-/**
- * The newest run that is not waiting in a held queue, or null when only held
- * runs exist. A held queue waits for the user, so its runs never stand for the
- * thread's outcome. The SQL thread shell selects the same run.
- */
 export function latestUnheldRun(
   runs: ReadonlyArray<OrchestrationV2Run>,
 ): OrchestrationV2Run | null {
