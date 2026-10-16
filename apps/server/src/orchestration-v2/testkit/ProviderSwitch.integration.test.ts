@@ -103,7 +103,6 @@ function makeTestAdapter(input: {
   readonly capturedTurns: Ref.Ref<ReadonlyArray<CapturedTurn>>;
   readonly injectedHistory?: Ref.Ref<ReadonlyArray<unknown>>;
   readonly failStartOnce?: Ref.Ref<boolean>;
-  /** Starts left to refuse the way Claude does while background work runs. */
   readonly refuseStarts?: Ref.Ref<number>;
   readonly failInjectionOnce?: Ref.Ref<boolean>;
   readonly nativeThreadGeneration?: Ref.Ref<number>;
@@ -611,8 +610,6 @@ describe("orchestration v2 provider switching", () => {
               : scenario === "large-current-input"
                 ? "x".repeat(9_000)
                 : "Continue work";
-          // First establish the returning native thread: the current request must
-          // not be charged as existing context on the subsequent handoff.
           if (returning) {
             if (scenario.includes("unsent")) yield* Ref.set(failStartOnce, true);
             yield* dispatch(
@@ -1139,7 +1136,6 @@ describe("orchestration v2 provider switching", () => {
               worktreePath: null,
             });
             yield* runToCompletion(1);
-            // A detached session resumes on the next turn, as after a restart.
             const providerThread = (yield* orchestrator.getThreadProjection(
               threadId,
             )).providerThreads.at(0);
@@ -1154,7 +1150,6 @@ describe("orchestration v2 provider switching", () => {
             });
             yield* worker.drain();
             if (attempts === "legacy") {
-              // Attempts persisted before native identity existed carry no native id.
               const existing = yield* orchestrator.getThreadProjection(threadId);
               yield* (yield* EventSink.EventSinkV2).write({
                 events: existing.attempts.map(
@@ -1175,8 +1170,6 @@ describe("orchestration v2 provider switching", () => {
             const turns = yield* Ref.get(capturedTurns);
             assert.equal(turns.length, 3);
             assert.equal(yield* Ref.get(generation), 2);
-            // The fallback binds a new native thread to a provider thread that
-            // already has a turn, so the provider must not resume it.
             assert.notEqual(turns[1]?.nativeThreadId, turns[0]?.nativeThreadId);
             assert.isAbove(turns[1]?.providerTurnOrdinal ?? 0, 1);
             assert.isFalse(turns[1]?.nativeThreadHasTurns);
@@ -1263,7 +1256,6 @@ describe("orchestration v2 provider switching", () => {
             worktreePath: null,
           });
           assert.equal(yield* run(1), "completed");
-          // Run 3 carries run 2's missed request as a handoff and is refused too.
           yield* Ref.set(refuseStarts, 2);
           assert.equal(yield* run(2), "failed");
           assert.equal(yield* run(3), "failed");
@@ -1271,8 +1263,6 @@ describe("orchestration v2 provider switching", () => {
 
           const turns = yield* Ref.get(capturedTurns);
           assert.equal(turns.length, 2);
-          // Nothing reached the provider, so the next turn continues the same
-          // native session instead of replacing it with a summary.
           assert.equal(yield* Ref.get(generation), 1);
           assert.equal(turns[1]?.nativeThreadId, turns[0]?.nativeThreadId);
           assert.include(turns[1]?.text, "Request 2");
@@ -1454,7 +1444,6 @@ describe("orchestration v2 provider switching", () => {
             assert.equal(handoff?.delivery?.status, "inline");
           }
           assert.notInclude(deliveredHistory, "Earlier successful request.");
-          // The returning source already has its own failed/interrupted native turn.
           yield* dispatch("back", "Finish the remaining work", sourceSelection);
           yield* waitForRun(sourceOrdinal + 2, "completed");
           const back = (yield* Ref.get(capturedTurns)).at(-1)!;
@@ -3181,8 +3170,6 @@ describe("orchestration v2 provider switching", () => {
             CLAUDE_MODEL_SELECTION,
           );
           yield* waitForIdle(threadId);
-          // Stopping the shared Codex process drops its loaded native thread, so
-          // returning to Codex has to resume it (and fall back when that fails).
           const codexSession = (yield* orchestrator.getThreadProjection(
             threadId,
           )).providerSessions.find(
@@ -3233,7 +3220,6 @@ describe("orchestration v2 provider switching", () => {
         assert.lengthOf(projection.providerThreads, 2);
         assert.equal(projection.runs[0]?.providerThreadId, projection.runs[2]?.providerThreadId);
         assert.notEqual(projection.runs[0]?.providerThreadId, projection.runs[1]?.providerThreadId);
-        // The failed resume bound a fresh native Codex thread to the same row.
         assert.equal(yield* Ref.get(codexNativeThreadGeneration), 2);
         const codexThread = projection.providerThreads.find(
           (providerThread) => providerThread.id === projection.runs[2]?.providerThreadId,
@@ -3285,8 +3271,6 @@ describe("orchestration v2 provider switching", () => {
         assert.include(turns[1]?.text ?? "", "Context handoff (full_thread_summary):");
         assert.include(turns[1]?.text ?? "", "codex before switch");
         assert.include(turns[1]?.text ?? "", claudePrompt);
-        // The fresh native thread has none of the earlier Codex turn, so the
-        // portable fallback re-sends it alongside the Claude delta.
         assert.include(turns[2]?.text ?? "", "Context handoff (full_thread_summary):");
         assert.include(turns[2]?.text ?? "", "Context handoff (delta_since_target_last_seen):");
         assert.include(turns[2]?.text ?? "", "codex before switch");
@@ -3705,8 +3689,6 @@ describe("orchestration v2 provider switching", () => {
             yield* waitForIdle(forkThreadId);
             yield* orchestrator.dispatch(commands[5]!);
             if (failResume) {
-              // A persisted native ref that is not loaded in this process must
-              // exercise resume rather than the session manager's warm cache.
               const beforeResume = yield* orchestrator.getThreadProjection(sourceThreadId);
               const codexThread = beforeResume.providerThreads.find(
                 (thread) => thread.id === beforeResume.runs[0]?.providerThreadId,

@@ -46,9 +46,6 @@ interface HarnessOptions {
   ) => Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem>;
 }
 
-// The staged runtime is a release archive: the fake client serves SHA256SUMS,
-// ADMISSION.json, and the tarball, and the fake runner stands in for tar
-// before it answers the staged preflight.
 const archiveBytes = new TextEncoder().encode("not really a tarball");
 const archiveSha256 = Effect.promise(() => crypto.subtle.digest("SHA-256", archiveBytes)).pipe(
   Effect.map((digest) =>
@@ -477,7 +474,6 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       );
       expect(result).toEqual({ targetVersion: "1.2.0", method: "desktop-app" });
       expect(stages).toEqual(["downloading", "installing"]);
-      // The launcher staging path must not run on the desktop path.
       expect(order).toEqual([]);
     }),
   );

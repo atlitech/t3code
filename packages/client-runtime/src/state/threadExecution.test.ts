@@ -273,11 +273,9 @@ describe("thread execution presentation", () => {
       activeRunId: null,
     });
 
-    // Resuming clears the hold, and the run reads as queued until it starts.
     const resumed = { ...projection, runs: [interrupted, { ...held, queueHeld: false }] };
     expect(deriveThreadRuntime(resumed)).toMatchObject({ status: "queued" });
 
-    // Recovery can hold a first message before any run executed; it is not work.
     const onlyHeld = {
       ...projection,
       runs: [held],
@@ -387,7 +385,6 @@ describe("deriveRunlessWorkStartedAt", () => {
   it("times a provider-native subagent from its runless root turn while it works", () => {
     const projection = { ...nativeChild, nodes: [rootTurn("running", later)] };
     expect(deriveRunlessWorkStartedAt(projection)).toBe("2026-07-28T10:05:00.000Z");
-    // The subagent has no run, so it stays unstoppable and unqueueable.
     expect(deriveThreadRuntime(projection)).toBeNull();
   });
 

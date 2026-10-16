@@ -34,6 +34,14 @@ vi.mock("@react-navigation/native", () => {
 vi.mock("../../native/useOpenPullRequest", () => ({ useOpenPullRequest: () => () => {} }));
 
 vi.mock("../../state/session", () => ({ useEnvironmentScope: () => true }));
+vi.mock("../../components/ui/AppBar", async () => {
+  const { NativeStackScreenOptions } = await import("../../native/StackHeader");
+  return {
+    AppBar: (props: import("../../components/ui/AppBar.types").AppBarProps) => (
+      <NativeStackScreenOptions options={props.options} optionsVersion={props.optionsVersion} />
+    ),
+  };
+});
 vi.mock("react-native", () => ({ Alert: { alert: () => {} }, Linking: {}, Platform: {} }));
 vi.mock("../layout/AdaptiveWorkspaceLayout", () => ({
   useAdaptiveWorkspaceLayout: () => ({
@@ -88,7 +96,6 @@ function status(
   } as unknown as VcsStatusResult;
 }
 
-// Mirrors the route screen: every render passes fresh gitControls callbacks.
 function Header(props: {
   readonly gitStatus: VcsStatusResult | null;
   readonly title?: string;
@@ -194,8 +201,6 @@ describe("ThreadHeader", () => {
     render(<Header gitStatus={status([])} />);
     expect(renderedGitStatusDescription()).toBe("Clean");
 
-    // A refreshed status (e.g. after reconnect) must reach the Git popover even
-    // though nothing else in the header changed.
     render(<Header gitStatus={status(["audit.txt"])} />);
     expect(renderedGitStatusDescription()).toBe("1 changed");
 
@@ -207,7 +212,6 @@ describe("ThreadHeader", () => {
     render(<Header gitStatus={status([])} />);
     const applied = harness.setOptionsCalls;
 
-    // Streaming re-renders the route with fresh callbacks and equal Git content.
     for (let index = 0; index < 20; index += 1) {
       render(<Header gitStatus={status([])} />);
     }
@@ -215,8 +219,6 @@ describe("ThreadHeader", () => {
   });
 
   it("re-applies menu actions when the default ref changes behind the same label", async () => {
-    // An unpushed commit on a branch with an open PR shows "Push" whether or not the
-    // branch is the default one, but only the default branch asks for confirmation.
     const pushable = (isDefaultRef: boolean) =>
       status([], {
         isDefaultRef,
