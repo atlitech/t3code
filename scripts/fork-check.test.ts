@@ -32,6 +32,24 @@ describe("selectForkTests", () => {
     });
   });
 
+  it("selects every extension Vitest runs", () => {
+    const selection = selectForkTests(
+      [
+        "apps/desktop/scripts/electron-launcher.test.mjs",
+        "apps/desktop/gnome-extension/captureService.test.js",
+        "packages/shared/src/thing.spec.cts",
+      ],
+      [...packageDirs, "apps/desktop"],
+    );
+    expect(selection.groups).toEqual([
+      {
+        packageDir: "apps/desktop",
+        files: ["gnome-extension/captureService.test.js", "scripts/electron-launcher.test.mjs"],
+      },
+      { packageDir: "packages/shared", files: ["src/thing.spec.cts"] },
+    ]);
+  });
+
   it("skips source files and vendored references", () => {
     const selection = selectForkTests(
       [

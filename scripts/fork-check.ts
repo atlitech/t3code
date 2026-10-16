@@ -19,7 +19,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { hasPassedCheck, REQUIRED_CHECK } from "./fork-release-guard.ts";
 
 const UPSTREAM_REPOSITORY = "pingdotgg/t3code";
-const TEST_FILE = /\.test\.tsx?$/;
+// Vitest's default include, so no extension a package runs is skipped.
+const TEST_FILE = /\.(test|spec)\.[cm]?[jt]sx?$/;
 
 export interface ForkTestGroup {
   /** Repository-relative package directory, where `vp run test` runs. */
