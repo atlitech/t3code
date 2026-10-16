@@ -35,7 +35,10 @@ describe("fork server runbook", () => {
 
   it("merges a frozen upstream commit through a candidate pull request", () => {
     const section = updateSection();
-    expect(section).toMatch(/upstream_sha="\$\(git rev-parse upstream\/main\)"/);
+    expect(section).toMatch(/newest upstream commit whose CI passed/);
+    expect(section).toMatch(
+      /upstream_sha="\$\(gh api 'repos\/pingdotgg\/t3code\/actions\/workflows\/ci\.yml\/runs\?branch=main&event=push&status=success&per_page=1'/,
+    );
     expect(section).toMatch(/git switch -c "\$branch" origin\/atli/);
     expect(section).toMatch(/git merge --no-ff "\$upstream_sha"/);
     expect(section).toMatch(/gh pr create [^\n]*--base atli/);

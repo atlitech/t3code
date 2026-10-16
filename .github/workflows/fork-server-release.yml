@@ -5,7 +5,7 @@ name: Fork server release
 # Mac arm64 desktop DMG and the personal Android arm64-v8a APK, and publishes
 # all three with SHA256SUMS and manifest.json as a prerelease, in the layout
 # scripts/install.sh and `t3 update` download from. A release publishes only
-# when all three build. Before anything publishes,
+# when all three build and every package's tests pass. Before anything publishes,
 # the admission job installs that exact archive over data the previously
 # admitted release wrote, upgrades and runs it, and the release ships its
 # attested ADMISSION.json only when every check passed. Releases are
@@ -522,12 +522,21 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # Every package's tests on the guarded commit. Pull requests into atli run
+  # only the tests the fork added or changed (fork-ci.yml).
+  test-full:
+    name: Full test suite
+    needs: guard
+    uses: ./.github/workflows/fork-full-suite.yml
+    with:
+      ref: ${{ needs.guard.outputs.sha }}
+
   # Creates the tag and the release together, with every asset in one call, so
   # a published release never changes. A failed run is retried by dispatching
   # the next version, never by re-running this job against a used one.
   publish:
     name: Publish release
-    needs: [guard, build-linux, admission, build-mac, build-android]
+    needs: [guard, build-linux, admission, build-mac, build-android, test-full]
     if: github.repository == 'atlitech/t3code'
     runs-on: ubuntu-24.04
     timeout-minutes: 15

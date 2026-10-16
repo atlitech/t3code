@@ -1,38 +1,21 @@
-// @effect-diagnostics nodeBuiltinImport:off - Reads the committed CI workflow as text.
+// @effect-diagnostics nodeBuiltinImport:off - Reads the committed CI workflows as text.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
-// The fork runs upstream's CI on pull requests into atli and pushes to atli,
-// on GitHub-hosted runners only: the fork has no Blacksmith installation. The
-// push run is the `Check` that fork-server-release.yml requires on the commit
-// it releases.
-const workflow = NodeFS.readFileSync(
-  NodePath.join(import.meta.dirname, "..", ".github", "workflows", "ci.yml"),
-  "utf8",
-);
+// The fork does not run upstream's CI. fork-ci.yml's `Check` runs on pull
+// requests into atli and pushes to atli, on GitHub-hosted runners: it confirms
+// the upstream commit passed upstream's CI and runs the fork's own tests. The
+// push run is the `Check` fork-server-release.yml requires on the commit it
+// releases, and the release also runs fork-full-suite.yml.
+const read = (file: string) =>
+  NodeFS.readFileSync(
+    NodePath.join(import.meta.dirname, "..", ".github", "workflows", file),
+    "utf8",
+  );
+const workflow = read("fork-ci.yml");
+const fullSuite = read("fork-full-suite.yml");
 const lines = workflow.split("\n");
-
-const jobRunners = (): ReadonlyMap<string, string> => {
-  const runners = new Map<string, string>();
-  let job: string | undefined;
-  let inJobs = false;
-  for (const line of lines) {
-    if (/^\S/.test(line)) {
-      inJobs = line === "jobs:";
-      job = undefined;
-      continue;
-    }
-    const jobMatch = inJobs ? /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line) : null;
-    if (jobMatch) {
-      job = jobMatch[1];
-      continue;
-    }
-    const runsOn = /^ {4}runs-on:\s*(\S+)\s*$/.exec(line);
-    if (job && runsOn) runners.set(job, runsOn[1]!);
-  }
-  return runners;
-};
 
 const triggerBranches = (event: "pull_request" | "push"): ReadonlyArray<string> => {
   const start = lines.indexOf(`  ${event}:`);
@@ -50,6 +33,9 @@ const triggerBranches = (event: "pull_request" | "push"): ReadonlyArray<string> 
     .filter((branch): branch is string => branch !== undefined);
 };
 
+const runners = (text: string): ReadonlyArray<string> =>
+  [...text.matchAll(/^ {4}runs-on:\s*(\S+)\s*$/gm)].map((match) => match[1]!);
+
 describe("fork CI workflow", () => {
   it("runs on pull requests into atli only", () => {
     expect(triggerBranches("pull_request")).toEqual(["atli"]);
@@ -59,25 +45,25 @@ describe("fork CI workflow", () => {
     expect(triggerBranches("push")).toEqual(["atli"]);
   });
 
-  it("names the job fork-server-release.yml requires on a released commit Check", () => {
+  it("names the job the atli ruleset and fork-server-release.yml require Check", () => {
     expect(workflow).toMatch(/^ {2}check:\n {4}name: Check\n/m);
   });
 
-  it("names no Blacksmith runner", () => {
-    expect(workflow).not.toMatch(/runs-on:.*blacksmith/);
+  it("checks out history so the fork check can find the upstream commit", () => {
+    expect(workflow).toMatch(/fetch-depth: 0\n\s+filter: blob:none/);
   });
 
-  it("runs every job on a GitHub-hosted runner, the native lint on macOS", () => {
-    const runners = jobRunners();
-    expect(runners.size).toBeGreaterThan(0);
-    expect(runners.get("check")).toBeDefined();
-    for (const [job, runner] of runners) {
-      if (job === "mobile_native_static_analysis") {
-        expect(runner).toMatch(/^macos-\d+$/);
-      } else {
-        expect(runner, job).toMatch(/^ubuntu-\d{2}\.\d{2}$/);
-      }
+  it("runs the fork check, lint, and typecheck", () => {
+    expect(workflow).toMatch(/run: node scripts\/fork-check\.ts\n/);
+    expect(workflow).toMatch(/run: vp check\n/);
+    expect(workflow).toMatch(/run: vpr typecheck\n/);
+  });
+
+  it("runs every fork CI job on a GitHub-hosted Ubuntu runner", () => {
+    for (const text of [workflow, fullSuite]) {
+      const found = runners(text);
+      expect(found.length).toBeGreaterThan(0);
+      for (const runner of found) expect(runner).toMatch(/^ubuntu-\d{2}\.\d{2}$/);
     }
-    expect(runners.get("mobile_native_static_analysis")).toBeDefined();
   });
 });

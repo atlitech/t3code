@@ -16,7 +16,7 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 export const RELEASE_REF = "refs/heads/atli";
-// The fork CI job every other ci.yml job feeds; branch protection requires it.
+// The job in fork-ci.yml that the atli ruleset requires; upstream names its CI gate the same.
 export const REQUIRED_CHECK = "Check";
 const CHECK_APP = "github-actions";
 
@@ -60,6 +60,16 @@ export type ReleaseGuardDecision =
       readonly detail: string;
     };
 
+/** Whether GitHub Actions completed a successful `Check` run on the commit. */
+export const hasPassedCheck = (checkRuns: ReadonlyArray<CheckRun>): boolean =>
+  checkRuns.some(
+    (run) =>
+      run.name === REQUIRED_CHECK &&
+      run.app === CHECK_APP &&
+      run.status === "completed" &&
+      run.conclusion === "success",
+  );
+
 const refuse = (reason: ReleaseGuardRefusalReason, detail: string): ReleaseGuardDecision => ({
   _tag: "Refused",
   reason,
@@ -101,14 +111,7 @@ export const decideRelease = (input: ReleaseGuardInput): ReleaseGuardDecision =>
   if (input.releaseExists) {
     return refuse("release_exists", `A release for ${tag} already exists. Bump the atli number.`);
   }
-  const passed = input.checkRuns.some(
-    (run) =>
-      run.name === REQUIRED_CHECK &&
-      run.app === CHECK_APP &&
-      run.status === "completed" &&
-      run.conclusion === "success",
-  );
-  if (!passed) {
+  if (!hasPassedCheck(input.checkRuns)) {
     return refuse(
       "check_not_passed",
       `Commit ${input.sha} has no successful ${REQUIRED_CHECK} run. Wait for CI on atli to pass.`,
