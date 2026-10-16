@@ -171,8 +171,14 @@ const decodePackageScripts = Schema.decodeEffect(PackageScripts);
 /** Repository-relative directories of the tracked packages that have a `test` script. */
 const testedPackageDirs = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  const manifests = (yield* read("git", ["ls-files", "--", "package.json", "**/package.json"]))
-    .split("\n")
+  const manifests = (yield* read("git", [
+    "ls-files",
+    "-z",
+    "--",
+    "package.json",
+    "**/package.json",
+  ]))
+    .split("\0")
     .filter((path) => path.length > 0 && !path.startsWith(".repos/"));
   const dirs = yield* Effect.forEach(manifests, (manifest) =>
     fs.readFileString(manifest).pipe(
@@ -199,8 +205,16 @@ export const forkCheck = Effect.fn("forkCheck")(function* () {
   }
   yield* Effect.log(`Upstream ${base} passed its ${REQUIRED_CHECK}.`);
 
-  const changed = (yield* read("git", ["diff", "--name-only", "--diff-filter=d", base, "HEAD"]))
-    .split("\n")
+  // -z: raw paths, NUL-separated; without it git quotes unusual ones.
+  const changed = (yield* read("git", [
+    "diff",
+    "-z",
+    "--name-only",
+    "--diff-filter=d",
+    base,
+    "HEAD",
+  ]))
+    .split("\0")
     .filter((path) => path.length > 0);
   const selection = selectForkTests(changed, yield* testedPackageDirs);
   if (selection.orphans.length > 0) {
