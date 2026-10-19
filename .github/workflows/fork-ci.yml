@@ -55,6 +55,10 @@ jobs:
       - name: Ensure Electron runtime is installed
         run: vp run --filter @t3tools/desktop ensure:electron
 
+      # Web tests the fork changed may run in apps/web's headless Chromium project.
+      - name: Install Chromium for web browser tests
+        run: node apps/web/node_modules/playwright/cli.js install --with-deps --only-shell chromium
+
       - name: Upstream passed its CI, and the fork's tests pass
         run: node scripts/fork-check.ts
 
