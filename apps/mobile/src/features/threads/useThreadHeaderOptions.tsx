@@ -1,11 +1,11 @@
 import { StackActions, useNavigation } from "@react-navigation/native";
 import { useMemo } from "react";
-import { Platform } from "react-native";
+import { isDuoDevice } from "../../lib/device-type";
 import type { AppNativeStackNavigationOptions } from "../../native/StackHeader";
+import { useDeviceType } from "../../native/native-layout-metrics";
 import { useNativeWorkspaceColumnsSupported } from "../../native/NativeWorkspaceColumns";
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import { withNativeGlassHeaderItem } from "../layout/native-glass-header-items";
-import { dispatchHardwareKeyboardCommand } from "../keyboard/hardwareKeyboardCommands";
 import {
   ThreadGitControls,
   useThreadGitCenterHeaderItems,
@@ -27,7 +27,8 @@ export function useThreadHeaderOptions(props: {
   readonly onThreadAction: (action: ThreadRouteActionId) => void;
 }) {
   const usesNativeWorkspaceColumns = useNativeWorkspaceColumnsSupported();
-  const usesDuoHeader = usesNativeWorkspaceColumns && Platform.OS === "ios" && !Platform.isPad;
+  const deviceType = useDeviceType();
+  const usesDuoHeader = usesNativeWorkspaceColumns && isDuoDevice(deviceType);
   const navigation = useNavigation();
   const { layout, panes, togglePrimarySidebar } = useAdaptiveWorkspaceLayout();
   const threadCenterHeaderItems = useThreadGitCenterHeaderItems(props.gitControls);
@@ -141,24 +142,6 @@ export function useThreadHeaderOptions(props: {
     () => [
       ...threadCenterHeaderItems,
       { type: "spacing", spacing: 8 },
-      ...(layout.usesSplitView &&
-      Platform.OS === "ios" &&
-      !Platform.isPad &&
-      !panes.primarySidebarVisible
-        ? [
-            withNativeGlassHeaderItem({
-              type: "button" as const,
-              axisBehavior: "verticalPreferred",
-              identifier: "thread-right-search",
-              label: "Search threads",
-              accessibilityLabel: "Search threads",
-              icon: { name: "magnifyingglass", type: "sfSymbol" as const },
-              onPress: () => {
-                dispatchHardwareKeyboardCommand("focusSearch");
-              },
-            }),
-          ]
-        : []),
       withNativeGlassHeaderItem({
         type: "button" as const,
         axisBehavior: "verticalPreferred",
@@ -170,13 +153,7 @@ export function useThreadHeaderOptions(props: {
       }),
       threadActionsHeaderItem,
     ],
-    [
-      props.onStartNewTask,
-      threadActionsHeaderItem,
-      threadCenterHeaderItems,
-      layout.usesSplitView,
-      panes.primarySidebarVisible,
-    ],
+    [props.onStartNewTask, threadActionsHeaderItem, threadCenterHeaderItems],
   );
 
   const options: AppNativeStackNavigationOptions = {
