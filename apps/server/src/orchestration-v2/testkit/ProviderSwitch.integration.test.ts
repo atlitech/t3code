@@ -2363,8 +2363,9 @@ describe("orchestration v2 provider switching", () => {
             });
             const queued = yield* orchestrator.getThreadProjection(queuedThreadId);
             const now = yield* DateTime.now;
-            // A stopped/held queue models the recovery boundary. The user can
-            // successfully reply with another selection before explicitly resuming.
+            // A stopped/held queue models the recovery boundary. A message can
+            // succeed on another selection before an explicit resume; it comes
+            // over MCP because a user's own message releases the hold.
             yield* eventSink.write({
               events: queued.runs.map((run) => ({
                 id: EventId.make(`event:${name}:held:${run.ordinal}`),
@@ -2427,6 +2428,8 @@ describe("orchestration v2 provider switching", () => {
               });
             } else {
               yield* dispatch("successful-new-selection", {
+                createdBy: "agent",
+                creationSource: "mcp",
                 modelSelection: targetSelection,
                 dispatchMode: { type: "start_immediately" },
               });
@@ -2500,10 +2503,13 @@ describe("orchestration v2 provider switching", () => {
             );
             yield* worker.drain();
             const delivered = yield* orchestrator.getThreadProjection(queuedThreadId);
+            // Delivered runs move after the message that ran ahead, so find them by id.
+            const deliveredRun = (index: number) =>
+              delivered.runs.find((run) => run.id === queued.runs[index]?.id);
             assert.deepEqual(delivered.thread.modelSelection, targetSelection);
-            assert.equal(delivered.runs[2]?.status, switchProvider ? "cancelled" : "completed");
+            assert.equal(deliveredRun(2)?.status, switchProvider ? "cancelled" : "completed");
             for (const index of [1, 3]) {
-              const run = delivered.runs[index]!;
+              const run = deliveredRun(index)!;
               const node = delivered.nodes.find((entry) => entry.id === run.rootNodeId)!;
               const attempt = delivered.attempts.find((entry) => entry.id === run.activeAttemptId)!;
               const providerThread = delivered.providerThreads.find(

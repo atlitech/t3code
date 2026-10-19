@@ -15,6 +15,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as Stream from "effect/Stream";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as TestClock from "effect/testing/TestClock";
@@ -35,6 +36,7 @@ interface HarnessOptions {
   readonly version?: string;
   /** ADMISSION.json per release version; a missing entry is a 404. */
   readonly admission?: Readonly<Record<string, string>>;
+  readonly beforeDownload?: Effect.Effect<void>;
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
   readonly desktopAppUpdate?: DesktopAppUpdate.DesktopAppUpdate["Service"];
   /** An existing T3 home to update; a fresh one without a database by default. */
@@ -58,7 +60,11 @@ const admissionRecord = (version: string, sha256: string) =>
     null,
     2,
   );
-const releaseHttpClient = (order: string[], admission: Readonly<Record<string, string>> = {}) =>
+const releaseHttpClient = (
+  order: string[],
+  admission: Readonly<Record<string, string>> = {},
+  beforeDownload?: Effect.Effect<void>,
+) =>
   HttpClient.make((request) =>
     Effect.gen(function* () {
       const version = /\/v([^/]+)\/[^/]+$/.exec(request.url)?.[1] ?? "";
@@ -76,6 +82,7 @@ const releaseHttpClient = (order: string[], admission: Readonly<Record<string, s
           record === undefined ? new Response("Not Found", { status: 404 }) : new Response(record),
         );
       }
+      if (beforeDownload) yield* beforeDownload;
       order.push("download");
       return HttpClientResponse.fromWeb(request, new Response(archiveBytes));
     }),
@@ -169,7 +176,10 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
         run: () => Effect.die("unexpected desktop app update run"),
       },
     ),
-    Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order, options.admission)),
+    Effect.provideService(
+      HttpClient.HttpClient,
+      releaseHttpClient(order, options.admission, options.beforeDownload),
+    ),
     Effect.provideService(FileSystem.FileSystem, updateFs),
     Effect.provideService(HostProcess.Platform, "linux"),
     Effect.provideService(HostProcess.Architecture, "x64"),
@@ -504,6 +514,48 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       );
       yield* Deferred.succeed(accepted, "launcher-id");
       expect((yield* Fiber.join(first)).updateId).toBe("launcher-id");
+    }),
+  );
+
+  it.effect("keeps preparing after the progress stream closes", () =>
+    Effect.gen(function* () {
+      const releaseDownload = yield* Deferred.make<void>();
+      const sawDownloading = yield* Deferred.make<void>();
+      const accepted = yield* Deferred.make<void>();
+      const { selfUpdate, order } = yield* makeHarness({
+        beforeDownload: Deferred.await(releaseDownload),
+        requestUpdate: () =>
+          Effect.sync(() => {
+            order.push("accept");
+          }).pipe(Effect.andThen(Deferred.succeed(accepted, undefined)), Effect.as("launcher-id")),
+      });
+
+      const consumed = yield* ServerSelfUpdate.updateProgressStream(selfUpdate, {
+        targetVersion: "1.1.0",
+      }).pipe(
+        Stream.tap((event) =>
+          event.type === "progress" && event.stage === "downloading"
+            ? Deferred.succeed(sawDownloading, undefined)
+            : Effect.void,
+        ),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+
+      yield* Deferred.await(sawDownloading);
+      // The socket drop ends the stream. The download is still held.
+      yield* Fiber.interrupt(consumed);
+      expect((yield* selfUpdate.update({ targetVersion: "1.2.0" }).pipe(Effect.flip)).reason).toBe(
+        "A server update is already in progress.",
+      );
+
+      yield* Deferred.succeed(releaseDownload, undefined);
+      // `installing` is offered only after the stream queue has shut down.
+      yield* Deferred.await(accepted);
+      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      expect((yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason).toBe(
+        "A server update is already in progress.",
+      );
     }),
   );
 });
