@@ -198,6 +198,12 @@ describe("fork server release workflow", () => {
     expect(build).toBeGreaterThan(stepsOf(body).indexOf(rust!));
   });
 
+  it("builds the Linux web client to link upstream's release notes", () => {
+    expect(job("build-linux").join("\n")).toMatch(
+      /run: env -u GITHUB_REPOSITORY -u T3CODE_DESKTOP_UPDATE_REPOSITORY vp run --filter t3 build$/m,
+    );
+  });
+
   it("ships the Mac app unsigned, without Apple secrets", () => {
     const text = job("build-mac").join("\n");
     expect(text).not.toMatch(/secrets\./);

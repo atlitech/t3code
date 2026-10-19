@@ -155,8 +155,10 @@ jobs:
         run: cargo build --locked --release --manifest-path native/resource-monitor/Cargo.toml --target x86_64-unknown-linux-gnu
 
       # t3#build builds @t3tools/web first and copies it into apps/server/dist/client.
+      # Without GITHUB_REPOSITORY the client links release notes to upstream's
+      # releases, which publish the versions clients offer; the fork's do not.
       - name: Build server and web client
-        run: vp run --filter t3 build
+        run: env -u GITHUB_REPOSITORY -u T3CODE_DESKTOP_UPDATE_REPOSITORY vp run --filter t3 build
 
       - name: Build CLI single-executable
         env:
