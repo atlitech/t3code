@@ -38,7 +38,8 @@ jobs:
           - suite: packages
             run: vp run --parallel --concurrency-limit 4 --filter '!t3' --filter '!@t3tools/monorepo' --filter '!@t3tools/web' test
           - suite: web
-            run: vp run --filter @t3tools/web test
+            # Built as releases build it: release-note links name upstream's releases.
+            run: env -u GITHUB_REPOSITORY -u T3CODE_DESKTOP_UPDATE_REPOSITORY vp run --filter @t3tools/web test
           - suite: server 1/4
             run: vp run --filter t3 test --shard 1/4
           - suite: server 2/4

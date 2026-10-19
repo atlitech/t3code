@@ -59,6 +59,12 @@ describe("fork CI workflow", () => {
     expect(workflow).toMatch(/run: vpr typecheck\n/);
   });
 
+  it("tests the web client as releases build it", () => {
+    expect(fullSuite).toMatch(
+      /run: env -u GITHUB_REPOSITORY -u T3CODE_DESKTOP_UPDATE_REPOSITORY vp run --filter @t3tools\/web test$/m,
+    );
+  });
+
   it("runs every fork CI job on a GitHub-hosted Ubuntu runner", () => {
     for (const text of [workflow, fullSuite]) {
       const found = runners(text);
