@@ -547,11 +547,8 @@ export const makeSubagentThreadDeletion = <E>(input: {
         ),
       );
 
-  const deleteSubagentThreads = (request: {
-    readonly threadId: ThreadId;
-    readonly commandId: CommandId;
-  }) =>
-    Effect.gen(function* () {
+  const deleteSubagentThreads = Effect.fn("ThreadManagementService.deleteSubagentThreads")(
+    function* (request: { readonly threadId: ThreadId; readonly commandId: CommandId }) {
       const { subagents } = yield* input.getThreadRecords(request.threadId, ["subagents"]);
       const failures: Array<Orchestrator.OrchestratorV2Error | E> = [];
       for (const task of subagents) {
@@ -571,7 +568,8 @@ export const makeSubagentThreadDeletion = <E>(input: {
         );
       }
       if (failures[0] !== undefined) return yield* Effect.fail(failures[0]);
-    });
+    },
+  );
 
   return { deleteThreadOnce, deleteSubagentThreads };
 };

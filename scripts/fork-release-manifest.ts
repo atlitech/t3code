@@ -237,147 +237,141 @@ export const parseAssetName = (
  * asset. `scope` is the committed FORK_VERIFICATION_SCOPE unless a test hands
  * in another.
  */
-export const buildReleaseManifest = (input: {
+export const buildReleaseManifest = Effect.fn("buildReleaseManifest")(function* (input: {
   readonly commit: string;
   readonly version: string;
   readonly files: ReadonlyArray<ReleaseAssetFile>;
   readonly admission: AdmissionRecord | undefined;
   readonly scope?: ReadonlyArray<PlatformScope>;
-}) =>
-  Effect.gen(function* () {
-    if (!COMMIT_PATTERN.test(input.commit)) {
+}) {
+  if (!COMMIT_PATTERN.test(input.commit)) {
+    return yield* new ReleaseManifestError({
+      detail: `commit must be a full SHA; got '${input.commit}'.`,
+    });
+  }
+  if (input.files.length === 0) {
+    return yield* new ReleaseManifestError({ detail: "there are no release assets." });
+  }
+  const assets: Array<ReleaseManifestAsset> = [];
+  for (const asset of input.files.toSorted((left, right) => left.file.localeCompare(right.file))) {
+    const parsed = parseAssetName(input.version, asset.file);
+    if (!parsed) {
       return yield* new ReleaseManifestError({
-        detail: `commit must be a full SHA; got '${input.commit}'.`,
+        detail: `'${asset.file}' is not named t3-${input.version}-<platform>-<arch>.tar.gz, T3-Code-${input.version}-arm64.dmg, or T3-Code-${input.version}-android-arm64-v8a.apk.`,
       });
     }
-    if (input.files.length === 0) {
-      return yield* new ReleaseManifestError({ detail: "there are no release assets." });
+    if (!SHA256_PATTERN.test(asset.sha256)) {
+      return yield* new ReleaseManifestError({
+        detail: `'${asset.file}' has a malformed sha256.`,
+      });
     }
-    const assets: Array<ReleaseManifestAsset> = [];
-    for (const asset of input.files.toSorted((left, right) =>
-      left.file.localeCompare(right.file),
-    )) {
-      const parsed = parseAssetName(input.version, asset.file);
-      if (!parsed) {
-        return yield* new ReleaseManifestError({
-          detail: `'${asset.file}' is not named t3-${input.version}-<platform>-<arch>.tar.gz, T3-Code-${input.version}-arm64.dmg, or T3-Code-${input.version}-android-arm64-v8a.apk.`,
-        });
-      }
-      if (!SHA256_PATTERN.test(asset.sha256)) {
-        return yield* new ReleaseManifestError({
-          detail: `'${asset.file}' has a malformed sha256.`,
-        });
-      }
-      if (!Number.isSafeInteger(asset.size) || asset.size <= 0) {
-        return yield* new ReleaseManifestError({ detail: `'${asset.file}' is empty.` });
-      }
-      if (
-        assets.some(
-          (existing) => existing.platform === parsed.platform && existing.arch === parsed.arch,
-        )
-      ) {
-        return yield* new ReleaseManifestError({
-          detail: `more than one asset for ${parsed.platform}-${parsed.arch}.`,
-        });
-      }
-      assets.push({ ...parsed, file: asset.file, size: asset.size, sha256: asset.sha256 });
+    if (!Number.isSafeInteger(asset.size) || asset.size <= 0) {
+      return yield* new ReleaseManifestError({ detail: `'${asset.file}' is empty.` });
     }
-    const verificationScope = yield* buildVerificationScope({
-      version: input.version,
-      assets,
-      admission: input.admission,
-      scope: input.scope ?? FORK_VERIFICATION_SCOPE,
-    });
-    const manifest: ReleaseManifest = {
-      commit: input.commit,
-      version: input.version,
-      assets,
-      verificationScope,
-    };
-    const manifestJson = yield* encodeManifestJson(manifest).pipe(
-      Effect.mapError(() => new ReleaseManifestError({ detail: "the manifest does not encode." })),
-    );
-    return {
-      manifest,
-      manifestJson: `${manifestJson}\n`,
-      // sha256sum's text-mode format, so `sha256sum -c SHA256SUMS` verifies it.
-      sha256sums: assets.map((asset) => `${asset.sha256}  ${asset.file}\n`).join(""),
-    };
+    if (
+      assets.some(
+        (existing) => existing.platform === parsed.platform && existing.arch === parsed.arch,
+      )
+    ) {
+      return yield* new ReleaseManifestError({
+        detail: `more than one asset for ${parsed.platform}-${parsed.arch}.`,
+      });
+    }
+    assets.push({ ...parsed, file: asset.file, size: asset.size, sha256: asset.sha256 });
+  }
+  const verificationScope = yield* buildVerificationScope({
+    version: input.version,
+    assets,
+    admission: input.admission,
+    scope: input.scope ?? FORK_VERIFICATION_SCOPE,
   });
+  const manifest: ReleaseManifest = {
+    commit: input.commit,
+    version: input.version,
+    assets,
+    verificationScope,
+  };
+  const manifestJson = yield* encodeManifestJson(manifest).pipe(
+    Effect.mapError(() => new ReleaseManifestError({ detail: "the manifest does not encode." })),
+  );
+  return {
+    manifest,
+    manifestJson: `${manifestJson}\n`,
+    // sha256sum's text-mode format, so `sha256sum -c SHA256SUMS` verifies it.
+    sha256sums: assets.map((asset) => `${asset.sha256}  ${asset.file}\n`).join(""),
+  };
+});
 
-const buildVerificationScope = (input: {
+const buildVerificationScope = Effect.fn("buildVerificationScope")(function* (input: {
   readonly version: string;
   readonly assets: ReadonlyArray<ReleaseManifestAsset>;
   readonly admission: AdmissionRecord | undefined;
   readonly scope: ReadonlyArray<PlatformScope>;
-}) =>
-  Effect.gen(function* () {
-    const refuse = (detail: string) => Effect.fail(new ReleaseManifestError({ detail }));
-    const { admission } = input;
-    if (admission === undefined) {
-      return yield* refuse(
-        `there is no ${ADMISSION_FILE}; without it no asset is runtime-verified.`,
-      );
+}) {
+  const refuse = (detail: string) => Effect.fail(new ReleaseManifestError({ detail }));
+  const { admission } = input;
+  if (admission === undefined) {
+    return yield* refuse(`there is no ${ADMISSION_FILE}; without it no asset is runtime-verified.`);
+  }
+  if (!input.assets.some((asset) => asset.file === admission.archive)) {
+    return yield* refuse(
+      `${ADMISSION_FILE} admits ${admission.archive}, which is not a release asset.`,
+    );
+  }
+  for (const platform of input.scope) {
+    if (
+      !input.assets.some(
+        (asset) => asset.platform === platform.platform && asset.arch === platform.arch,
+      )
+    ) {
+      return yield* refuse(`the release has no ${platform.platform} ${platform.arch} asset.`);
     }
-    if (!input.assets.some((asset) => asset.file === admission.archive)) {
-      return yield* refuse(
-        `${ADMISSION_FILE} admits ${admission.archive}, which is not a release asset.`,
-      );
+  }
+  const entries: Array<VerificationScopeEntry> = [];
+  for (const asset of input.assets) {
+    const scope = input.scope.find(
+      (platform) => platform.platform === asset.platform && platform.arch === asset.arch,
+    );
+    if (!scope) {
+      return yield* refuse(`${asset.platform} ${asset.arch} has no verification scope.`);
     }
-    for (const platform of input.scope) {
-      if (
-        !input.assets.some(
-          (asset) => asset.platform === platform.platform && asset.arch === platform.arch,
-        )
-      ) {
-        return yield* refuse(`the release has no ${platform.platform} ${platform.arch} asset.`);
-      }
+    if (scope.checks.length === 0) {
+      return yield* refuse(`the ${asset.platform} ${asset.arch} scope names no check.`);
     }
-    const entries: Array<VerificationScopeEntry> = [];
-    for (const asset of input.assets) {
-      const scope = input.scope.find(
-        (platform) => platform.platform === asset.platform && platform.arch === asset.arch,
-      );
-      if (!scope) {
-        return yield* refuse(`${asset.platform} ${asset.arch} has no verification scope.`);
-      }
-      if (scope.checks.length === 0) {
-        return yield* refuse(`the ${asset.platform} ${asset.arch} scope names no check.`);
-      }
-      const base = {
-        platform: asset.platform,
-        arch: asset.arch,
-        file: asset.file,
-        checks: scope.checks.map(({ job, step }) => ({ job, step })),
-      };
-      if (!scope.runtimeVerified) {
-        if (asset.file === admission.archive) {
-          return yield* refuse(
-            `${ADMISSION_FILE} admits ${asset.file}, but its ${asset.platform} ${asset.arch} scope says build-checked.`,
-          );
-        }
-        entries.push({ ...base, status: "build-checked", runtimeVerified: false });
-        continue;
-      }
-      const mismatch = admissionMismatch(admission, input.version, asset);
-      if (mismatch !== undefined) {
+    const base = {
+      platform: asset.platform,
+      arch: asset.arch,
+      file: asset.file,
+      checks: scope.checks.map(({ job, step }) => ({ job, step })),
+    };
+    if (!scope.runtimeVerified) {
+      if (asset.file === admission.archive) {
         return yield* refuse(
-          `${asset.platform} ${asset.arch} is marked runtime-verified, but ${mismatch}`,
+          `${ADMISSION_FILE} admits ${asset.file}, but its ${asset.platform} ${asset.arch} scope says build-checked.`,
         );
       }
-      entries.push({
-        ...base,
-        status: "runtime-verified",
-        runtimeVerified: true,
-        admission: {
-          record: ADMISSION_FILE,
-          version: admission.version,
-          archiveSha256: admission.archiveSha256,
-        },
-      });
+      entries.push({ ...base, status: "build-checked", runtimeVerified: false });
+      continue;
     }
-    return { decision: { ...FORK_SCOPE_DECISION }, entries } satisfies VerificationScope;
-  });
+    const mismatch = admissionMismatch(admission, input.version, asset);
+    if (mismatch !== undefined) {
+      return yield* refuse(
+        `${asset.platform} ${asset.arch} is marked runtime-verified, but ${mismatch}`,
+      );
+    }
+    entries.push({
+      ...base,
+      status: "runtime-verified",
+      runtimeVerified: true,
+      admission: {
+        record: ADMISSION_FILE,
+        version: admission.version,
+        archiveSha256: admission.archiveSha256,
+      },
+    });
+  }
+  return { decision: { ...FORK_SCOPE_DECISION }, entries } satisfies VerificationScope;
+});
 
 export const writeReleaseManifest = Effect.fn("writeReleaseManifest")(function* (options: {
   readonly dir: string;

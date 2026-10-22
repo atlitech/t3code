@@ -58,30 +58,29 @@ const readOne = (plist: string, key: string, expected: string): string | undefin
   return undefined;
 };
 
-export const checkMacIdentity = (input: {
+export const checkMacIdentity = Effect.fn("checkMacIdentity")(function* (input: {
   readonly infoPlist: string;
   readonly codesign: string;
   readonly version: string;
-}) =>
-  Effect.gen(function* () {
-    const signature = classifyCodesign(input.codesign);
-    const problems = [
-      readOne(input.infoPlist, "CFBundleIdentifier", DESKTOP_APP_ID),
-      readOne(input.infoPlist, "CFBundleShortVersionString", input.version),
-      signature._tag === "Signed"
-        ? `the app is signed by '${signature.authority}'; the fork ships it unsigned.`
-        : undefined,
-      signature._tag === "Unrecognized"
-        ? "codesign output names neither an ad hoc signature nor an unsigned app."
-        : undefined,
-    ].filter((problem): problem is string => problem !== undefined);
-    if (problems.length > 0) return yield* new MacIdentityError({ problems });
-    return {
-      bundleIdentifier: DESKTOP_APP_ID,
-      version: input.version,
-      signature: signature._tag === "AdHoc" ? "ad hoc" : "unsigned",
-    } as const;
-  });
+}) {
+  const signature = classifyCodesign(input.codesign);
+  const problems = [
+    readOne(input.infoPlist, "CFBundleIdentifier", DESKTOP_APP_ID),
+    readOne(input.infoPlist, "CFBundleShortVersionString", input.version),
+    signature._tag === "Signed"
+      ? `the app is signed by '${signature.authority}'; the fork ships it unsigned.`
+      : undefined,
+    signature._tag === "Unrecognized"
+      ? "codesign output names neither an ad hoc signature nor an unsigned app."
+      : undefined,
+  ].filter((problem): problem is string => problem !== undefined);
+  if (problems.length > 0) return yield* new MacIdentityError({ problems });
+  return {
+    bundleIdentifier: DESKTOP_APP_ID,
+    version: input.version,
+    signature: signature._tag === "AdHoc" ? "ad hoc" : "unsigned",
+  } as const;
+});
 
 const command = Command.make(
   "fork-mac-identity",

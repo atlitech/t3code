@@ -87,8 +87,8 @@ const spawnFailed = (command: string) => (cause: unknown) =>
   new ForkCheckError({ detail: `${command} failed to run`, cause });
 
 /** Runs a command and returns its stdout, failing on a non-zero exit. */
-const read = (command: string, args: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
+const read = Effect.fn("ForkCheck.read")(
+  function* (command: string, args: ReadonlyArray<string>) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(ChildProcess.make(command, args));
     return yield* Effect.all(
@@ -99,29 +99,35 @@ const read = (command: string, args: ReadonlyArray<string>) =>
       ],
       { concurrency: "unbounded" },
     );
-  }).pipe(
-    Effect.scoped,
-    Effect.mapError(spawnFailed(command)),
-    Effect.flatMap(([stdout, stderr, exitCode]) =>
-      exitCode === 0
-        ? Effect.succeed(stdout)
-        : Effect.fail(
-            new ForkCheckError({
-              detail: `${command} ${args.join(" ")} exited ${exitCode}: ${stderr.trim()}`,
-            }),
-          ),
+  },
+  Effect.scoped,
+  (effect, command, args) =>
+    effect.pipe(
+      Effect.mapError(spawnFailed(command)),
+      Effect.flatMap(([stdout, stderr, exitCode]) =>
+        exitCode === 0
+          ? Effect.succeed(stdout)
+          : Effect.fail(
+              new ForkCheckError({
+                detail: `${command} ${args.join(" ")} exited ${exitCode}: ${stderr.trim()}`,
+              }),
+            ),
+      ),
     ),
-  );
+);
 
 /** Runs a command in `cwd` with its output streamed to this process's own; returns the exit code. */
-const runInherited = (command: string, args: ReadonlyArray<string>, cwd: string) =>
-  Effect.gen(function* () {
+const runInherited = Effect.fn("ForkCheck.runInherited")(
+  function* (command: string, args: ReadonlyArray<string>, cwd: string) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
       ChildProcess.make(command, args, { cwd, stdout: "inherit", stderr: "inherit" }),
     );
     return Number(yield* child.exitCode);
-  }).pipe(Effect.scoped, Effect.mapError(spawnFailed(command)));
+  },
+  Effect.scoped,
+  (effect, command) => effect.pipe(Effect.mapError(spawnFailed(command))),
+);
 
 const CheckRunLine = Schema.fromJsonString(
   Schema.Struct({
@@ -146,22 +152,21 @@ const upstreamBase = Effect.gen(function* () {
   return (yield* read("git", ["merge-base", "HEAD", "FETCH_HEAD"])).trim();
 });
 
-const upstreamCheckRuns = (sha: string) =>
-  Effect.gen(function* () {
-    const stdout = yield* read("gh", [
-      "api",
-      "--paginate",
-      `repos/${UPSTREAM_REPOSITORY}/commits/${sha}/check-runs?check_name=${REQUIRED_CHECK}&filter=all&per_page=100`,
-      "--jq",
-      ".check_runs[] | {name, status, conclusion, app: .app.slug}",
-    ]);
-    const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
-    return yield* Effect.forEach(lines, (line) =>
-      decodeCheckRunLine(line).pipe(
-        Effect.mapError((cause) => new ForkCheckError({ detail: "unreadable check run", cause })),
-      ),
-    );
-  });
+const upstreamCheckRuns = Effect.fn("upstreamCheckRuns")(function* (sha: string) {
+  const stdout = yield* read("gh", [
+    "api",
+    "--paginate",
+    `repos/${UPSTREAM_REPOSITORY}/commits/${sha}/check-runs?check_name=${REQUIRED_CHECK}&filter=all&per_page=100`,
+    "--jq",
+    ".check_runs[] | {name, status, conclusion, app: .app.slug}",
+  ]);
+  const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
+  return yield* Effect.forEach(lines, (line) =>
+    decodeCheckRunLine(line).pipe(
+      Effect.mapError((cause) => new ForkCheckError({ detail: "unreadable check run", cause })),
+    ),
+  );
+});
 
 const PackageScripts = Schema.fromJsonString(
   Schema.Struct({ scripts: Schema.optional(Schema.Record(Schema.String, Schema.String)) }),

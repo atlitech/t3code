@@ -54,7 +54,7 @@ function stubT3(config: StubConfig) {
   const versions = path.join(home, "runtime", "versions");
   const sha256 = (file: string) =>
     crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-  const compactUtc = () => new Date().toISOString().replace(/[-:.]/g, "");
+  const compactUtc = () => new Date("2026-10-01T12:00:00.000Z").toISOString().replace(/[-:.]/g, "");
   const repoint = (version: string) => {
     if (fs.lstatSync(self).isSymbolicLink()) {
       fs.rmSync(self);
@@ -130,7 +130,7 @@ function stubT3(config: StubConfig) {
     const snapshot = path.join(pointDir, "statev2.sqlite");
     fs.mkdirSync(pointDir, { recursive: true });
     fs.copyFileSync(db, snapshot);
-    const createdAt = new Date().toISOString();
+    const createdAt = new Date("2026-10-01T12:00:00.000Z").toISOString();
     const record = {
       id,
       createdAt,
@@ -561,7 +561,7 @@ describe.runIf(hostPlatform === "linux" || hostPlatform === "darwin")("recovery 
     } finally {
       await fixture.close();
     }
-  }, 120_000);
+  });
 
   it("refuses a prior whose t3 recover does not work before anything installs", async () => {
     const fixture = await makeFixture({ priorRecoverFails: true });
@@ -576,7 +576,7 @@ describe.runIf(hostPlatform === "linux" || hostPlatform === "darwin")("recovery 
     } finally {
       await fixture.close();
     }
-  }, 60_000);
+  });
 
   it.each([
     [
@@ -616,22 +616,18 @@ describe.runIf(hostPlatform === "linux" || hostPlatform === "darwin")("recovery 
       },
       "it is not empty",
     ],
-  ] as const)(
-    "refuses %s before anything runs",
-    async (_, prepare, message) => {
-      const fixture = await makeFixture({ priorRecoverFails: false });
-      try {
-        await prepare(fixture);
-        const result = await drill(fixture);
-        expect(result.code).not.toBe(0);
-        expect(result.output).toContain(message);
-        expect(result.calls).toEqual([]);
-        expect(await exists(NodePath.join(fixture.root, "user/.t3/runtime"))).toBe(false);
-        expect(await exists(NodePath.join(home(fixture), "runtime"))).toBe(false);
-      } finally {
-        await fixture.close();
-      }
-    },
-    60_000,
-  );
+  ] as const)("refuses %s before anything runs", async (_, prepare, message) => {
+    const fixture = await makeFixture({ priorRecoverFails: false });
+    try {
+      await prepare(fixture);
+      const result = await drill(fixture);
+      expect(result.code).not.toBe(0);
+      expect(result.output).toContain(message);
+      expect(result.calls).toEqual([]);
+      expect(await exists(NodePath.join(fixture.root, "user/.t3/runtime"))).toBe(false);
+      expect(await exists(NodePath.join(home(fixture), "runtime"))).toBe(false);
+    } finally {
+      await fixture.close();
+    }
+  });
 });

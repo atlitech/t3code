@@ -170,12 +170,12 @@ const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.
     ),
   );
 
-const run = (
-  lookup: ReleaseGuardLookupError["lookup"],
-  command: string,
-  args: ReadonlyArray<string>,
-) =>
-  Effect.gen(function* () {
+const run = Effect.fn("ReleaseGuard.run")(
+  function* (
+    lookup: ReleaseGuardLookupError["lookup"],
+    command: string,
+    args: ReadonlyArray<string>,
+  ) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(ChildProcess.make(command, args));
     const [stdout, stderr, exitCode] = yield* Effect.all(
@@ -187,49 +187,55 @@ const run = (
       { concurrency: "unbounded" },
     );
     return { stdout, stderr, exitCode };
-  }).pipe(
-    Effect.scoped,
-    Effect.mapError(
-      (cause) => new ReleaseGuardLookupError({ lookup, detail: `${command} failed to run`, cause }),
+  },
+  Effect.scoped,
+  (effect, lookup, command) =>
+    effect.pipe(
+      Effect.mapError(
+        (cause) =>
+          new ReleaseGuardLookupError({ lookup, detail: `${command} failed to run`, cause }),
+      ),
     ),
-  );
+);
 
 // `--exit-code` exits 2 only when the tag is missing; anything else (128 for
 // network or auth failures) must not read as "missing".
-const lookupTag = (serverUrl: string, repository: string, tag: string) =>
-  Effect.gen(function* () {
-    const result = yield* run("tag", "git", [
-      "ls-remote",
-      "--exit-code",
-      "--tags",
-      `${serverUrl}/${repository}.git`,
-      `refs/tags/${tag}`,
-    ]);
-    if (result.exitCode === 0) return true;
-    if (result.exitCode === 2) return false;
-    return yield* new ReleaseGuardLookupError({
-      lookup: "tag",
-      detail: `git ls-remote exited ${result.exitCode}: ${result.stderr.trim()}`,
-    });
+const lookupTag = Effect.fn("lookupTag")(function* (
+  serverUrl: string,
+  repository: string,
+  tag: string,
+) {
+  const result = yield* run("tag", "git", [
+    "ls-remote",
+    "--exit-code",
+    "--tags",
+    `${serverUrl}/${repository}.git`,
+    `refs/tags/${tag}`,
+  ]);
+  if (result.exitCode === 0) return true;
+  if (result.exitCode === 2) return false;
+  return yield* new ReleaseGuardLookupError({
+    lookup: "tag",
+    detail: `git ls-remote exited ${result.exitCode}: ${result.stderr.trim()}`,
   });
+});
 
 // `--include` puts the HTTP status line on stdout, so a 404 is told apart
 // from every other failure.
-const lookupRelease = (repository: string, tag: string) =>
-  Effect.gen(function* () {
-    const result = yield* run("release", "gh", [
-      "api",
-      "--include",
-      `repos/${repository}/releases/tags/${tag}`,
-    ]);
-    const status = /^HTTP\/[\d.]+ (\d{3})/.exec(result.stdout)?.[1];
-    if (result.exitCode === 0 && status === "200") return true;
-    if (status === "404") return false;
-    return yield* new ReleaseGuardLookupError({
-      lookup: "release",
-      detail: `gh api exited ${result.exitCode} with HTTP status ${status ?? "unknown"}: ${result.stderr.trim()}`,
-    });
+const lookupRelease = Effect.fn("lookupRelease")(function* (repository: string, tag: string) {
+  const result = yield* run("release", "gh", [
+    "api",
+    "--include",
+    `repos/${repository}/releases/tags/${tag}`,
+  ]);
+  const status = /^HTTP\/[\d.]+ (\d{3})/.exec(result.stdout)?.[1];
+  if (result.exitCode === 0 && status === "200") return true;
+  if (status === "404") return false;
+  return yield* new ReleaseGuardLookupError({
+    lookup: "release",
+    detail: `gh api exited ${result.exitCode} with HTTP status ${status ?? "unknown"}: ${result.stderr.trim()}`,
   });
+});
 
 const CheckRunLine = Schema.fromJsonString(
   Schema.Struct({
@@ -241,35 +247,34 @@ const CheckRunLine = Schema.fromJsonString(
 );
 const decodeCheckRunLine = Schema.decodeEffect(CheckRunLine);
 
-const lookupCheckRuns = (repository: string, sha: string) =>
-  Effect.gen(function* () {
-    const result = yield* run("check-runs", "gh", [
-      "api",
-      "--paginate",
-      `repos/${repository}/commits/${sha}/check-runs?check_name=${REQUIRED_CHECK}&filter=all&per_page=100`,
-      "--jq",
-      ".check_runs[] | {name, status, conclusion, app: .app.slug}",
-    ]);
-    if (result.exitCode !== 0) {
-      return yield* new ReleaseGuardLookupError({
-        lookup: "check-runs",
-        detail: `gh api exited ${result.exitCode}: ${result.stderr.trim()}`,
-      });
-    }
-    const lines = result.stdout.split("\n").filter((line) => line.trim().length > 0);
-    return yield* Effect.forEach(lines, (line) =>
-      decodeCheckRunLine(line).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ReleaseGuardLookupError({
-              lookup: "check-runs",
-              detail: "unreadable check run",
-              cause,
-            }),
-        ),
+const lookupCheckRuns = Effect.fn("lookupCheckRuns")(function* (repository: string, sha: string) {
+  const result = yield* run("check-runs", "gh", [
+    "api",
+    "--paginate",
+    `repos/${repository}/commits/${sha}/check-runs?check_name=${REQUIRED_CHECK}&filter=all&per_page=100`,
+    "--jq",
+    ".check_runs[] | {name, status, conclusion, app: .app.slug}",
+  ]);
+  if (result.exitCode !== 0) {
+    return yield* new ReleaseGuardLookupError({
+      lookup: "check-runs",
+      detail: `gh api exited ${result.exitCode}: ${result.stderr.trim()}`,
+    });
+  }
+  const lines = result.stdout.split("\n").filter((line) => line.trim().length > 0);
+  return yield* Effect.forEach(lines, (line) =>
+    decodeCheckRunLine(line).pipe(
+      Effect.mapError(
+        (cause) =>
+          new ReleaseGuardLookupError({
+            lookup: "check-runs",
+            detail: "unreadable check run",
+            cause,
+          }),
       ),
-    );
-  });
+    ),
+  );
+});
 
 export const guardRelease = Effect.fn("guardRelease")(function* (version: string) {
   const env = yield* Config.all({
