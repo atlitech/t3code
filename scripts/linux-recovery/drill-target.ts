@@ -112,8 +112,8 @@ const decodeReleaseLine = Schema.decodeEffect(
   ),
 );
 
-const listReleases = (repository: string) =>
-  Effect.gen(function* () {
+const listReleases = Effect.fn("listReleases")(
+  function* (repository: string) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
       ChildProcess.make("gh", [
@@ -137,14 +137,14 @@ const listReleases = (repository: string) =>
     }
     const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
     return yield* Effect.forEach(lines, (line) => decodeReleaseLine(line));
-  }).pipe(
-    Effect.scoped,
-    Effect.mapError((cause) =>
-      cause._tag === "DrillTargetError"
-        ? cause
-        : new DrillTargetError({ detail: "could not list releases", cause }),
-    ),
-  );
+  },
+  Effect.scoped,
+  Effect.mapError((cause) =>
+    cause._tag === "DrillTargetError"
+      ? cause
+      : new DrillTargetError({ detail: "could not list releases", cause }),
+  ),
+);
 
 export const resolveDrillTarget = Effect.fn("resolveDrillTarget")(function* (options: {
   readonly repo: string;

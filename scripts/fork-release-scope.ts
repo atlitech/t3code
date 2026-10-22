@@ -58,140 +58,133 @@ const sameChecks = (
  * runtime-verified, and only by the archive ADMISSION.json admits, at the
  * manifest's version and sha256.
  */
-export const readReleaseScope = (input: {
+export const readReleaseScope = Effect.fn("readReleaseScope")(function* (input: {
   readonly manifestJson: string;
   readonly admissionJson: string;
-}) =>
-  Effect.gen(function* () {
-    const refuse = (detail: string) => Effect.fail(new ReleaseScopeError({ detail }));
-    const manifest = yield* decodeReleaseManifestJson(input.manifestJson).pipe(
-      Effect.mapError(
-        (error) =>
-          new ReleaseScopeError({
-            detail: `${MANIFEST_FILE} is not a release manifest with a verificationScope: ${error.message}`,
-          }),
-      ),
-    );
-    const admission = yield* decodeAdmissionJson(input.admissionJson).pipe(
-      Effect.mapError((error) => new ReleaseScopeError({ detail: error.detail })),
-    );
-    const { decision, entries } = manifest.verificationScope;
+}) {
+  const refuse = (detail: string) => Effect.fail(new ReleaseScopeError({ detail }));
+  const manifest = yield* decodeReleaseManifestJson(input.manifestJson).pipe(
+    Effect.mapError(
+      (error) =>
+        new ReleaseScopeError({
+          detail: `${MANIFEST_FILE} is not a release manifest with a verificationScope: ${error.message}`,
+        }),
+    ),
+  );
+  const admission = yield* decodeAdmissionJson(input.admissionJson).pipe(
+    Effect.mapError((error) => new ReleaseScopeError({ detail: error.detail })),
+  );
+  const { decision, entries } = manifest.verificationScope;
 
-    // The file name, not the manifest's labels, says what platform an asset is.
-    for (const asset of manifest.assets) {
-      const parsed = parseAssetName(manifest.version, asset.file);
-      if (!parsed) {
-        return yield* refuse(`${asset.file} is not a ${manifest.version} release asset name.`);
-      }
-      if (parsed.platform !== asset.platform || parsed.arch !== asset.arch) {
-        return yield* refuse(
-          `${asset.file} is labeled ${asset.platform} ${asset.arch}, but its name says ${parsed.platform} ${parsed.arch}.`,
-        );
-      }
-      if (
-        !FORK_VERIFICATION_SCOPE.some(
-          (scope) => scope.platform === asset.platform && scope.arch === asset.arch,
-        )
-      ) {
-        return yield* refuse(
-          `${asset.platform} ${asset.arch} has no committed verification scope.`,
-        );
-      }
+  // The file name, not the manifest's labels, says what platform an asset is.
+  for (const asset of manifest.assets) {
+    const parsed = parseAssetName(manifest.version, asset.file);
+    if (!parsed) {
+      return yield* refuse(`${asset.file} is not a ${manifest.version} release asset name.`);
     }
-    for (const scope of FORK_VERIFICATION_SCOPE) {
-      const count = manifest.assets.filter(
-        (asset) => asset.platform === scope.platform && asset.arch === scope.arch,
-      ).length;
-      if (count !== 1) {
-        return yield* refuse(
-          `${MANIFEST_FILE} lists ${count} ${scope.platform} ${scope.arch} assets, not one.`,
-        );
-      }
-    }
-
-    const admitted = manifest.assets.find((asset) => asset.file === admission.archive);
-    if (!admitted) {
+    if (parsed.platform !== asset.platform || parsed.arch !== asset.arch) {
       return yield* refuse(
-        `${ADMISSION_FILE} admits ${admission.archive}, which ${MANIFEST_FILE} does not list.`,
+        `${asset.file} is labeled ${asset.platform} ${asset.arch}, but its name says ${parsed.platform} ${parsed.arch}.`,
       );
     }
-    const mismatch = admissionMismatch(admission, manifest.version, admitted);
-    if (mismatch !== undefined) return yield* refuse(mismatch);
-
-    if (entries.length !== manifest.assets.length) {
+    if (
+      !FORK_VERIFICATION_SCOPE.some(
+        (scope) => scope.platform === asset.platform && scope.arch === asset.arch,
+      )
+    ) {
+      return yield* refuse(`${asset.platform} ${asset.arch} has no committed verification scope.`);
+    }
+  }
+  for (const scope of FORK_VERIFICATION_SCOPE) {
+    const count = manifest.assets.filter(
+      (asset) => asset.platform === scope.platform && asset.arch === scope.arch,
+    ).length;
+    if (count !== 1) {
       return yield* refuse(
-        `${MANIFEST_FILE} lists ${manifest.assets.length} assets but ${entries.length} scope entries.`,
+        `${MANIFEST_FILE} lists ${count} ${scope.platform} ${scope.arch} assets, not one.`,
       );
     }
-    const lines: Array<string> = [];
-    for (const asset of manifest.assets) {
-      const matching = entries.filter(
-        (entry) =>
-          entry.file === asset.file &&
-          entry.platform === asset.platform &&
-          entry.arch === asset.arch,
+  }
+
+  const admitted = manifest.assets.find((asset) => asset.file === admission.archive);
+  if (!admitted) {
+    return yield* refuse(
+      `${ADMISSION_FILE} admits ${admission.archive}, which ${MANIFEST_FILE} does not list.`,
+    );
+  }
+  const mismatch = admissionMismatch(admission, manifest.version, admitted);
+  if (mismatch !== undefined) return yield* refuse(mismatch);
+
+  if (entries.length !== manifest.assets.length) {
+    return yield* refuse(
+      `${MANIFEST_FILE} lists ${manifest.assets.length} assets but ${entries.length} scope entries.`,
+    );
+  }
+  const lines: Array<string> = [];
+  for (const asset of manifest.assets) {
+    const matching = entries.filter(
+      (entry) =>
+        entry.file === asset.file && entry.platform === asset.platform && entry.arch === asset.arch,
+    );
+    if (matching.length !== 1) {
+      return yield* refuse(`${asset.file} does not have exactly one scope entry.`);
+    }
+    const entry = matching[0]!;
+    const label = `${entry.platform} ${entry.arch} ${entry.file}`;
+    const committed = FORK_VERIFICATION_SCOPE.find(
+      (scope) => scope.platform === entry.platform && scope.arch === entry.arch,
+    )!;
+    if (entry.runtimeVerified && !committed.runtimeVerified) {
+      return yield* refuse(
+        `${label} is marked runtime-verified, but the owner decision of ${FORK_SCOPE_DECISION.date} leaves ${entry.platform} ${entry.arch} build-checked.`,
       );
-      if (matching.length !== 1) {
-        return yield* refuse(`${asset.file} does not have exactly one scope entry.`);
+    }
+    if (!entry.runtimeVerified && committed.runtimeVerified) {
+      return yield* refuse(
+        `${label} is marked build-checked, but the committed scope runtime-verifies ${entry.platform} ${entry.arch}.`,
+      );
+    }
+    if (!sameChecks(entry.checks, committed.checks)) {
+      return yield* refuse(
+        `${label} claims checks ${describeChecks(entry)}, not the committed ${describeChecks(committed)}.`,
+      );
+    }
+    if (entry.runtimeVerified !== (entry.status === "runtime-verified")) {
+      return yield* refuse(
+        `${label} has status ${entry.status} but runtimeVerified ${entry.runtimeVerified}.`,
+      );
+    }
+    if (entry.checks.length === 0) return yield* refuse(`${label} names no check.`);
+    if (!entry.runtimeVerified) {
+      if (entry.file === admission.archive) {
+        return yield* refuse(`${label} is admitted by ${ADMISSION_FILE} but marked build-checked.`);
       }
-      const entry = matching[0]!;
-      const label = `${entry.platform} ${entry.arch} ${entry.file}`;
-      const committed = FORK_VERIFICATION_SCOPE.find(
-        (scope) => scope.platform === entry.platform && scope.arch === entry.arch,
-      )!;
-      if (entry.runtimeVerified && !committed.runtimeVerified) {
-        return yield* refuse(
-          `${label} is marked runtime-verified, but the owner decision of ${FORK_SCOPE_DECISION.date} leaves ${entry.platform} ${entry.arch} build-checked.`,
-        );
-      }
-      if (!entry.runtimeVerified && committed.runtimeVerified) {
-        return yield* refuse(
-          `${label} is marked build-checked, but the committed scope runtime-verifies ${entry.platform} ${entry.arch}.`,
-        );
-      }
-      if (!sameChecks(entry.checks, committed.checks)) {
-        return yield* refuse(
-          `${label} claims checks ${describeChecks(entry)}, not the committed ${describeChecks(committed)}.`,
-        );
-      }
-      if (entry.runtimeVerified !== (entry.status === "runtime-verified")) {
-        return yield* refuse(
-          `${label} has status ${entry.status} but runtimeVerified ${entry.runtimeVerified}.`,
-        );
-      }
-      if (entry.checks.length === 0) return yield* refuse(`${label} names no check.`);
-      if (!entry.runtimeVerified) {
-        if (entry.file === admission.archive) {
-          return yield* refuse(
-            `${label} is admitted by ${ADMISSION_FILE} but marked build-checked.`,
-          );
-        }
-        if (entry.admission !== undefined) {
-          return yield* refuse(`${label} is build-checked but cites an admission.`);
-        }
-        lines.push(
-          `${label}: build-checked, runtime-unverified (owner decision ${decision.date}); checks: ${describeChecks(entry)}`,
-        );
-        continue;
-      }
-      if (entry.file !== admission.archive) {
-        return yield* refuse(
-          `${label} is marked runtime-verified, but ${ADMISSION_FILE} admits only ${admission.archive}; the owner decision of ${decision.date} leaves it build-checked.`,
-        );
-      }
-      if (
-        entry.admission?.record !== ADMISSION_FILE ||
-        entry.admission.version !== admission.version ||
-        entry.admission.archiveSha256 !== admission.archiveSha256
-      ) {
-        return yield* refuse(`${label} cites an admission that is not ${ADMISSION_FILE}.`);
+      if (entry.admission !== undefined) {
+        return yield* refuse(`${label} is build-checked but cites an admission.`);
       }
       lines.push(
-        `${label}: runtime-verified by ${ADMISSION_FILE} (version ${admission.version}, sha256 ${admission.archiveSha256}); checks: ${describeChecks(entry)}`,
+        `${label}: build-checked, runtime-unverified (owner decision ${decision.date}); checks: ${describeChecks(entry)}`,
+      );
+      continue;
+    }
+    if (entry.file !== admission.archive) {
+      return yield* refuse(
+        `${label} is marked runtime-verified, but ${ADMISSION_FILE} admits only ${admission.archive}; the owner decision of ${decision.date} leaves it build-checked.`,
       );
     }
-    return lines;
-  });
+    if (
+      entry.admission?.record !== ADMISSION_FILE ||
+      entry.admission.version !== admission.version ||
+      entry.admission.archiveSha256 !== admission.archiveSha256
+    ) {
+      return yield* refuse(`${label} cites an admission that is not ${ADMISSION_FILE}.`);
+    }
+    lines.push(
+      `${label}: runtime-verified by ${ADMISSION_FILE} (version ${admission.version}, sha256 ${admission.archiveSha256}); checks: ${describeChecks(entry)}`,
+    );
+  }
+  return lines;
+});
 
 export const printReleaseScope = Effect.fn("printReleaseScope")(function* (options: {
   readonly manifest: string;

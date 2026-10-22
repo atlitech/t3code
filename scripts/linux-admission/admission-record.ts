@@ -62,7 +62,7 @@ export const archiveDigestCheck = (actual: string, expected: string): AdmissionC
   detail: `sha256 ${actual}, build reported ${expected}`,
 });
 
-export const buildAdmissionRecord = (input: {
+export const buildAdmissionRecord = Effect.fn("buildAdmissionRecord")(function* (input: {
   readonly version: string;
   readonly archiveSha256: string;
   readonly expectedSha256: string;
@@ -70,52 +70,49 @@ export const buildAdmissionRecord = (input: {
   readonly priorSource: PriorReleaseSource;
   readonly verifierCommit: string;
   readonly checks: ReadonlyArray<AdmissionCheck>;
-}) =>
-  Effect.gen(function* () {
-    const refuse = (detail: string) => Effect.fail(new AdmissionRefusedError({ detail }));
-    if (!isForkVersion(input.version)) {
-      return yield* refuse(`'${input.version}' is not a fork version.`);
-    }
-    if (!isForkVersion(input.priorVersion) || input.priorVersion === input.version) {
-      return yield* refuse(`'${input.priorVersion}' is not an earlier fork version.`);
-    }
-    if (!SHA256_PATTERN.test(input.archiveSha256) || !SHA256_PATTERN.test(input.expectedSha256)) {
-      return yield* refuse("the archive digest is not a sha256.");
-    }
-    if (input.archiveSha256 !== input.expectedSha256) {
-      return yield* refuse(
-        `the archive's sha256 ${input.archiveSha256} is not the build's ${input.expectedSha256}.`,
-      );
-    }
-    if (!COMMIT_PATTERN.test(input.verifierCommit)) {
-      return yield* refuse(
-        `the verifier commit must be a full SHA; got '${input.verifierCommit}'.`,
-      );
-    }
-    const names = input.checks.map((check) => check.name);
-    const missing = REQUIRED_CHECKS.filter((name) => !names.includes(name));
-    if (missing.length > 0) return yield* refuse(`missing checks: ${missing.join(", ")}.`);
-    if (new Set(names).size !== names.length) return yield* refuse("a check is repeated.");
-    const failed = input.checks.filter((check) => !check.passed);
-    if (failed.length > 0) {
-      return yield* refuse(
-        `failed checks: ${failed.map((check) => `${check.name} (${check.detail})`).join("; ")}.`,
-      );
-    }
-    const record: AdmissionRecord = {
-      version: input.version,
-      archive: `t3-${input.version}-linux-x64.tar.gz`,
-      archiveSha256: input.archiveSha256,
-      priorVersion: input.priorVersion,
-      priorSource: input.priorSource,
-      verifierCommit: input.verifierCommit,
-      checks: input.checks.map(({ name, passed, detail }) => ({ name, passed, detail })),
-    };
-    const json = yield* encodeRecordJson(record).pipe(
-      Effect.mapError(() => new AdmissionRefusedError({ detail: "the record does not encode." })),
+}) {
+  const refuse = (detail: string) => Effect.fail(new AdmissionRefusedError({ detail }));
+  if (!isForkVersion(input.version)) {
+    return yield* refuse(`'${input.version}' is not a fork version.`);
+  }
+  if (!isForkVersion(input.priorVersion) || input.priorVersion === input.version) {
+    return yield* refuse(`'${input.priorVersion}' is not an earlier fork version.`);
+  }
+  if (!SHA256_PATTERN.test(input.archiveSha256) || !SHA256_PATTERN.test(input.expectedSha256)) {
+    return yield* refuse("the archive digest is not a sha256.");
+  }
+  if (input.archiveSha256 !== input.expectedSha256) {
+    return yield* refuse(
+      `the archive's sha256 ${input.archiveSha256} is not the build's ${input.expectedSha256}.`,
     );
-    return { record, json: `${json}\n` };
-  });
+  }
+  if (!COMMIT_PATTERN.test(input.verifierCommit)) {
+    return yield* refuse(`the verifier commit must be a full SHA; got '${input.verifierCommit}'.`);
+  }
+  const names = input.checks.map((check) => check.name);
+  const missing = REQUIRED_CHECKS.filter((name) => !names.includes(name));
+  if (missing.length > 0) return yield* refuse(`missing checks: ${missing.join(", ")}.`);
+  if (new Set(names).size !== names.length) return yield* refuse("a check is repeated.");
+  const failed = input.checks.filter((check) => !check.passed);
+  if (failed.length > 0) {
+    return yield* refuse(
+      `failed checks: ${failed.map((check) => `${check.name} (${check.detail})`).join("; ")}.`,
+    );
+  }
+  const record: AdmissionRecord = {
+    version: input.version,
+    archive: `t3-${input.version}-linux-x64.tar.gz`,
+    archiveSha256: input.archiveSha256,
+    priorVersion: input.priorVersion,
+    priorSource: input.priorSource,
+    verifierCommit: input.verifierCommit,
+    checks: input.checks.map(({ name, passed, detail }) => ({ name, passed, detail })),
+  };
+  const json = yield* encodeRecordJson(record).pipe(
+    Effect.mapError(() => new AdmissionRefusedError({ detail: "the record does not encode." })),
+  );
+  return { record, json: `${json}\n` };
+});
 
 const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");

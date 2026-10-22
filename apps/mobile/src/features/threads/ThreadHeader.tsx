@@ -5,7 +5,7 @@ import type { AppBarAction, AppBarMenu } from "../../components/ui/AppBar.types"
 import { useAdaptiveWorkspaceLayout } from "../layout/AdaptiveWorkspaceLayout";
 import type { ThreadInspectorMode } from "./thread-inspector-content-stack";
 import { useThreadHeaderOptions } from "./useThreadHeaderOptions";
-import { useWorkspaceListNavigation } from "../workspace/useAndroidWorkspaceNavigation";
+import { useWorkspaceBackNavigation } from "../workspace/useAndroidWorkspaceNavigation";
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 
 export function ThreadHeader(
@@ -19,8 +19,9 @@ export function ThreadHeader(
     readonly onOpenFilesInspector: () => void;
   },
 ) {
-  const returnToList = useWorkspaceListNavigation("threads");
-  const { layout, panes, toggleAuxiliaryPane } = useAdaptiveWorkspaceLayout();
+  const goBack = useWorkspaceBackNavigation("threads");
+  const { layout, panes, toggleAuxiliaryPane, composerKeyboardActive, startNewTask } =
+    useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
   // iOS renders the thread actions through the native header items above.
@@ -63,14 +64,14 @@ export function ThreadHeader(
                 },
               ]
             : []),
-          ...threadActions.map((action) => ({
+          ...(threadActions ?? []).map((action) => ({
             id: action.id,
             title: action.title,
             icon: action.icon,
             ...(action.subtitle ? { subtitle: action.subtitle } : {}),
             ...(action.disabled ? { disabled: true } : {}),
             ...(action.destructive ? { destructive: true } : {}),
-            onPress: () => onThreadAction(action.id),
+            onPress: () => onThreadAction?.(action.id),
           })),
         ],
       },
@@ -94,11 +95,11 @@ export function ThreadHeader(
         onPress: props.onReturnToThread,
       });
     }
-    if (layout.usesSplitView && !panes.primarySidebarVisible) {
+    if (!props.draft && layout.usesSplitView && !panes.primarySidebarVisible) {
       actions.push({
         accessibilityLabel: "New task",
         icon: "square.and.pencil",
-        onPress: props.onStartNewTask,
+        onPress: startNewTask,
       });
     }
     if (props.hasThreadCwd) {
@@ -113,11 +114,12 @@ export function ThreadHeader(
     return actions;
   }, [
     props.inspectorMode,
+    props.draft,
     panes.auxiliaryPaneVisible,
     props.onOpenFilesInspector,
     toggleAuxiliaryPane,
     props.onReturnToThread,
-    props.onStartNewTask,
+    startNewTask,
     props.hasThreadCwd,
     layout.usesSplitView,
     panes.primarySidebarVisible,
@@ -145,10 +147,11 @@ export function ThreadHeader(
             />
           ) : null
         }
-        onBack={layout.usesSplitView ? undefined : returnToList}
+        onBack={layout.usesSplitView ? undefined : goBack}
         actions={androidHeaderActions}
         menus={threadActionsMenus}
         hideBottomBorder
+        compact={composerKeyboardActive}
       />
       {native.fallback}
     </>

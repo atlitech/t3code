@@ -96,31 +96,30 @@ const checkVersionCode = (versionCode: string | undefined, version: string) => {
   };
 };
 
-export const checkAndroidIdentity = (input: {
+export const checkAndroidIdentity = Effect.fn("checkAndroidIdentity")(function* (input: {
   readonly badging: string;
   readonly certs: string;
   readonly version: string;
   readonly skill: string;
-}) =>
-  Effect.gen(function* () {
-    const badging = parseBadging(input.badging);
-    const versionCode = checkVersionCode(badging.versionCode, input.version);
-    const problems = [
-      badging.packageName === PERSONAL_ANDROID_PACKAGE
-        ? undefined
-        : `the package is '${badging.packageName ?? "missing"}', not '${PERSONAL_ANDROID_PACKAGE}'.`,
-      versionCode.problem,
-      checkSigner(input.certs, input.skill),
-    ].filter((problem): problem is string => problem !== undefined);
-    if (problems.length > 0 || versionCode.expected === undefined) {
-      return yield* new AndroidIdentityError({ problems });
-    }
-    return {
-      packageName: PERSONAL_ANDROID_PACKAGE,
-      versionCode: versionCode.expected,
-      version: input.version,
-    } as const;
-  });
+}) {
+  const badging = parseBadging(input.badging);
+  const versionCode = checkVersionCode(badging.versionCode, input.version);
+  const problems = [
+    badging.packageName === PERSONAL_ANDROID_PACKAGE
+      ? undefined
+      : `the package is '${badging.packageName ?? "missing"}', not '${PERSONAL_ANDROID_PACKAGE}'.`,
+    versionCode.problem,
+    checkSigner(input.certs, input.skill),
+  ].filter((problem): problem is string => problem !== undefined);
+  if (problems.length > 0 || versionCode.expected === undefined) {
+    return yield* new AndroidIdentityError({ problems });
+  }
+  return {
+    packageName: PERSONAL_ANDROID_PACKAGE,
+    versionCode: versionCode.expected,
+    version: input.version,
+  } as const;
+});
 
 const command = Command.make(
   "fork-android-identity",

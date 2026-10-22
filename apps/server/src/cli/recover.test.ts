@@ -215,7 +215,7 @@ const recover = Effect.fn("test.recover")(function* (
       }),
     restart: Effect.sync(() => {
       events.push("restart");
-      return true;
+      return "restarted" as const;
     }),
     stop: unexpected("stop on the prior version's service"),
     withStopped: () => unexpected("withStopped"),

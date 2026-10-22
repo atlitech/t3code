@@ -247,31 +247,30 @@ export class RecoveryRecordRefusedError extends Schema.TaggedError<RecoveryRecor
  * archives (`installedArchiveSha256`, each runtime's .archive-sha256), or a
  * refusal naming everything it lacks.
  */
-export const buildRecoveryRecord = (
+export const buildRecoveryRecord = Effect.fn("buildRecoveryRecord")(function* (
   input: RecoveryRecord & {
     readonly installedArchiveSha256: { readonly prior: string; readonly target: string };
   },
-) =>
-  Effect.gen(function* () {
-    const { installedArchiveSha256, ...record } = input;
-    const problems = [...recordProblems(record), ...actionProblems(record.actions)];
-    for (const role of ["prior", "target"] as const) {
-      if (installedArchiveSha256[role] !== record[role].archiveSha256) {
-        problems.push(
-          `the installed ${role} runtime came from an archive with sha256 '${installedArchiveSha256[role]}', not ${record[role].archive}`,
-        );
-      }
+) {
+  const { installedArchiveSha256, ...record } = input;
+  const problems = [...recordProblems(record), ...actionProblems(record.actions)];
+  for (const role of ["prior", "target"] as const) {
+    if (installedArchiveSha256[role] !== record[role].archiveSha256) {
+      problems.push(
+        `the installed ${role} runtime came from an archive with sha256 '${installedArchiveSha256[role]}', not ${record[role].archive}`,
+      );
     }
-    if (problems.length > 0) {
-      return yield* new RecoveryRecordRefusedError({ detail: `${problems.join("; ")}.` });
-    }
-    const json = yield* encodeRecordJson(record).pipe(
-      Effect.mapError(
-        () => new RecoveryRecordRefusedError({ detail: "the record does not encode." }),
-      ),
-    );
-    return { record, json: `${json}\n` };
-  });
+  }
+  if (problems.length > 0) {
+    return yield* new RecoveryRecordRefusedError({ detail: `${problems.join("; ")}.` });
+  }
+  const json = yield* encodeRecordJson(record).pipe(
+    Effect.mapError(
+      () => new RecoveryRecordRefusedError({ detail: "the record does not encode." }),
+    ),
+  );
+  return { record, json: `${json}\n` };
+});
 
 const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");

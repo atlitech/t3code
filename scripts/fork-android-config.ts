@@ -49,25 +49,24 @@ const REQUIRED = [
   ["extra", "clerk", "jwtTemplate"],
 ] as const;
 
-export const checkAndroidConfig = (config: unknown) =>
-  Effect.gen(function* () {
-    const androidPackage = readString(config, ["android", "package"]);
-    const problems = [
-      androidPackage === PERSONAL_ANDROID_PACKAGE
-        ? undefined
-        : `android.package is '${androidPackage ?? ""}', not '${PERSONAL_ANDROID_PACKAGE}'; the personal variant did not resolve.`,
-      ...REQUIRED.map((path) =>
-        readString(config, path) === undefined ? `${path.join(".")} is not set.` : undefined,
-      ),
-    ].filter((problem): problem is string => problem !== undefined);
-    if (problems.length > 0) return yield* new AndroidConfigError({ problems });
-    return {
-      androidPackage: PERSONAL_ANDROID_PACKAGE,
-      googleSignIn:
-        readString(config, ["extra", "EXPO_PUBLIC_CLERK_GOOGLE_ANDROID_CLIENT_ID"]) !== undefined,
-      googleServices: readString(config, ["android", "googleServicesFile"]) !== undefined,
-    } as const;
-  });
+export const checkAndroidConfig = Effect.fn("checkAndroidConfig")(function* (config: unknown) {
+  const androidPackage = readString(config, ["android", "package"]);
+  const problems = [
+    androidPackage === PERSONAL_ANDROID_PACKAGE
+      ? undefined
+      : `android.package is '${androidPackage ?? ""}', not '${PERSONAL_ANDROID_PACKAGE}'; the personal variant did not resolve.`,
+    ...REQUIRED.map((path) =>
+      readString(config, path) === undefined ? `${path.join(".")} is not set.` : undefined,
+    ),
+  ].filter((problem): problem is string => problem !== undefined);
+  if (problems.length > 0) return yield* new AndroidConfigError({ problems });
+  return {
+    androidPackage: PERSONAL_ANDROID_PACKAGE,
+    googleSignIn:
+      readString(config, ["extra", "EXPO_PUBLIC_CLERK_GOOGLE_ANDROID_CLIENT_ID"]) !== undefined,
+    googleServices: readString(config, ["android", "googleServicesFile"]) !== undefined,
+  } as const;
+});
 
 const decodeConfigJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 

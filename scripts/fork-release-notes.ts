@@ -45,59 +45,60 @@ const checkNames = (entry: VerificationScopeEntry): string =>
   entry.checks.map((check) => `${check.job} "${check.step}"`).join(" and ");
 
 /** The notes for `manifest`: one line per platform, stating its scope. */
-export const buildReleaseNotes = (manifest: ReleaseManifest) =>
-  Effect.gen(function* () {
-    const refuse = (detail: string) => Effect.fail(new ReleaseNotesError({ detail }));
-    const { decision, entries } = manifest.verificationScope;
-    for (const entry of entries) {
-      if (!PLATFORMS.some((p) => p.platform === entry.platform && p.arch === entry.arch)) {
-        return yield* refuse(`${entry.platform} ${entry.arch} is not a fork release platform.`);
-      }
+export const buildReleaseNotes = Effect.fn("buildReleaseNotes")(function* (
+  manifest: ReleaseManifest,
+) {
+  const refuse = (detail: string) => Effect.fail(new ReleaseNotesError({ detail }));
+  const { decision, entries } = manifest.verificationScope;
+  for (const entry of entries) {
+    if (!PLATFORMS.some((p) => p.platform === entry.platform && p.arch === entry.arch)) {
+      return yield* refuse(`${entry.platform} ${entry.arch} is not a fork release platform.`);
     }
-    const lines: Array<string> = [];
-    for (const platform of PLATFORMS) {
-      const matching = entries.filter(
-        (entry) => entry.platform === platform.platform && entry.arch === platform.arch,
+  }
+  const lines: Array<string> = [];
+  for (const platform of PLATFORMS) {
+    const matching = entries.filter(
+      (entry) => entry.platform === platform.platform && entry.arch === platform.arch,
+    );
+    if (matching.length !== 1) {
+      return yield* refuse(`the manifest needs exactly one ${platform.label} scope entry.`);
+    }
+    const entry = matching[0]!;
+    const claimsRuntime = entry.runtimeVerified || entry.status === "runtime-verified";
+    if (platform.runtimeVerified) {
+      if (!claimsRuntime || entry.admission === undefined) {
+        return yield* refuse(`the ${platform.label} is not runtime-verified by an admission.`);
+      }
+      lines.push(
+        `- ${platform.label}, \`${entry.file}\`: runtime-verified. ${entry.admission.record} admitted this archive (version ${entry.admission.version}, sha256 \`${entry.admission.archiveSha256}\`) after it upgraded over the prior release's data and ran; checked by ${checkNames(entry)}.`,
       );
-      if (matching.length !== 1) {
-        return yield* refuse(`the manifest needs exactly one ${platform.label} scope entry.`);
-      }
-      const entry = matching[0]!;
-      const claimsRuntime = entry.runtimeVerified || entry.status === "runtime-verified";
-      if (platform.runtimeVerified) {
-        if (!claimsRuntime || entry.admission === undefined) {
-          return yield* refuse(`the ${platform.label} is not runtime-verified by an admission.`);
-        }
-        lines.push(
-          `- ${platform.label}, \`${entry.file}\`: runtime-verified. ${entry.admission.record} admitted this archive (version ${entry.admission.version}, sha256 \`${entry.admission.archiveSha256}\`) after it upgraded over the prior release's data and ran; checked by ${checkNames(entry)}.`,
-        );
-        continue;
-      }
-      if (claimsRuntime) {
-        return yield* refuse(
-          `the ${platform.label} is marked runtime-verified, but the owner decision of ${decision.date} leaves it build-checked.`,
-        );
-      }
-      const line = `- ${platform.label}, \`${entry.file}\`: build-checked but runtime-unverified. Checked by ${checkNames(entry)}; never run by the release.`;
-      // The step names come from the manifest; none may smuggle the claim in.
-      if (/runtime-verified/i.test(line)) {
-        return yield* refuse(`the ${platform.label} line would say runtime-verified.`);
-      }
-      lines.push(line);
+      continue;
     }
-    return [
-      `T3 Code ${manifest.version}, the atli fork, built from commit ${manifest.commit}.`,
-      "",
-      `Verification scope, as ${MANIFEST_FILE}'s verificationScope records it:`,
-      "",
-      ...lines,
-      "",
-      `Mac and Android are build-checked but runtime-unverified by the ${decision.by} decision of ${decision.date}: ${decision.text} See ${decision.runbook}.`,
-      "",
-      "Install them with docs/operations/fork-server.md.",
-      "",
-    ].join("\n");
-  });
+    if (claimsRuntime) {
+      return yield* refuse(
+        `the ${platform.label} is marked runtime-verified, but the owner decision of ${decision.date} leaves it build-checked.`,
+      );
+    }
+    const line = `- ${platform.label}, \`${entry.file}\`: build-checked but runtime-unverified. Checked by ${checkNames(entry)}; never run by the release.`;
+    // The step names come from the manifest; none may smuggle the claim in.
+    if (/runtime-verified/i.test(line)) {
+      return yield* refuse(`the ${platform.label} line would say runtime-verified.`);
+    }
+    lines.push(line);
+  }
+  return [
+    `T3 Code ${manifest.version}, the atli fork, built from commit ${manifest.commit}.`,
+    "",
+    `Verification scope, as ${MANIFEST_FILE}'s verificationScope records it:`,
+    "",
+    ...lines,
+    "",
+    `Mac and Android are build-checked but runtime-unverified by the ${decision.by} decision of ${decision.date}: ${decision.text} See ${decision.runbook}.`,
+    "",
+    "Install them with docs/operations/fork-server.md.",
+    "",
+  ].join("\n");
+});
 
 export const writeReleaseNotes = Effect.fn("writeReleaseNotes")(function* (options: {
   readonly manifest: string;

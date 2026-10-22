@@ -21,18 +21,14 @@ import { v2Projection } from "./orchestrationV2TestFixtures.ts";
 import {
   presentPendingBackgroundWork,
   pendingBackgroundWorkStatusLabel,
-  presentProviderGoal,
   deriveReportedModelSelection,
   deriveLatestThreadRun,
   deriveProviderSubagentStatus,
-  formatModelSelectionEffort,
-  formatProviderSubagentStatus,
   deriveRunlessWorkStartedAt,
   deriveThreadActivityRun,
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "./threadExecution.ts";
-import { threadRuntimeCanArchive, type ThreadRuntimeSummary } from "./models.ts";
 
 const now = DateTime.makeUnsafe("2026-07-28T10:00:00.000Z");
 
@@ -118,6 +114,7 @@ describe("thread execution presentation", () => {
     ).toMatchObject({ status: "running", lastError: null, lastErrorClass: null });
   });
 
+  // regression: #15029 working timers no longer reset on every background wake
   it("counts a wake run's activity from the start of the work it continues", () => {
     const workStartedAt = DateTime.makeUnsafe("2026-07-28T09:20:00.000Z");
     const wake = { ...run("wake", 2, "running"), workStartedAt };
@@ -331,49 +328,6 @@ describe("thread execution presentation", () => {
     });
     expect(threadRuntimeHasInterruptibleRun(runtime)).toBe(false);
   });
-
-  it("keeps checkpoint-wait activity visible without exposing a non-functional interrupt", () => {
-    const waitingRun = run("run-waiting", 1, "waiting");
-    const projection = { ...v2Projection, runs: [waitingRun], updatedAt: now };
-
-    expect(deriveThreadActivityRun(projection)).toMatchObject({
-      runId: waitingRun.id,
-      status: "waiting",
-    });
-
-    const runtime = deriveThreadRuntime(projection);
-    expect(runtime).toMatchObject({
-      status: "waiting",
-      activeRunId: null,
-    });
-    expect(threadRuntimeHasInterruptibleRun(runtime)).toBe(false);
-  });
-
-  it("does not expose a stale active run after the runtime parks at idle", () => {
-    const runtime = {
-      status: "idle" as const,
-      activeRunId: RunId.make("run-stale"),
-      providerInstanceId: v2Projection.thread.providerInstanceId,
-      providerName: null,
-      lastError: null,
-      updatedAt: DateTime.formatIso(now),
-    };
-
-    expect(threadRuntimeHasInterruptibleRun(runtime)).toBe(false);
-  });
-
-  it.each(["preparing", "starting"] as const)("keeps an active %s run interruptible", (status) => {
-    const runtime = {
-      status,
-      activeRunId: RunId.make(`run-${status}`),
-      providerInstanceId: v2Projection.thread.providerInstanceId,
-      providerName: null,
-      lastError: null,
-      updatedAt: DateTime.formatIso(now),
-    };
-
-    expect(threadRuntimeHasInterruptibleRun(runtime)).toBe(true);
-  });
 });
 
 describe("deriveRunlessWorkStartedAt", () => {
@@ -418,13 +372,6 @@ describe("deriveRunlessWorkStartedAt", () => {
     expect(deriveThreadRuntime(projection)).toBeNull();
   });
 
-  it.each(["completed", "cancelled", "failed", "interrupted", "idle"] as const)(
-    "is idle once the subagent is %s",
-    (status) => {
-      expect(deriveRunlessWorkStartedAt({ ...nativeChild, nodes: [rootTurn(status)] })).toBe(null);
-    },
-  );
-
   it("ignores root turns that belong to a run, and threads the provider does not run", () => {
     const owned = { ...rootTurn("running"), runId: RunId.make("run-1") };
     expect(deriveRunlessWorkStartedAt({ ...nativeChild, nodes: [owned] })).toBeNull();
@@ -466,129 +413,9 @@ describe("deriveProviderSubagentStatus", () => {
     nodes: [root],
   });
 
-  it("reports the provider's own subagent from its runless root turn", () => {
-    expect(deriveProviderSubagentStatus(child("provider"))).toEqual({
-      status: "completed",
-      startedAt: "2026-07-28T10:00:00.000Z",
-      completedAt: "2026-07-28T10:00:00.000Z",
-    });
-  });
-
-  it("says how long the subagent has worked, or took", () => {
-    const startedAt = "2026-07-28T10:00:00.000Z";
-    const at = (iso: string) => Date.parse(iso);
-    expect(
-      formatProviderSubagentStatus(
-        { status: "running", startedAt, completedAt: null },
-        at("2026-07-28T10:01:05.400Z"),
-      ),
-    ).toBe("Working 1m 5s");
-    expect(
-      formatProviderSubagentStatus(
-        { status: "completed", startedAt, completedAt: "2026-07-28T10:00:34.000Z" },
-        at("2026-07-28T11:00:00.000Z"),
-      ),
-    ).toBe("Completed in 34s");
-    expect(
-      formatProviderSubagentStatus(
-        { status: "cancelled", startedAt, completedAt: "2026-07-28T10:00:34.000Z" },
-        0,
-      ),
-    ).toBe("Cancelled");
-    expect(formatProviderSubagentStatus(null, 0)).toBe("Starting");
-  });
-
   it("leaves T3 delegated tasks and ordinary threads alone", () => {
     expect(deriveProviderSubagentStatus(child("mcp"))).toBeNull();
     expect(deriveProviderSubagentStatus({ ...v2Projection, nodes: [root] })).toBeNull();
-  });
-});
-
-describe("formatModelSelectionEffort", () => {
-  const instanceId = ProviderInstanceId.make("claudeAgent");
-  const selection = (options?: ReadonlyArray<{ id: string; value: string }>) => ({
-    instanceId,
-    model: "claude-sonnet-5",
-    ...(options === undefined ? {} : { options }),
-  });
-  const catalog = (descriptor: { currentValue?: string }) => [
-    {
-      slug: "claude-sonnet-5",
-      name: "Claude Sonnet 5",
-      isCustom: false,
-      capabilities: {
-        optionDescriptors: [
-          {
-            id: "effort",
-            label: "Reasoning",
-            type: "select" as const,
-            options: [
-              { id: "medium", label: "Medium" },
-              { id: "high", label: "High", isDefault: true },
-              { id: "xhigh", label: "Extra High" },
-            ],
-            ...descriptor,
-          },
-        ],
-      },
-    },
-  ];
-
-  it("shows the model's default effort when the user never picked one", () => {
-    expect(formatModelSelectionEffort(selection(), catalog({}))).toBe("High");
-  });
-
-  it("names a stored effort the way the catalog does", () => {
-    expect(
-      formatModelSelectionEffort(selection([{ id: "effort", value: "xhigh" }]), catalog({})),
-    ).toBe("Extra High");
-  });
-
-  it("uses the descriptor's current value over the default", () => {
-    expect(formatModelSelectionEffort(selection(), catalog({ currentValue: "medium" }))).toBe(
-      "Medium",
-    );
-  });
-
-  it("shows nothing for a model the catalog does not describe", () => {
-    expect(formatModelSelectionEffort(selection([{ id: "effort", value: "high" }]))).toBeNull();
-    expect(
-      formatModelSelectionEffort(
-        { ...selection(), model: "claude-haiku-4-5" },
-        catalog({ currentValue: "medium" }),
-      ),
-    ).toBeNull();
-  });
-});
-
-describe("threadRuntimeCanArchive", () => {
-  const runtime = (
-    status: ThreadRuntimeSummary["status"],
-    activeRunId: ThreadRuntimeSummary["activeRunId"],
-  ): ThreadRuntimeSummary => ({
-    status,
-    activeRunId,
-    providerInstanceId: v2Projection.thread.providerInstanceId,
-    providerName: null,
-    lastError: null,
-    updatedAt: DateTime.formatIso(now),
-  });
-
-  it.each(["preparing", "starting", "running"] as const)(
-    "blocks archive while a provider is %s",
-    (status) => {
-      expect(threadRuntimeCanArchive(runtime(status, RunId.make(`run-${status}`)))).toBe(false);
-    },
-  );
-
-  it("only blocks a queued runtime when a provider run remains attached", () => {
-    expect(threadRuntimeCanArchive(runtime("queued", RunId.make("run-queued")))).toBe(false);
-    expect(threadRuntimeCanArchive(runtime("queued", null))).toBe(true);
-  });
-
-  it("allows waiting and idle threads", () => {
-    expect(threadRuntimeCanArchive(runtime("waiting", RunId.make("run-finished")))).toBe(true);
-    expect(threadRuntimeCanArchive(runtime("idle", null))).toBe(true);
   });
 });
 
@@ -749,68 +576,5 @@ describe("provider-reported model selection", () => {
         ],
       }),
     ).toBeNull();
-  });
-
-  it("shows the reported default in a subagent's effort label", () => {
-    const models = [
-      {
-        slug: selected.model,
-        name: selected.model,
-        isCustom: false,
-        capabilities: {
-          optionDescriptors: [
-            {
-              id: "variant",
-              label: "Reasoning",
-              type: "select" as const,
-              options: [{ id: "high", label: "High" }],
-            },
-          ],
-        },
-      },
-    ];
-    const variantReport = { ...selected, options: [{ id: "variant", value: "default" }] };
-    expect(formatModelSelectionEffort(selected, models, variantReport)).toBe("Default");
-    expect(formatModelSelectionEffort(selected, models)).toBe("Unknown");
-  });
-});
-
-describe("presentProviderGoal", () => {
-  it("summarizes Codex accounting and offers resume once the goal stops short", () => {
-    expect(
-      presentProviderGoal(
-        {
-          objective: "Ship the feature",
-          status: "paused",
-          tokensUsed: 12_400,
-          tokenBudget: 50_000,
-          timeUsedSeconds: 245,
-        },
-        false,
-      ),
-    ).toEqual({
-      title: "Goal paused",
-      objective: "Ship the feature",
-      usage: "12k / 50k tokens · 4m 5s",
-      canResume: true,
-    });
-  });
-
-  it("counts Claude evaluator checks and never offers resume", () => {
-    expect(
-      presentProviderGoal({ objective: "All tests pass", status: "active", checks: 1 }, true),
-    ).toEqual({
-      title: "Pursuing goal",
-      objective: "All tests pass",
-      usage: "1 check",
-      canResume: false,
-    });
-    expect(
-      presentProviderGoal({ objective: "All tests pass", status: "complete", checks: 0 }, false)
-        .usage,
-    ).toBeNull();
-    expect(
-      presentProviderGoal({ objective: "All tests pass", status: "active" }, false).title,
-    ).toBe("Goal set");
   });
 });

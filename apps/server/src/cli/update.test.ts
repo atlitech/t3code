@@ -25,9 +25,37 @@ import packageJson from "../../package.json" with { type: "json" };
 import * as BootService from "../cloud/bootService.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import { repointLauncher, resolveLauncherPath, runUpdate } from "./update.ts";
+import { repointLauncher, resolveLauncherPath, runUpdate, resolveNewestVersion } from "./update.ts";
 
 afterEach(() => vi.restoreAllMocks());
+
+const nextVersion = (increment = 1) => {
+  const [major, minor, patch] = packageJson.version.split(".");
+  return `${major}.${minor}.${Number.parseInt(patch ?? "0", 10) + increment}`;
+};
+
+it.effect("authenticates each release page until the requested channel is found", () =>
+  Effect.gen(function* () {
+    const pages: string[] = [];
+    const httpClient = HttpClient.make((request) => {
+      const url = new URL(request.url);
+      assert.equal(url.origin, "https://api.github.com");
+      assert.equal(url.pathname, "/repos/pingdotgg/t3code/releases");
+      assert.equal(request.headers.accept, "application/vnd.github+json");
+      assert.equal(request.headers.authorization, "Bearer gh-token");
+      const page = url.searchParams.get("page") ?? "";
+      pages.push(page);
+      const tag_name = page === "1" ? "v1.2.4-preview.20260101.1" : "v1.2.3";
+      return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json([{ tag_name }])));
+    });
+    const version = yield* resolveNewestVersion("stable").pipe(
+      Effect.provideService(HostProcess.Environment, { GH_TOKEN: "gh-token" }),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    );
+    assert.equal(version, "1.2.3");
+    assert.deepStrictEqual(pages, ["1", "2"]);
+  }),
+);
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
   it.effect("repoints a symlink that lives in a runtime versions tree", () =>
@@ -376,21 +404,21 @@ const failureReason = (exit: Exit.Exit<unknown, unknown>) =>
 it.layer(NodeServices.layer)("t3 update admission and preflight", (it) => {
   it.effect("installs an official version without asking for an admission record", () =>
     Effect.gen(function* () {
-      const run = yield* runFakeUpdate({ version: "0.1.1" });
+      const run = yield* runFakeUpdate({ version: `${nextVersion(1)}` });
       assert.equal(run.exit._tag, "Success");
       assert.isFalse(run.requests.some((url) => url.endsWith("/ADMISSION.json")));
-      assert.deepEqual(run.published, ["0.1.1"]);
+      assert.deepEqual(run.published, [`${nextVersion(1)}`]);
     }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
 
   it.effect("installs an admitted fork version after migrating a copy of the database", () =>
     Effect.gen(function* () {
       const run = yield* runFakeUpdate({
-        version: "0.1.1-atli.1",
+        version: `${nextVersion(1)}-atli.1`,
         admission: { archiveSha256: yield* archiveSha256 },
       });
       assert.equal(run.exit._tag, "Success");
-      assert.deepEqual(run.published, ["0.1.1-atli.1"]);
+      assert.deepEqual(run.published, [`${nextVersion(1)}-atli.1`]);
       assert.isTrue(
         run.commands.some(
           (command) =>
@@ -413,7 +441,7 @@ it.layer(NodeServices.layer)("t3 update admission and preflight", (it) => {
     ([, digest, reason]) =>
       Effect.gen(function* () {
         const run = yield* runFakeUpdate({
-          version: "0.1.1-atli.1",
+          version: `${nextVersion(1)}-atli.1`,
           admission: digest === undefined ? undefined : { archiveSha256: digest },
           // Not a pre-admission version, so the owner override does not apply.
           allowUnadmitted: true,
@@ -456,8 +484,11 @@ it.layer(NodeServices.layer)("t3 update admission and preflight", (it) => {
 
   it.effect("refuses a version whose preflight cannot migrate the database", () =>
     Effect.gen(function* () {
-      const run = yield* runFakeUpdate({ version: "0.1.1", preflight: "blocked" });
-      assert.include(failureReason(run.exit), "Not switching to t3@0.1.1: migration failed");
+      const run = yield* runFakeUpdate({ version: `${nextVersion(1)}`, preflight: "blocked" });
+      assert.include(
+        failureReason(run.exit),
+        `Not switching to t3@${nextVersion(1)}: migration failed`,
+      );
       assert.deepEqual(run.published, []);
     }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
@@ -498,7 +529,7 @@ it.layer(NodeServices.layer)("t3 update admission and preflight", (it) => {
     "refuses an upgrade whose preflight does not answer (%s)",
     (preflight) =>
       Effect.gen(function* () {
-        const upgrade = yield* runFakeUpdate({ version: "0.1.1", preflight });
+        const upgrade = yield* runFakeUpdate({ version: `${nextVersion(1)}`, preflight });
         assert.equal(upgrade.exit._tag, "Failure");
         assert.deepEqual(upgrade.published, []);
         assert.deepEqual(upgrade.warnings, []);
@@ -509,7 +540,7 @@ it.layer(NodeServices.layer)("t3 update admission and preflight", (it) => {
     Effect.gen(function* () {
       const digest = yield* archiveSha256;
       const run = yield* runFakeUpdate({
-        version: "0.1.1-atli.1",
+        version: `${nextVersion(1)}-atli.1`,
         admission: { archiveSha256: digest },
         cachedDigest: digest,
       });
@@ -529,7 +560,7 @@ it.layer(NodeServices.layer)("t3 update admission and preflight", (it) => {
       Effect.gen(function* () {
         const digest = yield* archiveSha256;
         const run = yield* runFakeUpdate({
-          version: "0.1.1-atli.1",
+          version: `${nextVersion(1)}-atli.1`,
           admission: { archiveSha256: digest },
           cachedDigest,
         });
@@ -600,11 +631,11 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       const fromVersion = withService ? SERVICE_VERSION : packageJson.version;
       const fromArchiveSha256 = withService ? SERVICE_ARCHIVE_SHA256 : undefined;
       const home = yield* makeHomeWithDatabase({ fromVersion, fromArchiveSha256 });
-      const targetDir = path.join(home.baseDir, "runtime", "versions", "0.1.1");
+      const targetDir = path.join(home.baseDir, "runtime", "versions", `${nextVersion(1)}`);
       const pointsAtPublish: string[][] = [];
 
       const run = yield* runFakeUpdate({
-        version: "0.1.1",
+        version: `${nextVersion(1)}`,
         baseDir: home.baseDir,
         launcherPath: home.launcherPath,
         ...(withService ? { service: { version: SERVICE_VERSION } } : {}),
@@ -620,7 +651,7 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       const points = yield* fs.readDirectory(pointsDirOf(path, home.baseDir));
       assert.lengthOf(points, 1);
       const [id] = points;
-      assert.match(id ?? "", new RegExp(`^19700101T000000000Z-${fromVersion}-to-0\\.1\\.1$`));
+      assert.equal(id, `19700101T000000000Z-${fromVersion}-to-${nextVersion()}`);
       // The point was already in place when the new runtime was published.
       assert.deepEqual(pointsAtPublish, [points]);
       const pointDir = path.join(pointsDirOf(path, home.baseDir), id ?? "");
@@ -640,7 +671,7 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
           runtimePath: home.fromRuntime,
           archiveSha256: fromArchiveSha256 ?? null,
         },
-        to: { version: "0.1.1" },
+        to: { version: `${nextVersion(1)}` },
         snapshot: {
           size: NodeFS.statSync(snapshotPath).size,
           sha256: fileSha256(snapshotPath),
@@ -727,10 +758,10 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const home = yield* makeHomeWithDatabase({ fromVersion: packageJson.version });
-      const targetDir = path.join(home.baseDir, "runtime", "versions", "0.1.1");
+      const targetDir = path.join(home.baseDir, "runtime", "versions", `${nextVersion(1)}`);
 
       const run = yield* runFakeUpdate({
-        version: "0.1.1",
+        version: `${nextVersion(1)}`,
         baseDir: home.baseDir,
         // Another update publishes the same version first, so this one
         // validates the published runtime again instead of its own.
@@ -739,7 +770,10 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
             ? Effect.gen(function* () {
                 yield* fs.makeDirectory(targetDir, { recursive: true });
                 yield* fs.writeFileString(path.join(targetDir, "t3"), "#!/bin/sh\n");
-                yield* fs.writeFileString(path.join(targetDir, ".install-complete"), "0.1.1\n");
+                yield* fs.writeFileString(
+                  path.join(targetDir, ".install-complete"),
+                  `${nextVersion(1)}\n`,
+                );
                 return yield* PlatformError.systemError({
                   _tag: "AlreadyExists",
                   module: "FileSystem",
@@ -767,7 +801,7 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       const digest = yield* archiveSha256;
 
       const run = yield* runFakeUpdate({
-        version: "0.1.1-atli.1",
+        version: `${nextVersion(1)}-atli.1`,
         admission: { archiveSha256: digest },
         cachedDigest: digest,
         baseDir: home.baseDir,
@@ -776,7 +810,7 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       assert.equal(run.exit._tag, "Success");
       assert.isFalse(run.commands.some(([command]) => command === "tar"));
       assert.deepEqual(yield* fs.readDirectory(pointsDirOf(path, home.baseDir)), [
-        `19700101T000000000Z-${packageJson.version}-to-0.1.1-atli.1`,
+        `19700101T000000000Z-${packageJson.version}-to-${nextVersion(1)}-atli.1`,
       ]);
     }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
   );
@@ -786,7 +820,12 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const home = yield* makeHomeWithDatabase({ fromVersion: packageJson.version });
-      const versions = ["0.1.1", "0.1.2", "0.1.3", "0.1.4"];
+      const versions = [
+        `${nextVersion(1)}`,
+        `${nextVersion(2)}`,
+        `${nextVersion(3)}`,
+        `${nextVersion(4)}`,
+      ];
       for (const version of versions) {
         const run = yield* runFakeUpdate({ version, baseDir: home.baseDir });
         assert.equal(run.exit._tag, "Success", version);
@@ -794,9 +833,9 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       }
 
       assert.deepEqual((yield* fs.readDirectory(pointsDirOf(path, home.baseDir))).toSorted(), [
-        `19700101T000001000Z-${packageJson.version}-to-0.1.2`,
-        `19700101T000002000Z-${packageJson.version}-to-0.1.3`,
-        `19700101T000003000Z-${packageJson.version}-to-0.1.4`,
+        `19700101T000001000Z-${packageJson.version}-to-${nextVersion(2)}`,
+        `19700101T000002000Z-${packageJson.version}-to-${nextVersion(3)}`,
+        `19700101T000003000Z-${packageJson.version}-to-${nextVersion(4)}`,
       ]);
       assert.deepEqual(
         (yield* fs.readDirectory(path.join(home.baseDir, "runtime", "versions"))).toSorted(),
@@ -823,7 +862,7 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       const databaseSha256 = fileSha256(home.dbPath);
 
       const run = yield* runFakeUpdate({
-        version: "0.1.1",
+        version: `${nextVersion(1)}`,
         baseDir: home.baseDir,
         launcherPath: home.launcherPath,
         service: { version: SERVICE_VERSION },
@@ -832,7 +871,7 @@ it.layer(NodeServices.layer)("t3 update recovery point", (it) => {
       assert.equal(run.exit._tag, "Failure");
       assert.include(
         failureReason(run.exit),
-        "Not switching to t3@0.1.1: could not keep a recovery point of the database",
+        `Not switching to t3@${nextVersion(1)}: could not keep a recovery point of the database`,
       );
       // The preflight ran, so the point was what refused the update.
       assert.isTrue(run.commands.some((command) => command.includes("__service-preflight")));

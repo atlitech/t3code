@@ -106,8 +106,8 @@ const decodeMessageFields = Schema.decodeUnknownEffect(MessageFields);
 const encodePayload = Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 /** Decodes fixtures.json, refusing duplicate ids and messages filed under another thread. */
-export const decodeFixtures = (text: string) =>
-  Effect.gen(function* () {
+export const decodeFixtures = Effect.fn("decodeFixtures")(
+  function* (text: string) {
     const file = yield* decodeFixtureFile(text);
     if (file.threads.length === 0) {
       return yield* new FixtureError({ detail: "there are no threads." });
@@ -141,8 +141,8 @@ export const decodeFixtures = (text: string) =>
       threads.push({ thread, messages });
     }
     return threads as ReadonlyArray<FixtureThread>;
-  }).pipe(
-    Effect.mapError((cause) =>
-      cause._tag === "FixtureError" ? cause : new FixtureError({ detail: cause.message }),
-    ),
-  );
+  },
+  Effect.mapError((cause) =>
+    cause._tag === "FixtureError" ? cause : new FixtureError({ detail: cause.message }),
+  ),
+);

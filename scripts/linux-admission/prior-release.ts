@@ -152,8 +152,8 @@ const ReleaseLine = Schema.fromJsonString(
 );
 const decodeReleaseLine = Schema.decodeEffect(ReleaseLine);
 
-const listReleases = (repository: string) =>
-  Effect.gen(function* () {
+const listReleases = Effect.fn("listReleases")(
+  function* (repository: string) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* spawner.spawn(
       ChildProcess.make("gh", [
@@ -179,14 +179,14 @@ const listReleases = (repository: string) =>
     }
     const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
     return yield* Effect.forEach(lines, (line) => decodeReleaseLine(line));
-  }).pipe(
-    Effect.scoped,
-    Effect.mapError((cause) =>
-      cause._tag === "PriorReleaseError"
-        ? cause
-        : new PriorReleaseError({ detail: "could not list releases", cause }),
-    ),
-  );
+  },
+  Effect.scoped,
+  Effect.mapError((cause) =>
+    cause._tag === "PriorReleaseError"
+      ? cause
+      : new PriorReleaseError({ detail: "could not list releases", cause }),
+  ),
+);
 
 export const resolvePriorRelease = Effect.fn("resolvePriorRelease")(function* (options: {
   readonly repo: string;

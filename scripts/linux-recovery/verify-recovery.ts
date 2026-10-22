@@ -286,19 +286,18 @@ export const runVerification = Effect.fn("runVerification")(function* (options: 
       ),
     );
   const text = (file: string) => attempt(fs.readFileString(file));
-  const write = (verification: Verification) =>
-    Effect.gen(function* () {
-      yield* fs.makeDirectory(options.out, { recursive: true });
-      const json = yield* encodeVerification(verification);
-      yield* fs.writeFileString(path.join(options.out, VERIFICATION_FILE), `${json}\n`);
-      yield* Effect.log(json);
-      const failed = verification.checks.filter((entry) => !entry.passed);
-      if (failed.length > 0) {
-        return yield* new RecoveryVerificationFailedError({
-          detail: failed.map((entry) => `${entry.name}: ${entry.detail}`).join("\n"),
-        });
-      }
-    });
+  const write = Effect.fn("write")(function* (verification: Verification) {
+    yield* fs.makeDirectory(options.out, { recursive: true });
+    const json = yield* encodeVerification(verification);
+    yield* fs.writeFileString(path.join(options.out, VERIFICATION_FILE), `${json}\n`);
+    yield* Effect.log(json);
+    const failed = verification.checks.filter((entry) => !entry.passed);
+    if (failed.length > 0) {
+      return yield* new RecoveryVerificationFailedError({
+        detail: failed.map((entry) => `${entry.name}: ${entry.detail}`).join("\n"),
+      });
+    }
+  });
 
   const decoded = yield* Effect.result(
     Effect.flatMap(fs.readFileString(options.record), decodeRecoveryRecordJson),
