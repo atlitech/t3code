@@ -163,9 +163,8 @@ export function HardwareKeyboardCommandProvider({
         });
         if (destination.kind === "draft") {
           const project = destination.project;
-          navigation.navigate("NewTaskSheet", {
-            screen: "NewTaskDraft",
-            params: {
+          navigation.navigate("Thread", {
+            draft: {
               environmentId: String(project.environmentId),
               projectId: String(project.id),
               title: project.title,
@@ -173,7 +172,7 @@ export function HardwareKeyboardCommandProvider({
           });
           return;
         }
-        navigation.navigate("NewTaskSheet", { screen: "NewTask" });
+        navigation.navigate("Thread", { draft: {} });
         return;
       }
       if (command === "back") {

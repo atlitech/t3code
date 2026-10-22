@@ -85,30 +85,31 @@ export const persistServerRuntimeState = (input: {
     ),
   );
 
-export const clearPersistedServerRuntimeState = (path: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs.remove(path, { force: true }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new ServerRuntimeStateError({
-            operation: "clear",
-            statePath: path,
-            cause,
+export const clearPersistedServerRuntimeState = Effect.fn(
+  "serverRuntimeState.clearPersistedServerRuntimeState",
+)(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  yield* fs.remove(path, { force: true }).pipe(
+    Effect.mapError(
+      (cause) =>
+        new ServerRuntimeStateError({
+          operation: "clear",
+          statePath: path,
+          cause,
+        }),
+    ),
+    Effect.catchTags({
+      ServerRuntimeStateError: (error) =>
+        Effect.logWarning(error.message).pipe(
+          Effect.annotateLogs({
+            operation: error.operation,
+            statePath: error.statePath,
+            cause: error,
           }),
-      ),
-      Effect.catchTags({
-        ServerRuntimeStateError: (error) =>
-          Effect.logWarning(error.message).pipe(
-            Effect.annotateLogs({
-              operation: error.operation,
-              statePath: error.statePath,
-              cause: error,
-            }),
-          ),
-      }),
-    );
-  });
+        ),
+    }),
+  );
+});
 
 /**
  * Signal 0 delivers nothing; it only reports whether the pid exists. EPERM
@@ -124,52 +125,50 @@ export const isProcessAlive = (pid: number): boolean => {
   }
 };
 
-/**
- * The persisted runtime state at `path`, or none when the file is absent or
- * empty. A file that cannot be read or decoded fails, so a caller that must
- * know no server is running can refuse instead of assuming none is.
- */
-export const readPersistedServerRuntimeStateStrict = (path: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const raw = yield* fs.readFileString(path).pipe(
-      Effect.matchEffect({
-        onFailure: (cause) =>
-          cause.reason._tag === "NotFound"
-            ? Effect.succeed(Option.none<string>())
-            : Effect.fail(
-                new ServerRuntimeStateError({
-                  operation: "read",
-                  statePath: path,
-                  cause,
-                }),
-              ),
-        onSuccess: (contents) => Effect.succeedSome(contents),
-      }),
-    );
-    if (Option.isNone(raw)) {
-      return Option.none<PersistedServerRuntimeState>();
-    }
+export const readPersistedServerRuntimeStateStrict = Effect.fn(
+  "serverRuntimeState.readPersistedServerRuntimeStateStrict",
+)(function* (path: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const raw = yield* fs.readFileString(path).pipe(
+    Effect.matchEffect({
+      onFailure: (cause) =>
+        cause.reason._tag === "NotFound"
+          ? Effect.succeed(Option.none<string>())
+          : Effect.fail(
+              new ServerRuntimeStateError({
+                operation: "read",
+                statePath: path,
+                cause,
+              }),
+            ),
+      onSuccess: (contents) => Effect.succeedSome(contents),
+    }),
+  );
+  if (Option.isNone(raw)) {
+    return Option.none<PersistedServerRuntimeState>();
+  }
 
-    const trimmed = raw.value.trim();
-    if (trimmed.length === 0) {
-      return Option.none<PersistedServerRuntimeState>();
-    }
+  const trimmed = raw.value.trim();
+  if (trimmed.length === 0) {
+    return Option.none<PersistedServerRuntimeState>();
+  }
 
-    return yield* decodePersistedServerRuntimeState(trimmed).pipe(
-      Effect.asSome,
-      Effect.mapError(
-        (cause) =>
-          new ServerRuntimeStateError({
-            operation: "decode",
-            statePath: path,
-            cause,
-          }),
-      ),
-    );
-  });
+  return yield* decodePersistedServerRuntimeState(trimmed).pipe(
+    Effect.asSome,
+    Effect.mapError(
+      (cause) =>
+        new ServerRuntimeStateError({
+          operation: "decode",
+          statePath: path,
+          cause,
+        }),
+    ),
+  );
+});
 
-export const readPersistedServerRuntimeState = (path: string) =>
+export const readPersistedServerRuntimeState = Effect.fn(
+  "serverRuntimeState.readPersistedServerRuntimeState",
+)((path: string) =>
   readPersistedServerRuntimeStateStrict(path).pipe(
     Effect.catchTags({
       ServerRuntimeStateError: (error) =>
@@ -182,4 +181,5 @@ export const readPersistedServerRuntimeState = (path: string) =>
           Effect.as(Option.none<PersistedServerRuntimeState>()),
         ),
     }),
-  );
+  ),
+);

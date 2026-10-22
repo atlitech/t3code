@@ -32,15 +32,3 @@ export function resolveNewTaskNavigationDestination(input: {
   const onlyProject = input.projects.length === 1 ? input.projects[0] : null;
   return onlyProject ? { kind: "draft", project: onlyProject } : { kind: "picker" };
 }
-
-/** Keep the sidebar's visual selection aligned with the content pane. */
-export function resolveSidebarSelectedThreadKey(input: {
-  readonly selectedThreadKey: string | null;
-  readonly newTaskFlowPresented: boolean;
-  readonly usesSplitView: boolean;
-  readonly isAndroid: boolean;
-}): string | null {
-  return input.isAndroid && input.usesSplitView && input.newTaskFlowPresented
-    ? null
-    : input.selectedThreadKey;
-}

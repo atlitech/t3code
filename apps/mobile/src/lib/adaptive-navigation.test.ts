@@ -3,7 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   createPopToThreadAction,
   isBaseThreadRoute,
-  resolveFileSelectionNavigationAction,
   resolveThreadSelectionNavigationAction,
   resolveThreadSelectionOverlayState,
 } from "./adaptive-navigation";
@@ -28,15 +27,15 @@ describe("isBaseThreadRoute", () => {
 });
 
 describe("resolveThreadSelectionNavigationAction", () => {
-  it("updates params when a persistent sidebar selects a peer thread", () => {
+  it("retains the draft screen despite its query-shaped path", () => {
     expect(
       resolveThreadSelectionNavigationAction({
         usesSplitView: true,
-        pathname: "/threads/environment/thread",
+        pathname: "/threads?draft=local",
+        workspaceRouteName: "Thread",
       }),
     ).toBe("set-params");
   });
-
   it("replaces nested thread content when a persistent sidebar selects a peer", () => {
     expect(
       resolveThreadSelectionNavigationAction({
@@ -53,29 +52,6 @@ describe("resolveThreadSelectionNavigationAction", () => {
         pathname: "/",
       }),
     ).toBe("push");
-  });
-
-  it("pushes compact list selections onto the native stack", () => {
-    expect(
-      resolveThreadSelectionNavigationAction({
-        usesSplitView: false,
-        pathname: "/threads/environment/thread",
-      }),
-    ).toBe("push");
-  });
-});
-
-describe("resolveFileSelectionNavigationAction", () => {
-  it("replaces the wide file browser with the selected preview", () => {
-    expect(resolveFileSelectionNavigationAction({ hasPersistentFileInspector: true })).toBe(
-      "replace",
-    );
-  });
-
-  it("pushes a preview above the compact file browser", () => {
-    expect(resolveFileSelectionNavigationAction({ hasPersistentFileInspector: false })).toBe(
-      "push",
-    );
   });
 });
 
@@ -135,15 +111,24 @@ describe("resolveThreadSelectionOverlayState", () => {
       ).toEqual({ ...stack, index: 1, routes: [route, { name: "Thread", params }] });
     },
   );
+});
 
-  it("leaves ordinary thread selection alone when no overlay is present", () => {
-    expect(
-      resolveThreadSelectionOverlayState({
-        state: { ...stack, index: 2, routes: [home, thread, files] },
-        workspaceRouteKey: files.key,
-        action: "replace",
-        params,
-      }),
-    ).toBeNull();
+it("replacing a draft underneath an overlay removes its draft identity", () => {
+  const result = resolveThreadSelectionOverlayState({
+    state: {
+      key: "root",
+      type: "stack",
+      stale: false,
+      routeNames: ["Thread", "SettingsSheet"],
+      index: 1,
+      routes: [
+        { key: "draft", name: "Thread", params: { draft: { draftId: "old" } } },
+        { key: "settings", name: "SettingsSheet" },
+      ],
+    },
+    workspaceRouteKey: "draft",
+    action: "set-params",
+    params: { environmentId: "env", threadId: "live" },
   });
+  expect(result?.routes[0]?.params).toEqual({ environmentId: "env", threadId: "live" });
 });

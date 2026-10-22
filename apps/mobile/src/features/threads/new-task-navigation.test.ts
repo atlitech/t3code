@@ -2,10 +2,7 @@ import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { EnvironmentId, ProjectId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  resolveNewTaskNavigationDestination,
-  resolveSidebarSelectedThreadKey,
-} from "./new-task-navigation";
+import { resolveNewTaskNavigationDestination } from "./new-task-navigation";
 
 function makeProject(input: {
   readonly environmentId: string;
@@ -124,65 +121,5 @@ describe("resolveNewTaskNavigationDestination", () => {
         activeThread: null,
       }),
     ).toEqual({ kind: "picker" });
-  });
-});
-
-describe("resolveSidebarSelectedThreadKey", () => {
-  const selectedThreadKey = "local:thread-1";
-
-  it.each([
-    {
-      name: "Android split workspace while new-task flow is presented",
-      input: {
-        selectedThreadKey,
-        newTaskFlowPresented: true,
-        usesSplitView: true,
-        isAndroid: true,
-      },
-      expected: null,
-    },
-    {
-      name: "Android split workspace after new-task flow closes",
-      input: {
-        selectedThreadKey,
-        newTaskFlowPresented: false,
-        usesSplitView: true,
-        isAndroid: true,
-      },
-      expected: selectedThreadKey,
-    },
-    {
-      name: "Android compact workspace while new-task flow is presented",
-      input: {
-        selectedThreadKey,
-        newTaskFlowPresented: true,
-        usesSplitView: false,
-        isAndroid: true,
-      },
-      expected: selectedThreadKey,
-    },
-    {
-      name: "iOS split workspace while its sheet is presented",
-      input: {
-        selectedThreadKey,
-        newTaskFlowPresented: true,
-        usesSplitView: true,
-        isAndroid: false,
-      },
-      expected: selectedThreadKey,
-    },
-  ])("returns the expected selection for $name", ({ input, expected }) => {
-    expect(resolveSidebarSelectedThreadKey(input)).toBe(expected);
-  });
-
-  it("keeps an empty selection empty in every presentation state", () => {
-    expect(
-      resolveSidebarSelectedThreadKey({
-        selectedThreadKey: null,
-        newTaskFlowPresented: true,
-        usesSplitView: true,
-        isAndroid: true,
-      }),
-    ).toBeNull();
   });
 });
