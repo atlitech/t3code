@@ -17,9 +17,9 @@ import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 const root = NodePath.resolve(import.meta.dirname, "..");
 const CODE = /\.[cm]?[jt]sx?$/;
 
-const git = (...args: Array<string>) =>
+const gitPaths = (...args: Array<string>) =>
   NodeChildProcess.execFileSync("git", args, { cwd: root, encoding: "utf8" })
-    .split("\n")
+    .split("\0")
     .filter(Boolean);
 
 const ref = process.argv[2] ?? "origin/main";
@@ -35,9 +35,9 @@ if (mergeBase.status !== 0) {
 }
 const base = mergeBase.stdout.trim();
 // --no-renames lists a rename as its old and new path, as CI does.
-const untracked = git("ls-files", "--others", "--exclude-standard");
+const untracked = gitPaths("ls-files", "-z", "--others", "--exclude-standard");
 const files = [
-  ...new Set([...git("diff", "--name-only", "--no-renames", base, "--"), ...untracked]),
+  ...new Set([...gitPaths("diff", "-z", "--name-only", "--no-renames", base, "--"), ...untracked]),
 ].sort();
 
 if (files.length === 0) {
