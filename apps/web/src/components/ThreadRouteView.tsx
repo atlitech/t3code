@@ -1,12 +1,15 @@
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
+import * as Option from "effect/Option";
 import { useEffect, useState } from "react";
 
 import ChatView from "./ChatView";
 import { resolveDraftPromotionNavigationTarget, threadHasStarted } from "./ChatView.logic";
 import { waitForDraftHeroTransition } from "./chat/draftHeroTransition";
 import { SidebarInset } from "./ui/sidebar";
+import { Button } from "./ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "./ui/empty";
 import {
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThreadByRef,
@@ -177,6 +180,18 @@ export function ThreadRouteView({ target }: { target: ThreadRouteTarget }) {
         />
       );
     }
+  } else if (renderState === "error") {
+    view = (
+      <Empty role="alert">
+        <EmptyHeader>
+          <EmptyTitle>Could not load this thread</EmptyTitle>
+          <EmptyDescription>{Option.getOrNull(unlistedThreadDetail.error)}</EmptyDescription>
+        </EmptyHeader>
+        <Button variant="outline" onClick={() => void navigate({ to: "/" })}>
+          Back to threads
+        </Button>
+      </Empty>
+    );
   } else if (renderState === "ready" || (renderState === "loading" && serverThreadShell !== null)) {
     view = (
       <ChatView

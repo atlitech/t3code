@@ -128,7 +128,7 @@ describe("threadRoutes", () => {
           error: Option.some("Connection interrupted"),
         },
       }),
-    ).toBe("loading");
+    ).toBe("error");
     expect(
       resolveThreadRouteRenderState({
         ...route,

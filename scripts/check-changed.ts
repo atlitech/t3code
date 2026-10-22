@@ -63,6 +63,9 @@ for (const file of code) {
     if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(NodePath.join(dir, entry));
   }
 }
+// The GitHub workflow helpers use node:test rather than Vitest.
+const nodeTests = [...tests].filter((file) => file.endsWith(".test.cjs"));
+const vitestTests = [...tests].filter((file) => !file.endsWith(".test.cjs"));
 
 // knip:check takes about 35 s and cannot be scoped to a package. Any code
 // change can leave a file, export, or dependency unused (removing the last
@@ -93,9 +96,13 @@ const steps = [
     args: ["run", "--cache", "--concurrency-limit", "4", ...filters(affected), "typecheck"],
   },
   // From the repo root, the root vite.config.ts hands each file to its package's config.
-  tests.size > 0 && {
-    name: `test (${tests.size} files)`,
-    args: ["test", "run", "--passWithNoTests", ...tests],
+  vitestTests.length > 0 && {
+    name: `test (${vitestTests.length} files)`,
+    args: ["test", "run", "--passWithNoTests", ...vitestTests],
+  },
+  nodeTests.length > 0 && {
+    name: `node test (${nodeTests.length} files)`,
+    args: ["exec", "node", "--test", ...nodeTests],
   },
 ].filter((step) => step !== false);
 
