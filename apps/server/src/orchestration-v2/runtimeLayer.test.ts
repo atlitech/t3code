@@ -2996,6 +2996,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       let remainingStatus: "pending" | "success" = "pending";
       const host = Layer.mergeAll(
         NodeServices.layer,
+        ServerSettings.layerTest({ enablePullRequestWatch: true }),
         Layer.mock(PullRequestService.PullRequestService)({
           detail: () =>
             Effect.sync(() => ({
@@ -3241,6 +3242,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       let checks: PullRequestDetail["checks"] = [];
       const host = Layer.mergeAll(
         NodeServices.layer,
+        ServerSettings.layerTest({ enablePullRequestWatch: true }),
         Layer.mock(PullRequestService.PullRequestService)({
           detail: () =>
             Effect.sync(() => ({
@@ -3344,6 +3346,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       let checks: PullRequestDetail["checks"] = [];
       const host = Layer.mergeAll(
         NodeServices.layer,
+        ServerSettings.layerTest({ enablePullRequestWatch: true }),
         Layer.mock(PullRequestService.PullRequestService)({
           detail: () =>
             Effect.sync(() => ({
@@ -3573,7 +3576,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           minutes: 480,
           quietMinutes: 120,
           longestQuietMinutes: 360,
-          wakes: 0,
+          wakes: 1,
           reads: 3,
           partial: false,
         },

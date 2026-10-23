@@ -3659,7 +3659,7 @@ type PendingClaudeRuntimeRequest =
       readonly node: OrchestrationV2ExecutionNode;
       readonly request: OrchestrationV2RuntimeRequest;
       readonly turnItem: OrchestrationV2TurnItem;
-      readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
+      readonly decision: Deferred.Deferred<ClaudeApprovalResponse>;
     }
   | {
       readonly type: "approval";
@@ -6594,7 +6594,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               turnItem: { ...pending.turnItem, status, completedAt, updatedAt: completedAt },
             });
           }
-          yield* Deferred.succeed(pending.decision, decision);
+          yield* Deferred.succeed(pending.decision, { decision });
         }, elicitationPermit.withPermit);
 
         const cancelElicitations = Effect.fnUntraced(function* (
@@ -8986,7 +8986,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 { decision: "cancel", label: "Cancel" },
               ],
             });
-            const decision = yield* Deferred.make<ProviderApprovalDecision>();
+            const decision = yield* Deferred.make<ClaudeApprovalResponse>();
             if (
               elicitationsClosed ||
               closedElicitationTurns.has(context) ||
@@ -9025,7 +9025,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (pending === null) return { action: "cancel" as const };
           const { artifacts, decision } = pending;
           return yield* Effect.gen(function* () {
-            const resolved = yield* awaitClaudeApprovalDecision(decision, callbackOptions.signal);
+            const { decision: resolved } = yield* awaitClaudeApprovalDecision(
+              decision,
+              callbackOptions.signal,
+            );
             yield* settleElicitation(artifacts.request.id, resolved);
             return resolved === "accept"
               ? acceptance
