@@ -15,9 +15,21 @@ Object.assign(process.env, repoEnv);
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isPersonalBuild = APP_VARIANT === "personal";
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
-const runtimeVersionPolicy =
-  process.env.MOBILE_VERSION_POLICY ??
-  (APP_VARIANT === "development" ? "appVersion" : "fingerprint");
+const runtimeVersionPolicy = resolveRuntimeVersionPolicy(process.env.MOBILE_VERSION_POLICY);
+
+function resolveRuntimeVersionPolicy(value: string | undefined) {
+  switch (value) {
+    case "appVersion":
+    case "fingerprint":
+    case "nativeVersion":
+    case "sdkVersion":
+      return value;
+    case undefined:
+      return APP_VARIANT === "development" ? "appVersion" : "fingerprint";
+    default:
+      throw new Error(`Unsupported MOBILE_VERSION_POLICY: ${value}`);
+  }
+}
 
 // The fork release (fork-server-release.yml build-android, or the personal
 // Android skill's build script) sets this so each release APK installs over the
@@ -241,10 +253,10 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
 // family names without waiting for runtime font loading.
 
 const config: ExpoConfig = {
-  name: variant.appName,
+  name: isIosPersonalTeamBuild ? "T3 Code Personal" : variant.appName,
   slug: "t3-code",
   platforms: ["ios", "android"],
-  scheme: variant.scheme,
+  scheme: isIosPersonalTeamBuild ? `t3code-${iosBundleIdentifier}` : variant.scheme,
   version: repoEnv.T3CODE_MOBILE_VERSION ?? "2.1.0",
   runtimeVersion: {
     // Development manifests resolve on every launch, so avoid fingerprint's
@@ -255,18 +267,19 @@ const config: ExpoConfig = {
   orientation: "portrait",
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
-  updates: isPersonalBuild
-    ? {
-        // Personal fork builds are self-contained. Never replace their
-        // embedded bundle with an update from the maintainers' EAS project.
-        enabled: false,
-      }
-    : {
-        enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
-        url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
-        checkAutomatically: "ON_LOAD",
-        fallbackToCacheTimeout: 0,
-      },
+  updates:
+    isPersonalBuild || isIosPersonalTeamBuild
+      ? {
+          // Personal fork builds are self-contained. Never replace their
+          // embedded bundle with an update from the maintainers' EAS project.
+          enabled: false,
+        }
+      : {
+          enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
+          url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
+          checkAutomatically: "ON_LOAD",
+          fallbackToCacheTimeout: 0,
+        },
   ios: {
     icon: variant.assets.iosIcon,
     supportsTablet: true,
@@ -275,13 +288,12 @@ const config: ExpoConfig = {
     // Pin code signing to the T3 Tools team so non-interactive `expo run:ios`
     // does not fall back to a personal team (which cannot sign app groups,
     // Sign in with Apple, or push notification entitlements).
-    appleTeamId: "ARK85ZXQ4Z",
-    associatedDomains: [
-      `applinks:${variant.relyingParty}`,
-      `webcredentials:${variant.relyingParty}`,
-    ],
+    appleTeamId: isIosPersonalTeamBuild ? undefined : "ARK85ZXQ4Z",
+    associatedDomains: isIosPersonalTeamBuild
+      ? []
+      : [`applinks:${variant.relyingParty}`, `webcredentials:${variant.relyingParty}`],
     entitlements: {
-      "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
+      "keychain-access-groups": [`$(AppIdentifierPrefix)${iosBundleIdentifier}`],
     },
     infoPlist: {
       UISupportedInterfaceOrientations: [
@@ -348,6 +360,9 @@ const config: ExpoConfig = {
     favicon: variant.assets.appIcon,
   },
   plugins: [
+    // Entitlement mods run in reverse registration order; strip restricted
+    // capabilities after the plugins that add them.
+    ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
     "expo-asset",
     "react-native-pdf-jsi",
     [
@@ -387,8 +402,6 @@ const config: ExpoConfig = {
         mode: APP_VARIANT === "development" ? "development" : "production",
       },
     ],
-    // appleSignIn must be gated here: withoutIosPersonalTeamCapabilities.cjs runs before
-    // plugins earlier in this array, so it cannot strip the entitlement Clerk would add.
     ["@clerk/expo", { theme: "./clerk-theme.json", appleSignIn: !isIosPersonalTeamBuild }],
     "expo-web-browser",
     [
@@ -495,7 +508,6 @@ const config: ExpoConfig = {
     ...(isPersonalBuild
       ? ["./plugins/withPersonalAndroidProfileable.cjs", "./plugins/withPersonalAndroidSigning.cjs"]
       : []),
-    ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
   ],
   extra: {
     appVariant: APP_VARIANT,
@@ -521,7 +533,7 @@ const config: ExpoConfig = {
       tracesDataset: repoEnv.EXPO_PUBLIC_OTLP_TRACES_DATASET ?? null,
       tracesToken: repoEnv.EXPO_PUBLIC_OTLP_TRACES_TOKEN ?? null,
     },
-    ...(!isPersonalBuild
+    ...(!isPersonalBuild && !isIosPersonalTeamBuild
       ? {
           eas: {
             projectId: "d763fcb8-d37c-41ea-a773-b54a0ab4a454",
@@ -529,7 +541,7 @@ const config: ExpoConfig = {
         }
       : {}),
   },
-  owner: isPersonalBuild ? undefined : "pingdotgg",
+  owner: isPersonalBuild || isIosPersonalTeamBuild ? undefined : "pingdotgg",
   experiments: {
     // Metro only runs babel-plugin-react-compiler when this is set; see src/reactCompilerCoverage.test.ts.
     reactCompiler: true,
