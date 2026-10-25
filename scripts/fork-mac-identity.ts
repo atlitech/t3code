@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Checks the Mac app inside the DMG that
-// fork-server-release.yml builds before the workflow uploads it: the bundle
-// identifier is the desktop app's, the version is the release's, and the app
-// carries no Developer ID signature, because the fork ships it unsigned and the
-// owner signs the installed app ad hoc. The workflow hands over the app's
-// Info.plist as XML (`plutil -convert xml1`) and the output of
-// `codesign -dv --verbose=2`. Runbook: docs/operations/fork-server.md.
+// Validate DMG Info.plist and codesign output against app identity and release version.
+// Fork builds have no Developer ID signature; the owner signs locally. See the fork runbook.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

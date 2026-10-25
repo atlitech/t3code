@@ -1,17 +1,8 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off - Effect has no SQLite client; a copied database is read with node:sqlite.
 
-// Fork-only (atlitech/t3code). The recovery drill's independent verdict
-// (run-verify.sh): on a fresh runner, everything RECOVERY.json claims is
-// checked against what this job observes itself on the uploaded drilled
-// home. The live database must hash to the recovery point's snapshot, the
-// launcher must run the prior and be the `t3` from the prior's verified
-// release archive, the prior started on a copy of the home must read the
-// fixtures back and report the pre-upgrade environment id, and the database
-// recover moved aside must hold the post-upgrade thread the restored one
-// lacks. An observation of its own that did not complete fails the verdict
-// too, whatever files it left behind. VERIFICATION.json lists every check;
-// any failed check fails the job.
+// Independently re-observe the uploaded drilled home, prior runtime and displaced work.
+// RECOVERY.json is a claim, not evidence; any failed or incomplete observation fails verification.
 
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";

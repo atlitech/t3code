@@ -95,12 +95,8 @@ const readSessions = (databasePath: string) => {
 };
 
 /**
- * A T3 home that was updated from 1.2.3 to 1.2.4: a recovery point taken
- * from the database before the update, later work written to the live
- * database with its -wal and -shm, and a launcher that points at 1.2.4.
- * With `auth`, the database has the server's real schema, `auth.before`
- * runs before the point is kept and `auth.after` after it, and the live
- * database keeps only its own journal.
+ * Model an updated home with pre-update recovery, later live work and journals.
+ * Auth hooks mutate the real schema before and after the point is kept.
  */
 const makeUpdatedHome = Effect.fn("test.make_updated_home")(function* (options?: {
   readonly fromDigest?: string | null;

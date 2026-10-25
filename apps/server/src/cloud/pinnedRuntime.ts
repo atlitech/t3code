@@ -104,12 +104,7 @@ export type PinnedRuntimeProgress =
   | { readonly stage: "download"; readonly received: number; readonly total: number | undefined }
   | { readonly stage: "verify" | "extract" | "validate" | "cached" };
 
-/**
- * The sentinel is written only after extraction and validation succeed; checking the entry file
- * alone is not enough, since tar writes the executable before the last native package and a
- * killed install leaves a plausible-looking but broken tree behind. With an admitted archive
- * digest, a cached install also has to record that digest, or it is installed afresh.
- */
+/** Tar writes the executable before native packages; validated installs also bind the admitted digest. */
 
 interface PinnedRuntimeInstallInput {
   readonly baseDir: string;
@@ -252,8 +247,7 @@ const installFromArchive = Effect.fn("cloud.pinned_runtime.install_archive")(fun
     );
   input.onProgress?.({ stage: "extract" });
   const extractStep = "extracting the t3 release archive";
-  // The archive wraps everything in one directory named after its stem;
-  // strip it so the executable lands at <versionDir>/t3.
+  // Strip the archive's stem directory so the executable lands at <versionDir>/t3.
   yield* input.runner
     .run({
       command: cliArchiveTarCommand(input.platform, process.env),
@@ -330,13 +324,7 @@ export const isPinnedRuntimeInstalled = (input: {
     paths: pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform),
   }).pipe(Effect.orElseSucceed(() => false));
 
-/**
- * Swaps a validated staging tree in for a complete but unadmitted cached
- * runtime: the cached tree is moved aside, the staging tree is published, and
- * only then is the aside tree removed. If publishing fails, the cached tree is
- * moved back, so a failed replacement leaves it where it was. The swap is
- * uninterruptible so it never stops halfway with no runtime in place.
- */
+/** Replacing an unadmitted runtime rolls back on failure and cannot be interrupted mid-swap. */
 const replaceCachedRuntime = (
   input: PinnedRuntimeInstallInput,
   versionDir: string,
@@ -727,12 +715,9 @@ const selectUnusedRuntimes = Effect.fn("cloud.pinned_runtime.select_unused")(fun
 });
 
 /**
- * Every update publishes a new immutable runtime, so without pruning they pile up. Removes
- * completed runtimes nothing can start again and keeps: the caller's versions, everything the
- * service state references (active, rollback, pending), and runtimes that a running process
- * executes, a `t3` launcher points at, or `references` (such as the service unit) name, plus
- * anything published within the last hour. Staging directories, symlinks, and unexpected entries
- * are never touched. Returns the versions removed.
+ * Keep runtimes named by callers, service state, running processes, launchers, or references,
+ * and anything published within an hour. Only prune completed runtimes; leave staging
+ * directories, symlinks, and unexpected entries untouched.
  */
 export const prunePinnedRuntimes = Effect.fn("cloud.pinned_runtime.prune")(function* (input: {
   readonly baseDir: string;

@@ -6,11 +6,8 @@ import * as Effect from "effect/Effect";
 
 import { checkAndroidConfig, readPath } from "./fork-android-config.ts";
 
-// Fixture: `APP_VARIANT=personal vp exec expo config --type public --json`,
-// run in apps/mobile with dummy public values (T3CODE_RELAY_URL=
-// https://relay.example.test, T3CODE_CLERK_PUBLISHABLE_KEY=pk_test_example,
-// T3CODE_CLERK_JWT_TEMPLATE=example) and no Google values. Each variant below
-// mutates a fresh parse of it.
+// Personal Expo public config fixture uses dummy relay/Clerk values and no Google values.
+// Each variant mutates a fresh parse.
 const resolved = (): Record<string, any> =>
   JSON.parse(
     NodeFS.readFileSync(

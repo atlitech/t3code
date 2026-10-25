@@ -1,11 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). The fork tests in fork-ci.yml's `Check`. The
-// fork does not run upstream's CI: upstream already ran it on every upstream
-// commit. This confirms the upstream commit the branch is built on passed
-// upstream's `Check`, then runs every test file the fork added or changed
-// since that commit, in the package that owns it.
-// Runbook: docs/operations/fork-server.md.
+// Requires passing upstream CI, then runs fork-changed tests in their owning packages.
+// See docs/operations/fork-server.md.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

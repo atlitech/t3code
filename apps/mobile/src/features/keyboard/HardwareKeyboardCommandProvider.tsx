@@ -1,5 +1,6 @@
 import { StackActions, useNavigation } from "@react-navigation/native";
-import { resolveThreadReferenceCopyTarget } from "@t3tools/shared/threadReference";
+import { Platform } from "react-native";
+import { resolveThreadReferenceCopyTarget } from "@t3tools/client-runtime/thread-reference";
 import {
   createContext,
   use,
@@ -14,6 +15,10 @@ import {
 } from "react";
 
 import { tryCopyTextWithHaptic } from "../../lib/copyTextWithHaptic";
+import {
+  firstWorkspaceDetailOpen,
+  workspaceHasColumns,
+} from "../workspace/workspace-selection-store";
 import { T3KeyboardCommands } from "../../native/T3KeyboardCommands";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useThreadShell } from "../../state/entities";
@@ -31,6 +36,7 @@ import {
   subscribeToHardwareKeyboardCommandRegistrations,
   type HardwareKeyboardCommand,
 } from "./hardwareKeyboardCommands";
+import { selectWorkspaceDetail } from "../workspace/workspace-detail-selection";
 
 const EMPTY_COPY_FEEDBACK: GitActionProgress = {
   phase: "idle",
@@ -163,19 +169,27 @@ export function HardwareKeyboardCommandProvider({
         });
         if (destination.kind === "draft") {
           const project = destination.project;
-          navigation.navigate("Thread", {
-            draft: {
-              environmentId: String(project.environmentId),
-              projectId: String(project.id),
-              title: project.title,
-            },
-          });
+          navigation.dispatch(
+            selectWorkspaceDetail({
+              name: "Thread",
+              params: {
+                draft: {
+                  environmentId: String(project.environmentId),
+                  projectId: String(project.id),
+                  title: project.title,
+                },
+              },
+            }),
+          );
           return;
         }
-        navigation.navigate("Thread", { draft: {} });
+        navigation.dispatch(selectWorkspaceDetail({ name: "Thread", params: { draft: {} } }));
         return;
       }
       if (command === "back") {
+        // Beside a visible list, the first detail page has nothing to go back to.
+        if (Platform.OS === "ios" && workspaceHasColumns() && firstWorkspaceDetailOpen(navigation))
+          return;
         if (navigation.canGoBack()) {
           navigation.goBack();
         } else {

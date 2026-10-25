@@ -1,13 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Writes RECOVERY.json, the recovery drill's
-// record (run-drill.sh): which admitted release a scratch T3 home upgraded
-// from and to, the recovery point `t3 update` kept, the database at that
-// point and right after `t3 recover`, the pre-upgrade environment id, what
-// the prior read back, and every operator action in order. A record missing
-// any of it, or describing a recovery that did not restore the point, is
-// refused and nothing is written. The verify job re-observes the drilled
-// home against it (verify-recovery.ts).
+// Record the drill only when recovery restored the point and all required evidence exists.
+// verify-recovery.ts independently re-observes the uploaded home.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

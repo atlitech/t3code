@@ -114,15 +114,8 @@ const listPoints = Effect.fn("cli.recover.list")(function* (baseDir: string) {
 });
 
 /**
- * `t3 recover`: lists recovery points, or restores one. A restore holds this
- * home's recover lock from its first check to its last step, so a second
- * `t3 recover` refuses meanwhile. Every check runs before anything stops or
- * moves. When this home's service serves it, the service is stopped, the
- * database swapped, and the service pointed at and restarted on the prior
- * runtime; otherwise only the database and launcher change. The restored
- * database keeps every revocation the current one records, and revokes every
- * session and pairing link it no longer has. `serviceForVersion` builds the
- * service that installs and restarts on the point's prior version.
+ * Holds the home lock through validation, service stop, database swap and prior-runtime restart.
+ * Restoration preserves revocations and invalidates sessions missing from the current database.
  */
 export const runRecover = Effect.fn("cli.recover.run")(function* (input: {
   readonly baseDir: string;

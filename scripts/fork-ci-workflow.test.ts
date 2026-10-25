@@ -3,11 +3,8 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 
-// The fork does not run upstream's CI. fork-ci.yml's `Check` runs on pull
-// requests into atli and pushes to atli, on GitHub-hosted runners: it confirms
-// the upstream commit passed upstream's CI and runs the fork's own tests. The
-// push run is the `Check` fork-server-release.yml requires on the commit it
-// releases, and the release also runs fork-full-suite.yml.
+// Fork Check validates upstream CI and fork tests on PRs and atli pushes.
+// Release requires the push Check plus the full suite on the released commit.
 const read = (file: string) =>
   NodeFS.readFileSync(
     NodePath.join(import.meta.dirname, "..", ".github", "workflows", file),

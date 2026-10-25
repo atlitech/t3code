@@ -24,11 +24,8 @@ export function ThreadHeader(
     useAdaptiveWorkspaceLayout();
   const { onOpenTerminal, onMergeBack } = props.gitControls;
   const native = useThreadHeaderOptions(props);
-  // iOS renders the thread actions through the native header items above.
-  // Android gets one in-flow menu that also swallows terminal and git: the
-  // header only keeps a single action visible on phone widths, so leaving them
-  // as icon actions puts AndroidScreenHeader's own overflow ellipsis right
-  // beside this one.
+  // iOS uses native header items. Android folds terminal and git into this menu
+  // to avoid a second overflow button on narrow screens.
   const { threadActions, onThreadAction } = props;
   const threadActionsMenus = useMemo<ReadonlyArray<AppBarMenu>>(
     () => [

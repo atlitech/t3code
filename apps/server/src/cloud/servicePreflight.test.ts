@@ -13,8 +13,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { runMigrations } from "../persistence/Migrations.ts";
-import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import { runServicePreflight } from "./servicePreflight.ts";
+import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 const fileSha256 = (path: string) =>
   NodeCrypto.createHash("sha256").update(NodeFS.readFileSync(path)).digest("hex");
@@ -56,19 +56,20 @@ const openLiveWriter = (databasePath: string, statements: string) =>
 it.layer(NodeServices.layer)("runServicePreflight", (it) => {
   it.effect.each([1, 2])("blocks legacy launcher protocol %i", (launcherProtocol) =>
     Effect.gen(function* () {
-      assert.deepEqual(
-        yield* runServicePreflight({
-          databasePath: "/missing/state.sqlite",
-          launcherProtocol,
-          version: "1.2.3",
-        }),
-        {
-          status: "blocked",
-          version: "1.2.3",
-          reason:
-            "This release requires a newer T3 Code service launcher. Update it on the server machine.",
-        },
-      );
+      const result = yield* runServicePreflight({
+        databasePath: "/missing/state.sqlite",
+        launcherProtocol,
+        version: "1.2.3",
+      });
+      assert.equal(result.status, "blocked");
+      assert.equal(result.version, "1.2.3");
+      const reason = result.status === "blocked" ? result.reason : "";
+      assert.include(reason, `protocol ${launcherProtocol}`);
+      assert.include(reason, `protocol ${SERVICE_LAUNCHER_PROTOCOL}`);
+      assert.include(reason, "curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION=1.2.3 sh");
+      assert.include(reason, "~/.local/bin/t3 service install");
+      assert.include(reason, "t3 --version");
+      assert.include(reason, "which -a t3");
     }),
   );
 

@@ -15,11 +15,8 @@ import { PinnedRuntimeInstallError, pinnedRuntimeVersionsDir } from "./pinnedRun
 import { snapshotDatabase } from "./servicePreflight.ts";
 
 /**
- * A recovery point is what an update keeps before it switches a T3 home to
- * another server version: an online backup of the database and a record of
- * the version it came from, so `t3 recover` can put both back. Points live in
- * <baseDir>/recovery/points/<UTC>-<from>-to-<to>/; a database that recover
- * replaces is kept in <baseDir>/recovery/displaced/ and never pruned.
+ * Recovery points bind an online database backup to its prior runtime version.
+ * Displaced databases live under recovery/displaced and are never pruned.
  */
 const RECOVERY_DIR = "recovery";
 const POINTS_DIR = "points";
@@ -180,12 +177,8 @@ const readPoints = Effect.fn("cloud.recovery_point.read_points")(function* (poin
 });
 
 /**
- * Keeps a recovery point of the database at `dbPath` before an update moves
- * this home from `fromVersion` to `toVersion`, then prunes all but the newest
- * three points. A home without a database, or an update that stays on the
- * same version, gets no point. The point is built in a hidden staging
- * directory with its record written last and renamed into place, so a failed
- * backup leaves nothing behind and fails the update's validation.
+ * Publish a staged backup atomically before switching runtimes; a failed backup blocks update.
+ * Keep the newest three points, skipping fresh homes and same-version updates.
  */
 export const createRecoveryPoint = Effect.fn("cloud.recovery_point.create")(
   function* (input: {
@@ -359,17 +352,8 @@ const readLockHolder = (fs: FileSystem.FileSystem, lockPath: string) =>
   );
 
 /**
- * Holds this home's recover lock, <baseDir>/recovery/recover.lock, for the
- * rest of the scope. The lock is created exclusively and names this process's
- * pid. Refuses while another live process holds it.
- *
- * A lock whose pid is no longer running was left by a recover that died and
- * is taken over, one takeover at a time: the taker exclusively creates
- * recover.lock.takeover, then removes the lock only if it still names that
- * dead pid, and creates its own exclusively. A run that took the lock
- * meanwhile keeps it and the taker refuses. A takeover file is never taken
- * over; one left by a recover that died is named for the user to remove.
- * `beforeTakeover` runs once a lock is found stale, before the takeover.
+ * Hold the home lock for the scope; serialize stale-PID takeovers with a separate exclusive file.
+ * Never take over the takeover file: an abandoned one requires operator removal.
  */
 export const acquireRecoverLock = Effect.fn("cloud.recovery_point.acquire_recover_lock")(function* (
   baseDir: string,
@@ -473,11 +457,8 @@ export class DatabaseDisplaceError extends Schema.TaggedError<DatabaseDisplaceEr
 }
 
 /**
- * Moves the live database at `dbPath`, with its -wal and -shm when present,
- * into recovery/displaced/<UTC>-<id>/ and returns that directory. A failed
- * move puts back what was already moved, so the live database is never left
- * split from its journal; when putting a file back fails too, the error names
- * where each file is.
+ * Move the database and journals together; roll back partial moves.
+ * If rollback also fails, report each file location.
  */
 export const displaceDatabase = Effect.fn("cloud.recovery_point.displace_database")(function* (
   baseDir: string,
@@ -627,12 +608,8 @@ export const returnDisplacedDatabase = Effect.fn("cloud.recovery_point.return_di
 );
 
 /**
- * Auth state a restored database keeps from the current one: a session or a
- * pairing link revoked after the point, and a pairing link used after it,
- * would otherwise be valid again in the snapshot. So would one whose row the
- * current database no longer has (a migration can drop and recreate these
- * tables), so those are revoked. Each row is matched by the id the server
- * looks it up by, and both tables have revoked_at.
+ * Restoration must not revive revoked sessions or consumed pairing links.
+ * Rows missing from the current database are revoked too.
  */
 const CARRIED_AUTH_STATE = [
   { table: "auth_sessions", key: "session_id", columns: ["revoked_at"] },
@@ -657,14 +634,8 @@ const columnsOf = (database: NodeSqlite.DatabaseSync, table: string) =>
   );
 
 /**
- * Applies to the database at `restoredPath` every revocation and pairing-link
- * use recorded in the database at `currentPath`, and revokes at `now` every
- * session and pairing link the current database does not have, in one
- * transaction. No current database has none of them. The current database is
- * only read. Throws when it cannot: a table the snapshot has that the current
- * database lacks, or a missing column, is refused rather than skipped, so no
- * revocation is silently dropped. A table the snapshot predates holds nothing
- * to revoke.
+ * Carry current revocations and pairing use into the restored database atomically.
+ * Missing current tables or columns fail closed; snapshot-predating tables need no revocation.
  */
 const carryAuthState = (restoredPath: string, currentPath: string | undefined, now: string) => {
   const restored = new NodeSqlite.DatabaseSync(restoredPath);
@@ -772,12 +743,8 @@ const removeDatabaseFiles = (fs: FileSystem.FileSystem, databasePath: string) =>
   );
 
 /**
- * Copies the point's snapshot to a hidden file of this run's own beside
- * `dbPath`, readable only by its owner, and carries into that copy every
- * revocation and pairing-link use the current database at `dbPath` records,
- * reading it without writing, and revokes every session and pairing link it
- * no longer has. The point's own snapshot is never opened. Nothing at
- * `dbPath` moves; a failure removes the copy.
+ * Stage an owner-only snapshot copy with current revocations; never mutate the point or live DB.
+ * Remove the copy on failure.
  */
 export const prepareRestore = Effect.fn("cloud.recovery_point.prepare_restore")(function* (
   baseDir: string,

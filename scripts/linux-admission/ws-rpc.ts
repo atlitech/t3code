@@ -1,8 +1,5 @@
-// Fork-only (atlitech/t3code). The smallest client of a T3 server's /ws RPC
-// the Linux admission needs: one request per connection, in Effect RPC's JSON
-// frames (`Request` out; `Chunk`, acknowledged with `Ack`, and `Exit` back).
-// It authenticates the way the web client does, with a bearer token traded
-// for a one-time `wsTicket`.
+// Admission RPC uses one connection per request and acknowledges streamed chunks.
+// Authenticate with a bearer token exchanged for a one-time wsTicket.
 
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";

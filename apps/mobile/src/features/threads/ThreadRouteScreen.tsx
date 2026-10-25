@@ -1,3 +1,4 @@
+import { selectWorkspaceDetail } from "../workspace/workspace-detail-selection";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { makeTurnCommandMetadata } from "../../lib/commandMetadata";
@@ -28,7 +29,8 @@ import {
   projectScriptTerminalInput,
   resolveProjectScripts,
 } from "@t3tools/shared/projectScripts";
-import { Platform, ScrollView } from "react-native";
+import { Platform } from "react-native";
+import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useConnectionsReady } from "../../state/workspace";
 import { useEnvironmentShellReadiness } from "../../state/shell";
@@ -78,7 +80,7 @@ import { useSelectedThreadWorktree } from "../../state/use-selected-thread-workt
 import { useThreadComposerState } from "../../state/use-thread-composer-state";
 import { resolveMergeBackTargetThreadId } from "@t3tools/client-runtime/state/thread-relationships";
 import { resolveLatestMergeBackRun } from "@t3tools/client-runtime/state/thread-workflows";
-import { threadEnvironment } from "../../state/threads";
+import { threadEnvironment, useThreadFamily } from "../../state/threads";
 import { projectThreadContentPresentation } from "./threadContentPresentation";
 import { useAppearancePreferences } from "../settings/appearance/AppearancePreferencesProvider";
 import {
@@ -99,6 +101,8 @@ import {
   useAndroidWorkspaceBack,
   useWorkspaceBackNavigation,
 } from "../workspace/useAndroidWorkspaceNavigation";
+import { openSettings } from "../settings/settings-navigation";
+import { useSelectWorkspaceDetail } from "../workspace/useSelectWorkspaceDetail";
 
 interface ThreadInspectorSelection {
   readonly routeThreadIdentity: string | null;
@@ -206,6 +210,12 @@ function LiveThreadRouteController(props: ThreadRouteScreenProps) {
   const connectionsReady = useConnectionsReady();
   const { connectionState } = useRemoteConnectionStatus();
   const { selectedThread } = useThreadSelection();
+  // Subagent rows, the open child's own row and its ancestors come from the family when the
+  // shell leaves idle children out.
+  useThreadFamily(
+    selectedThread?.environmentId ?? null,
+    selectedThread?.lineage.rootThreadId ?? null,
+  );
   const params = props.route.params ?? {};
   const environmentIdRaw = firstRouteParam(params.environmentId);
   const threadIdRaw = firstRouteParam(params.threadId);
@@ -258,10 +268,7 @@ function LiveThreadRouteController(props: ThreadRouteScreenProps) {
           onReconnectEnvironment(environmentId);
           return;
         }
-        navigation.navigate("SettingsSheet", {
-          screen: "SettingsContent",
-          params: { screen: "SettingsEnvironments" },
-        });
+        openSettings(navigation, "SettingsEnvironments");
       }}
     />
   );
@@ -328,9 +335,16 @@ function ThreadRouteContent(
           input: { threadId: selectedThread.id },
         });
       },
+      onLoadThrough: (throughEntryId: string) => {
+        void loadEarlierHistory({
+          environmentId: selectedThread.environmentId,
+          input: { threadId: selectedThread.id, throughEntryId },
+        });
+      },
     };
   })();
   const navigation = useNavigation();
+  const selectDetail = useSelectWorkspaceDetail();
   const openPullRequest = useOpenPullRequest();
   const mergeBack = useAtomCommand(threadEnvironment.mergeBack, "merge thread back");
   const mergeBackTargetThreadId = resolveMergeBackTargetThreadId(selectedThreadDetail);
@@ -358,9 +372,9 @@ function ThreadRouteContent(
     });
     mergeBackBusyRef.current = false;
     if (result._tag !== "Success") return;
-    navigation.navigate("Thread", {
-      environmentId: selectedThread.environmentId,
-      threadId: mergeBackTargetThreadId,
+    selectDetail({
+      name: "Thread",
+      params: { environmentId: selectedThread.environmentId, threadId: mergeBackTargetThreadId },
     });
   };
   const params = props.route.params ?? {};
@@ -469,15 +483,20 @@ function ThreadRouteContent(
       return;
     }
 
-    navigation.navigate("Thread", {
-      draft: {
-        environmentId: String(selectedThreadProject.environmentId),
-        projectId: String(selectedThreadProject.id),
-        title: selectedThreadProject.title,
-        branch: selectedThread.branch,
-        worktreePath: selectedThreadWorktreePath,
-      },
-    });
+    navigation.dispatch(
+      selectWorkspaceDetail({
+        name: "Thread",
+        params: {
+          draft: {
+            environmentId: String(selectedThreadProject.environmentId),
+            projectId: String(selectedThreadProject.id),
+            title: selectedThreadProject.title,
+            branch: selectedThread.branch,
+            worktreePath: selectedThreadWorktreePath,
+          },
+        },
+      }),
+    );
   };
   const threadRouteActions = buildThreadRouteActionMenu({
     settlementSupported: serverConfig?.environment.capabilities.threadSettlement === true,
@@ -792,9 +811,7 @@ function ThreadRouteContent(
     if (!creation?.creation || routeThreadIdentity === null) {
       return;
     }
-    // The drain restored the prompt and attachments into the recovery draft
-    // the rejected creation owns. Open that draft by id: without it the sheet
-    // mints a fresh empty one and the restored content is unreachable.
+    // Open recovery by draft id or the sheet creates an empty draft and strands restored content.
     try {
       await recoverFailedThreadDraft(creation);
     } catch (error) {
@@ -861,8 +878,7 @@ function ThreadRouteContent(
       localResendBusy.current = false;
       return;
     }
-    // V2 accepts the launch before setup runs, so cancellation never rejects
-    // the original outbox delivery. Reuse the server-owned prompt and uploads.
+    // V2 accepts launch before setup; cancellation cannot reject that delivery, so reuse server-owned prompt and uploads.
     const metadata = makeTurnCommandMetadata();
     const launched = await startLocalThread({
       environmentId: selectedThread.environmentId,
@@ -920,9 +936,7 @@ function ThreadRouteContent(
     return <OpeningThreadLoadingScreen />;
   }
 
-  // A queued creation renders as ready content: its prompt is the whole
-  // conversation until the server creates the thread. The subscription's
-  // not-found error for that window is expected, not a load failure.
+  // Queued creation displays its prompt before server creation; temporary not-found is expected.
   const contentPresentation =
     creationState !== null
       ? { kind: "ready" as const }

@@ -10,7 +10,6 @@ import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 
 import { resolveT3McpToolId } from "./t3McpToolPresentation.ts";
-import { threadPullRequestKeyOf } from "./threadPullRequests.ts";
 
 const BACKGROUND_TURN_ITEM_TYPES = new Set<OrchestrationV2TurnItem["type"]>([
   "command_execution",
@@ -35,12 +34,7 @@ const TERMINAL_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
   "rolled_back",
 ]);
 
-/**
- * Includes `waiting`: a successful turn persists as waiting until checkpoint capture flips it to
- * completed, and waiting is only set from completed. Excludes `rolled_back`: the provider-thread
- * roster is not run-tied, so a rolled-back latest run must fail the gate entirely (not only item
- * filter).
- */
+// waiting is completed work awaiting checkpoints; exclude rolled_back entirely because provider threads are not run-tied.
 const SETTLED_FOR_BACKGROUND_WAIT_RUN_STATUSES = new Set<OrchestrationV2Run["status"]>([
   "cancelled",
   "completed",
@@ -92,15 +86,9 @@ export function deriveBlockedOnThreadWait(input: {
   return hasWait;
 }
 
-/**
- * Whether background work left behind by a completed root run holds back its
- * completion alert (desktop/web notification and the mobile push). A tracked
- * command can wake the agent just like a subagent or monitor; ending the root
- * turn does not make that work finished. Detached processes whose launching
- * command has completed and explicitly persistent tools are not in this roster.
- */
+/** Tracked commands can resume the agent, so this fork holds completion until the roster clears. */
 export function backgroundWorkHoldsCompletion(
-  tasks: ReadonlyArray<Pick<PendingBackgroundWorkTask, "kind">>,
+  tasks: ReadonlyArray<Pick<PendingBackgroundWorkTask, "kind" | "awaited">>,
 ): boolean {
   return tasks.length > 0;
 }
@@ -129,6 +117,7 @@ type PendingBackgroundWorkTurnItem = {
     readonly nativeId: string | null;
   } | null;
   readonly input?: unknown;
+  readonly monitor?: boolean | undefined;
   readonly prompt?: string | undefined;
   readonly childThreadId?: ThreadId | null;
 };
@@ -187,7 +176,7 @@ function pendingTaskFromTurnItem(
         ...(item.childThreadId == null ? {} : { childThreadId: item.childThreadId }),
       };
     case "command_execution":
-      return { ...named, kind: "command" };
+      return { ...named, kind: item.monitor === true ? "monitor" : "command" };
     default:
       return { ...named, kind: "background_task" };
   }
@@ -201,10 +190,7 @@ function nativeTaskIdFromTurnItem(item: PendingBackgroundWorkTurnItem): string {
   return String(item.id);
 }
 
-/**
- * The turn items the pending-work list names, without its settled-run gate.
- * Stop ends exactly these, so the list and Stop cannot disagree.
- */
+/** Items Stop ends, without the pending list's settled-run gate. */
 export function pendingBackgroundTurnItems<Item extends PendingBackgroundWorkTurnItem>(input: {
   readonly turnItems: ReadonlyArray<Item>;
   readonly runs?: ReadonlyArray<PendingBackgroundWorkRun>;
@@ -229,11 +215,7 @@ export function derivePendingBackgroundWork(input: {
   readonly turnItems: ReadonlyArray<PendingBackgroundWorkTurnItem>;
   readonly activeProviderThreadId?: string | null;
   readonly hasActiveRun?: boolean;
-  /**
-   * Run rows used to exclude items owned by rolled_back runs. Optional for
-   * callers that already filtered (SQL shell path); in-memory callers should
-   * pass projection runs so policy cannot drift.
-   */
+  /** Excludes rolled-back runs; optional only when the caller already filtered them, as SQL shell reads do. */
   readonly runs?: ReadonlyArray<PendingBackgroundWorkRun>;
   readonly pullRequests?: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined;
 }): ReadonlyArray<PendingBackgroundWorkTask> {
@@ -299,9 +281,12 @@ function pullRequestWatchTasks(
       ? []
       : [
           {
-            taskId: `pull-request-watch:${threadPullRequestKeyOf(link)}`,
+            // Links store their normalized identity, and this id only has to be unique within the
+            // thread, so it reads those fields instead of parsing the URL.
+            taskId: `pull-request-watch:${link.host.toLowerCase()}/${link.repository.toLowerCase()}#${link.number}`,
             description: `Watching pull request #${link.number}`,
             kind: "monitor" as const,
+            awaited: true as const,
           },
         ],
   );

@@ -1,11 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Reads a fork release's manifest.json and
-// ADMISSION.json and prints each platform's verification scope, or fails when
-// the pair does not support it. fork-server-release.yml runs it only as a
-// refusal guard before publishing; the evidence verdict is an independent
-// reader running it on the published release.
-// Runbook: docs/operations/fork-server.md#verification-scope.
+// Validates manifest and admission scope; publishing uses this only as a refusal guard.
+// An independent reader must verify the published release. See docs/operations/fork-server.md.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -51,12 +47,8 @@ const sameChecks = (
   );
 
 /**
- * Checks manifest.json's verificationScope against ADMISSION.json and the
- * committed FORK_VERIFICATION_SCOPE, and returns one line per platform. Each
- * asset's platform and arch come from its file name, not the manifest's
- * labels; only a platform the committed table runtime-verifies may be
- * runtime-verified, and only by the archive ADMISSION.json admits, at the
- * manifest's version and sha256.
+ * Infer platform from asset filenames and validate scope against the committed policy.
+ * Runtime verification requires admission of that exact version and archive digest.
  */
 export const readReleaseScope = Effect.fn("readReleaseScope")(function* (input: {
   readonly manifestJson: string;

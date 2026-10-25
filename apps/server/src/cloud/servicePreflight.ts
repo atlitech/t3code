@@ -46,12 +46,8 @@ export const SERVICE_PREFLIGHT_UNSUPPORTED_STEP =
 const ANSI_ESCAPE = /\u001b\[[0-9;]*m/g;
 
 /**
- * Whether a failed preflight run is a CLI that does not know the command. The
- * root `t3` command takes an optional `cwd` argument, so such a CLI reads
- * `__service-preflight` as that directory and rejects the first preflight
- * flag as unknown to the root command; a CLI that knows the command would
- * name it in the command path. A CLI whose root takes no argument reports the
- * subcommand itself as unknown.
+ * Older CLIs parse __service-preflight as cwd and reject its flags at the root command.
+ * CLIs without positional arguments reject the subcommand itself.
  */
 const isUnknownPreflightCommand = (result: { readonly code: number; readonly stderr: string }) => {
   if (result.code !== 1) return false;
@@ -87,15 +83,8 @@ export const snapshotDatabase = (sourcePath: string, destinationPath: string) =>
   });
 
 /**
- * Runs the server's database initialization on a scratch copy: snapshots the
- * V2 database, or when there is none yet the V1 database next to it, with
- * SQLite's online backup, then imports and opens the copy the way
- * SqlitePersistence.layerConfig does at startup, which runs this build's
- * migrations on it. The backup reads through a read-only connection, so it
- * sees one consistent state of a database the running server is still
- * writing, including commits that so far live only in its -wal, and it never
- * writes or checkpoints the live files; a failed import or migration leaves
- * them as they were. Neither database is a fresh install: nothing to migrate.
+ * Migrate a read-only online backup, including WAL writes, using normal server initialization.
+ * Import V1 when V2 is absent; never modify or checkpoint live files.
  */
 const migrateDatabaseCopy = Effect.fn("cloud.service_preflight.migrate_database_copy")(function* (
   databasePath: string,
@@ -134,8 +123,14 @@ export const runServicePreflight = Effect.fn("cloud.service_preflight.run")(func
     const blocked: ServicePreflightResult = {
       status: "blocked",
       version,
-      reason:
-        "This release requires a newer T3 Code service launcher. Update it on the server machine.",
+      // A stale `t3` earlier on PATH (an old npm/nvm global) makes `t3 service install`
+      // reinstall itself and report success, so name the exact install and the path check.
+      reason: [
+        `The installed service launcher speaks protocol ${input.launcherProtocol}, but t3@${version} requires protocol ${SERVICE_LAUNCHER_PROTOCOL}.`,
+        `On the server machine, install this exact CLI: \`curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION=${version} sh\`.`,
+        `Check that \`t3 --version\` prints ${version} and that \`which -a t3\` lists no older t3 (such as an npm or nvm install) first, then run \`~/.local/bin/t3 service install\` (the installer's default path).`,
+        "Updating the desktop app does not update this CLI, and `t3 service update` only repairs the service with whichever CLI runs it.",
+      ].join(" "),
     };
     return blocked;
   }

@@ -1,7 +1,9 @@
 import { type ScopedThreadRef } from "@t3tools/contracts";
 import { resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { useEffect, useRef } from "react";
+import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
+import { use, useEffect, useRef } from "react";
+import { BackgroundThreadContext } from "./backgroundThread";
 import { useUiStateStore } from "../../uiStateStore";
 import { threadEnvironment } from "../../state/threads";
 import { useThreadShell } from "../../state/entities";
@@ -16,6 +18,7 @@ const VISIT_DISPATCH_THROTTLE_MS = 10_000;
 // shell's updatedAt, which ticks while a run streams. Keeping it in a leaf lets
 // ChatView read the quiet shell.
 export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRef }) {
+  const background = use(BackgroundThreadContext);
   const serverThread = useThreadShell(props.threadRef);
   const threadKey = scopedThreadKey(props.threadRef);
   const markThreadVisited = useUiStateStore((store) => store.markThreadVisited);
@@ -25,9 +28,40 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
   const visitThreadMutation = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
   const lastDispatchedVisitRef = useRef<string | null>(null);
   const lastVisitDispatchAtRef = useRef(0);
+  const recordedOpenRef = useRef<string | null>(null);
+
+  // Opening a thread is one visit that also counts toward search ranking. A
+  // palette pick already sent it with the query. It runs before the watermark
+  // effect, which then sees this watermark as sent.
+  useEffect(() => {
+    if (background || !serverThread?.id) return;
+    if (recordedOpenRef.current === threadKey) return;
+    recordedOpenRef.current = threadKey;
+    // Recorded here even when the server cannot take opens, so recents follow it.
+    const claimed = claimThreadOpen(serverThread.environmentId, serverThread.id, Date.now());
+    if (!claimed || serverThread.lastVisitedAt === undefined) return;
+    lastDispatchedVisitRef.current = `${threadKey}:${serverThread.updatedAt}`;
+    lastVisitDispatchAtRef.current = Date.now();
+    void visitThreadMutation({
+      environmentId: serverThread.environmentId,
+      input: {
+        threadId: serverThread.id,
+        visitedAt: serverThread.updatedAt,
+        opened: true,
+      },
+    });
+  }, [
+    background,
+    threadKey,
+    serverThread?.environmentId,
+    serverThread?.id,
+    serverThread?.lastVisitedAt,
+    serverThread?.updatedAt,
+    visitThreadMutation,
+  ]);
 
   useEffect(() => {
-    if (!serverThread?.id) return;
+    if (background || !serverThread?.id) return;
     const threadUpdatedAt = Date.parse(serverThread.updatedAt);
     if (Number.isNaN(threadUpdatedAt)) return;
     const effectiveLastVisitedAt = resolveThreadLastVisitedAt(
@@ -72,6 +106,7 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
       serverThread.updatedAt,
     );
   }, [
+    background,
     activeThreadLocalLastVisitedAt,
     markThreadVisited,
     threadKey,

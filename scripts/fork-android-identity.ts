@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Checks the personal Android APK that
-// fork-server-release.yml builds before the workflow uploads it: the package is
-// the personal app's, the versionCode is the one the release version derives,
-// and one certificate signs it whose SHA-256 is the fingerprint recorded in the
-// personal Android skill, so the APK installs over the owner's existing app.
-// The workflow hands over the output of `aapt dump badging <apk>` and
-// `apksigner verify --print-certs <apk>`. Runbook: docs/operations/fork-server.md.
+// Validate aapt/apksigner output against the personal package, release code and signing fingerprint.
+// The fingerprint must match installed personal builds. See docs/operations/fork-server.md.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

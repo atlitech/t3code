@@ -3,11 +3,8 @@ import * as Effect from "effect/Effect";
 import { Atom } from "effect/reactivity";
 
 import { createBoundedAtomFamily } from "../../state/bounded-atom-family";
-import {
-  highlightSourceFile,
-  type ReviewDiffTheme,
-  type ReviewHighlightedToken,
-} from "../review/shikiReviewHighlighter";
+import { resolveHighlightLanguage } from "../../lib/highlightLanguage";
+import { highlightCode, type HighlightedLines, type HighlightScheme } from "../../lib/highlights";
 
 const SOURCE_HIGHLIGHT_IDLE_TTL_MS = 5 * 60_000;
 
@@ -18,12 +15,10 @@ const SOURCE_HIGHLIGHT_CAPACITY = 16;
 export interface SourceHighlightInput {
   readonly path: string;
   readonly contents: string;
-  readonly theme: ReviewDiffTheme;
+  readonly theme: HighlightScheme;
 }
 
-export type SourceHighlightTokens = ReadonlyArray<ReadonlyArray<ReviewHighlightedToken>>;
-
-type SourceHighlighter = (input: SourceHighlightInput) => Promise<SourceHighlightTokens>;
+type SourceHighlighter = (input: SourceHighlightInput) => HighlightedLines;
 
 class SourceHighlightError extends Data.TaggedError("SourceHighlightError")<{
   readonly cause: unknown;
@@ -34,7 +29,10 @@ export function createSourceHighlightAtomFamily(options?: {
   readonly idleTtlMs?: number;
   readonly capacity?: number;
 }) {
-  const highlight = options?.highlight ?? highlightSourceFile;
+  const highlight =
+    options?.highlight ??
+    ((input: SourceHighlightInput) =>
+      highlightCode(input.contents, resolveHighlightLanguage({ path: input.path }), input.theme));
   const idleTtlMs = options?.idleTtlMs ?? SOURCE_HIGHLIGHT_IDLE_TTL_MS;
 
   return createBoundedAtomFamily({
@@ -43,7 +41,7 @@ export function createSourceHighlightAtomFamily(options?: {
       `${request.theme}\u0000${request.path}\u0000${request.contents}`,
     make: (request) =>
       Atom.make(
-        Effect.tryPromise({
+        Effect.try({
           try: () => highlight(request),
           catch: (cause) => new SourceHighlightError({ cause }),
         }),

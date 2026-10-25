@@ -33,6 +33,7 @@ import {
   type PendingThreadRequests,
 } from "./threadRequests.ts";
 import { arrayElementsEqual, parseThreadKey, threadKey } from "./entities.ts";
+import { getProjectionArrayReplacementIndex } from "./orchestrationV2Projection.ts";
 
 const EMPTY_VISIBLE_TURN_ITEMS: OrchestrationV2ThreadProjection["visibleTurnItems"] = Object.freeze(
   [],
@@ -123,6 +124,29 @@ function sameTurnItemStructure(previous: TurnItem, next: TurnItem): boolean {
   return sameApartFromStripped(sameTurnItem, previous, structure, next);
 }
 
+function sameProjectionArray<T>(
+  previous: ReadonlyArray<T>,
+  next: ReadonlyArray<T>,
+  same: (previous: T, next: T) => boolean,
+): boolean {
+  if (previous === next) return true;
+  if (previous.length !== next.length) return false;
+  const replacedIndex = getProjectionArrayReplacementIndex(previous, next);
+  if (replacedIndex !== undefined) return same(previous[replacedIndex]!, next[replacedIndex]!);
+  return previous.every((item, index) => same(item, next[index]!));
+}
+
+function sameVisibleTurnItemStructure(before: VisibleTurnItem, after: VisibleTurnItem): boolean {
+  return (
+    before === after ||
+    (before.position === after.position &&
+      before.visibility === after.visibility &&
+      before.sourceThreadId === after.sourceThreadId &&
+      before.sourceItemId === after.sourceItemId &&
+      sameTurnItemStructure(before.item, after.item))
+  );
+}
+
 /**
  * Whether `previous` and `next` have the same ThreadStructure: they differ
  * only by text streamed into existing assistant and reasoning items or by a
@@ -156,32 +180,14 @@ export function sameThreadStructure(
   ) {
     return false;
   }
-  if (
-    previous.turnItems.length !== next.turnItems.length ||
-    previous.visibleTurnItems.length !== next.visibleTurnItems.length
-  ) {
-    return false;
-  }
-  for (let index = 0; index < next.turnItems.length; index += 1) {
-    if (!sameTurnItemStructure(previous.turnItems[index]!, next.turnItems[index]!)) {
-      return false;
-    }
-  }
-  for (let index = 0; index < next.visibleTurnItems.length; index += 1) {
-    const before = previous.visibleTurnItems[index]!;
-    const after = next.visibleTurnItems[index]!;
-    if (before === after) continue;
-    if (
-      before.position !== after.position ||
-      before.visibility !== after.visibility ||
-      before.sourceThreadId !== after.sourceThreadId ||
-      before.sourceItemId !== after.sourceItemId ||
-      !sameTurnItemStructure(before.item, after.item)
-    ) {
-      return false;
-    }
-  }
-  return true;
+  return (
+    sameProjectionArray(previous.turnItems, next.turnItems, sameTurnItemStructure) &&
+    sameProjectionArray(
+      previous.visibleTurnItems,
+      next.visibleTurnItems,
+      sameVisibleTurnItemStructure,
+    )
+  );
 }
 
 export function createEnvironmentThreadDetailAtoms<E>(
@@ -200,13 +206,8 @@ export function createEnvironmentThreadDetailAtoms<E>(
     ).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-state-value:${key}`));
   });
 
-  // Memoized by projection identity so repeated reads keep referential equality.
-  //
-  // The cache is keyed weakly rather than held in each atom's closure. `Atom.family`
-  // only evicts via `FinalizationRegistry`, which Hermes does not implement, so on
-  // React Native it falls back to a map that outlives the atoms' subscribers.
-  // Closure-held state on those atoms would pin a whole thread projection for every
-  // thread the process ever opened.
+  // Weak keys preserve referential equality without pinning projections in atom closures.
+  // Hermes lacks FinalizationRegistry, so Atom.family cannot evict those closures.
   const threadByProjection = new WeakMap<OrchestrationV2ThreadProjection, EnvironmentThread>();
 
   const threadAtomFamily = Atom.family((key: string) => {
@@ -242,7 +243,7 @@ export function createEnvironmentThreadDetailAtoms<E>(
           projection: toThreadStructure(next.projection),
         };
       }
-      // Compared against the latest projection, a delta only compares the item it replaced.
+      // Comparing the latest projection lets consecutive replacements bypass history scans.
       previousProjection = next?.projection ?? null;
       return previous;
     }).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-quiet-thread:${key}`));

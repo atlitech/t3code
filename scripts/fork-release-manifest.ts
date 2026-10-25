@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Writes the SHA256SUMS and manifest.json that
-// fork-server-release.yml publishes next to the assets its build jobs made:
-// the Linux server archive, the Mac desktop DMG, and the personal Android APK.
-// manifest.json's verificationScope says how far each asset was checked: the
-// Linux archive is runtime-verified by the ADMISSION.json that admitted it,
-// and the Mac and Android packages are build-checked but runtime-unverified.
-// Runbook: docs/operations/fork-server.md.
+// Write release checksums and scope: admitted Linux is runtime-verified; Mac/Android are not.
+// See docs/operations/fork-server.md.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -231,11 +226,8 @@ export const parseAssetName = (
 };
 
 /**
- * Builds manifest.json and SHA256SUMS, refusing a release whose evidence does
- * not support its scope: every platform in `scope` needs exactly one asset,
- * and a platform is runtime-verified exactly when `admission` admits its
- * asset. `scope` is the committed FORK_VERIFICATION_SCOPE unless a test hands
- * in another.
+ * Require one asset per platform and admission matching each runtime-verified asset.
+ * Default to the committed verification policy.
  */
 export const buildReleaseManifest = Effect.fn("buildReleaseManifest")(function* (input: {
   readonly commit: string;

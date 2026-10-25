@@ -251,13 +251,8 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     }
 
     return yield* Effect.gen(function* () {
-      // A recovery point of the database and the version the service runs
-      // now, kept inside validation after the preflight so a failed backup
-      // means the new runtime is never published. Cached so a second
-      // validation in this update reuses the point instead of taking another.
-      // This process is the service's running server, so its own version is
-      // the one running; service-state.json can already name a version that
-      // `t3 update` installed with its restart deferred.
+      // Keep and cache the recovery point after preflight, before publishing the runtime.
+      // Use this running server version: service-state may name a deferred update.
       const keepRecoveryPoint = yield* Effect.cached(
         createRecoveryPoint({
           baseDir: serverConfig.baseDir,
@@ -358,9 +353,7 @@ export const layer = Layer.effect(ServerSelfUpdate, make()).pipe(
   Layer.provide(ProcessRunner.layer),
 );
 
-// The RPC stream used to own this fiber, so a dropped client socket interrupted
-// the download. Offers after the queue shuts down are ignored; the update
-// still finishes, and the in-flight guard stays as it was.
+// The update outlives client sockets; progress offers to a closed queue are ignored.
 export const updateProgressStream = (
   selfUpdate: ServerSelfUpdate["Service"],
   input: ServerSelfUpdateInput,

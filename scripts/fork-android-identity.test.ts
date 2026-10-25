@@ -12,11 +12,8 @@ import {
 } from "./fork-android-identity.ts";
 import { androidVersionCode } from "./lib/android-version-code.ts";
 
-// Fixtures are captured from the owner's local personal build
-// (apps/mobile/android/app/build/outputs/apk/release/app-release.apk, built by
-// the personal Android skill's script): `aapt dump badging` and `apksigner
-// verify --print-certs` from build-tools 36.0.0. That build is unversioned, so
-// it carries versionCode 1; the passing case rewrites it to a release's code.
+// Fixtures use aapt/apksigner build-tools 36.0.0 output from the personal APK.
+// The unversioned build has code 1; passing fixtures substitute the release code.
 const fixture = (name: string): string =>
   NodeFS.readFileSync(
     NodePath.join(import.meta.dirname, "fixtures", "fork-android-identity", name),
