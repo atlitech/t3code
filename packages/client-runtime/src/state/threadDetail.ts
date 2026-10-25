@@ -206,13 +206,8 @@ export function createEnvironmentThreadDetailAtoms<E>(
     ).pipe(Atom.setIdleTTL(0), Atom.withLabel(`environment-thread-state-value:${key}`));
   });
 
-  // Memoized by projection identity so repeated reads keep referential equality.
-  //
-  // The cache is keyed weakly rather than held in each atom's closure. `Atom.family`
-  // only evicts via `FinalizationRegistry`, which Hermes does not implement, so on
-  // React Native it falls back to a map that outlives the atoms' subscribers.
-  // Closure-held state on those atoms would pin a whole thread projection for every
-  // thread the process ever opened.
+  // Weak keys preserve referential equality without pinning projections in atom closures.
+  // Hermes lacks FinalizationRegistry, so Atom.family cannot evict those closures.
   const threadByProjection = new WeakMap<OrchestrationV2ThreadProjection, EnvironmentThread>();
 
   const threadAtomFamily = Atom.family((key: string) => {

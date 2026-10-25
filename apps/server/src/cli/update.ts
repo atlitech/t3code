@@ -544,16 +544,8 @@ export const runUpdate = Effect.fn("cli.update.run")(function* (input: {
     }
   }
 
-  // A recovery point of the database and the version this home runs now, so
-  // `t3 recover` can return to both. It is kept inside validation, after the
-  // preflight, so a failed backup means the new runtime is never published;
-  // cached so a second validation in this run (a concurrent publish) reuses
-  // the point rather than taking another and evicting an older good one.
-  // The service's recorded version is what it runs unless a restart is
-  // pending: an earlier update declined the restart, so service-state.json
-  // already names the newer version while the old server keeps the database.
-  // Then the live server's own command line is the truthful source, and the
-  // running t3 the fallback when that cannot be read.
+  // Cache recovery after preflight and before publish so retries do not evict good points.
+  // For deferred restarts, use the live process version rather than service-state.
   const fromVersion =
     serviceInstalled && restartPending
       ? ((yield* runningServiceServerVersion({

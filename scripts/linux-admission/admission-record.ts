@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Writes ADMISSION.json, the record that a Linux
-// archive passed its admission: the release publishes it, attested, beside
-// the archive, and the next release's admission upgrades from it. It is
-// written only when the archive is the one the build made and every check
-// passed; otherwise nothing is written.
+// Writes ADMISSION.json only for the built archive after every admission check passes.
+// The next admission upgrades from this attested release.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

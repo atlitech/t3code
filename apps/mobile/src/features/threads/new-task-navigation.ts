@@ -8,12 +8,7 @@ export type NewTaskNavigationDestination =
   | { readonly kind: "picker" };
 
 /**
- * Resolve the smallest safe new-task flow for an expanded workspace.
- *
- * A thread's project is only usable when both its environment and project id
- * still exist in the local catalog. If that context is stale, choosing a
- * similarly named project (or the sole project on another machine) would
- * silently retarget the task, so the user must pick instead.
+ * Stale thread context must open the picker, never retarget a similarly named project.
  */
 export function resolveNewTaskNavigationDestination(input: {
   readonly projects: ReadonlyArray<EnvironmentProject>;

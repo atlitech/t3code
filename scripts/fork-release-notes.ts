@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Writes a fork release's notes from its
-// manifest.json: the Linux x64 server is runtime-verified, and the Mac and
-// Android packages are build-checked but runtime-unverified. Refuses a
-// manifest that marks Mac or Android runtime-verified.
-// Runbook: docs/operations/fork-server.md#verification-scope.
+// Derives release notes from the manifest; Mac and Android must remain runtime-unverified.
+// See docs/operations/fork-server.md#verification-scope.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

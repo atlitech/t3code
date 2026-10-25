@@ -1,21 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Reads every fixture thread back through a
-// running server and compares it with fixtures.json and with the event log
-// as the prior release left it. run-admission.sh runs it three times:
-//
-// - `created`: the prior, right after its own thread.create: every fixture
-//   thread, with its configuration, through its thread snapshot API.
-// - `seeded`: the prior again, after the messages were seeded: the threads
-//   and every message, so the prior has read the full upgrade input.
-// - `upgraded`: the candidate, on the same home: the snapshots again, plus
-//   the event log. The candidate's own store, read once it has started and
-//   migrated, still holds each thread.created row exactly as the prior wrote
-//   it; the shell resume (`orchestration.subscribeShell` from sequence 0)
-//   decodes the log, and the thread it then serves must be the one the log
-//   records; the thread resume (`orchestration.subscribeThread` after the
-//   creation) replays every later event the log holds for the thread, each
-//   compared with its logged row.
+// Checks prior and upgraded snapshots against fixtures and the prior event log.
+// The upgraded server must preserve creation rows and replay later events in order.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -502,14 +488,8 @@ const compareEventLog = (
 };
 
 /**
- * The candidate's thread resume must replay exactly the events the prior's
- * log holds after the thread's creation (the seeded messages and whatever the
- * prior appended itself, such as thread.settled), in the log's order, each
- * with the id, type, and payload of its logged row, and nothing else up to
- * the log's last sequence. Clients apply a replay in arrival order
- * (packages/client-runtime/src/state/threads.ts), so the stream as received
- * must rise strictly in sequence with no event twice. Events past the log are the candidate's own writes since the
- * upgrade: allowed, and reported.
+ * Replay must match the prior log in strictly increasing sequence, with no duplicates.
+ * Events after the recorded log are candidate writes and are reported separately.
  */
 export const replayCompleteness = (
   threadId: string,

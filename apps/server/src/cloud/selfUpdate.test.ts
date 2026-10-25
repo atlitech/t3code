@@ -500,11 +500,8 @@ const SERVICE_ARCHIVE_SHA256 = "cd".repeat(32);
 const SERVICE_STATE = `${JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: SERVICE_VERSION })}\n`;
 
 /**
- * A T3 home with a database (or bytes that are not one), the runtime it runs
- * now, the service state naming it when `serviceState` is set, and a
- * database an earlier recover set aside. `restartPendingVersion` models a
- * `t3 update` that installed that version with its restart deferred: the
- * service state already names it while the server keeps running the old one.
+ * restartPendingVersion models a deferred restart: service state names the new runtime
+ * while the old server still owns the database.
  */
 const makeHomeWithDatabase = Effect.fn("test.make_self_update_home")(function* (options: {
   readonly serviceState: boolean;

@@ -1,10 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Has the prior release's own server create each
-// fixture thread: one `orchestration.dispatchCommand` `thread.create` per
-// fixtures.json thread, over the same /ws RPC its clients use, so the
-// thread.created event and projection row are what that release writes.
-// It needs no provider: creating a thread starts no run.
+// Create fixture threads through the prior server so events and projections use its own format.
+// Thread creation starts no provider run.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

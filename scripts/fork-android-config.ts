@@ -1,12 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Checks the personal Android app's resolved
-// public config before fork-server-release.yml builds the APK from it: the
-// personal variant resolved, and the relay URL and Clerk identifiers the app
-// signs in with are set. Native Google sign-in and push stay optional. The
-// workflow hands over the output of
-// `APP_VARIANT=personal expo config --type public --json`, which serializes an
-// unset value as `{}`, not null. Runbook: docs/operations/fork-server.md.
+// Validates personal Expo public config before release; push and Google sign-in are optional.
+// Expo serializes unset values as {}. See docs/operations/fork-server.md.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

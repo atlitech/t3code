@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// @effect-diagnostics nodeBuiltinImport:off - Local build launcher delegates native work to Expo and Xcode.
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off - Interactive CLI prints build instructions and delegates native work to Expo and Xcode.
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeURL from "node:url";

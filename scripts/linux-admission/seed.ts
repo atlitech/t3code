@@ -1,22 +1,7 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). Writes the SQL that adds the fixture messages
-// to the threads the prior release's server created (create-threads.ts), for
-// `sqlite3 <db> < seed.sql` once that server has stopped. Messages have no
-// provider-free writer, so this commits what the server's EventSink commits
-// for a `message.updated`, in the prior's persisted format:
-//
-// - the event, appended after what the prior wrote: sequence from the
-//   table's AUTOINCREMENT and stream_version continuing the thread's stream,
-//   as OrchestrationEventStore.appendAgentEvents does; id, command id,
-//   correlation id, actor `server`, and metadata `{"providerInstanceId"}`
-//   shaped like the thread.created rows the prior wrote;
-// - the projection row ProjectionStore.apply folds it into;
-// - last_sequence advanced in the projection metadata row the prior wrote.
-//   The schema version stays the prior's own.
-//
-// It fails, committing nothing, unless the prior created every thread and
-// wrote its projection metadata.
+// No provider-free message writer exists, so seed the stopped prior database in its own format.
+// Match EventSink events, projections and sequence metadata; require prior-created threads.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";

@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 
-// Fork-only (atlitech/t3code). The work the recovery drill does after the
-// upgrade: the upgraded server creates one thread through its own
-// thread.create, over the same /ws RPC its clients use. Recovery moves the
-// database holding it aside, so the restored home must not have it and the
-// displaced database must.
+// Create post-upgrade work through the server; recovery must retain it only in the displaced DB.
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
