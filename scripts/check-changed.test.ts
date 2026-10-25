@@ -16,6 +16,10 @@ it.each([
   async ({ fails, filename, untracked }) => {
     const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-check-changed-"));
     try {
+      await NodeFSP.writeFile(
+        NodePath.join(root, "package.json"),
+        JSON.stringify({ scripts: { "knip:check": "knip" } }),
+      );
       const testPath = `.github/scripts/${filename}`;
       await NodeFSP.mkdir(NodePath.join(root, "scripts"));
       await NodeFSP.mkdir(NodePath.join(root, ".github/scripts"), { recursive: true });
@@ -38,7 +42,7 @@ test('node runner fixture', () => { ${fails ? "throw new Error('fixture failure'
         preload,
         `import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-const { spawnSync, execFileSync } = childProcess;
+const { spawn, spawnSync, execFileSync } = childProcess;
 childProcess.execFileSync = (command, args, options) => {
   if (command !== 'git') return execFileSync(command, args, options);
   if (args[0] !== ${JSON.stringify(untracked ? "ls-files" : "diff")}) return '';
@@ -52,6 +56,12 @@ childProcess.spawnSync = (command, args, options) => {
   return args[0] === 'exec' && args[1] === 'node'
     ? spawnSync(process.execPath, args.slice(2), options)
     : { status: 0 };
+};
+childProcess.spawn = (command, args, options) => {
+  if (command !== 'vp') return spawn(command, args, options);
+  return args[0] === 'exec' && args[1] === 'node'
+    ? spawn(process.execPath, args.slice(2), options)
+    : spawn(process.execPath, ['-e', ''], options);
 };
 syncBuiltinESMExports();`,
       );

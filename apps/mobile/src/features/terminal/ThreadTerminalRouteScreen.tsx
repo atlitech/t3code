@@ -17,7 +17,7 @@ import { Platform, Pressable, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { AppText as Text } from "../../components/ui/AppText";
 import { TerminalContextSheet } from "./TerminalContextSheet";
-import { hasNativeTerminalSurface } from "./nativeTerminalModule";
+import { hasNativeTerminalSurface, supportsNativeTerminalOutput } from "./nativeTerminalModule";
 import * as Clipboard from "expo-clipboard";
 import * as Schema from "effect/Schema";
 import {
@@ -38,7 +38,7 @@ import { LoadingScreen } from "../../components/LoadingScreen";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
-import { createPopToThreadAction } from "../../lib/adaptive-navigation";
+import { selectWorkspaceDetail } from "../workspace/workspace-detail-selection";
 import { environmentCatalog } from "../../connection/catalog";
 import { useEnvironmentPresentation } from "../../state/presentation";
 import { terminalEnvironment } from "../../state/terminal";
@@ -293,9 +293,7 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
   const isEnvironmentReady = environment.presentation?.connection.phase === "connected";
   const requestedTerminalId = firstRouteParam(params.terminalId);
   const terminalId = requestedTerminalId ?? DEFAULT_TERMINAL_ID;
-  // The native view treats any new positive value as a capture, including the first value a
-  // freshly created view receives after a reconnect or remount. Only pass a value while a
-  // capture is pending, and keep the sequence increasing so the next request always differs.
+  // Any new positive value triggers capture, even on remount. Pass one only while pending and keep increasing it.
   const captureSequenceRef = useRef(0);
   const [captureRequest, setCaptureRequest] = useState(0);
   const [capturedOutput, setCapturedOutput] = useState<string | null>(null);
@@ -452,7 +450,9 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
   );
   const observingTerminal =
     !canOperateTerminal && canReadTerminal && selectedThread !== null && hasTerminalTarget;
+  const streamingOutput = supportsNativeTerminalOutput();
   const terminal = useAttachedTerminalSession({
+    materializeBuffer: !streamingOutput,
     environmentId: selectedThread?.environmentId ?? null,
     terminal: canOperateTerminal
       ? terminalAttachInput
@@ -934,9 +934,12 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
     }
     if (selectedThread) {
       navigation.dispatch(
-        createPopToThreadAction({
-          environmentId: String(selectedThread.environmentId),
-          threadId: String(selectedThread.id),
+        selectWorkspaceDetail({
+          name: "Thread",
+          params: {
+            environmentId: String(selectedThread.environmentId),
+            threadId: String(selectedThread.id),
+          },
         }),
       );
     }
@@ -1170,8 +1173,7 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
               Platform.OS === "android"
                 ? themeVariables["--color-card-alt"]
                 : terminalTheme.background,
-            // The v5 column extends behind UIKit chrome. Its measured top
-            // reservation is zero when UIKit has already inset the body or moved the bar.
+            // Measured top reservation is zero when UIKit already inset the body or moved the bar.
             paddingTop:
               Platform.OS === "ios" ? (nativeColumnMetrics?.safeArea.top ?? insets.top) : 0,
             paddingBottom:
@@ -1249,6 +1251,7 @@ export function ThreadTerminalRouteScreen(props: ThreadTerminalRouteScreenProps)
                   autoFocus={canOperateTerminal && terminalAutoFocus}
                   readOnly={!canOperateTerminal}
                   buffer={terminal.version === 0 ? null : terminalSurfaceBuffer}
+                  output={terminal.version === 0 ? null : terminal.output}
                   fontSize={fontSize}
                   isRunning={isRunning}
                   keyboardFocusRequest={keyboardFocusRequest}
