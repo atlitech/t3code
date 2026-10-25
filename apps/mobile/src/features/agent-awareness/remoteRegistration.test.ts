@@ -27,6 +27,7 @@ import {
 import { makeRelayDeviceRegistrationRequest } from "./registrationPayload";
 import {
   __resetAgentAwarenessRemoteRegistrationForTest,
+  refreshActiveLiveActivityRemoteRegistration,
   getAgentAwarenessRegistrationStatus,
   refreshAgentAwarenessRegistration,
   registerAgentAwarenessConnection,
@@ -266,6 +267,16 @@ describe("makeRelayDeviceRegistrationRequest", () => {
     widgetMocks.dismissEnded.mockReset();
     environmentConfigsMock.configs.clear();
   });
+
+  it.effect("skips native Live Activity access for Personal Team builds", () =>
+    Effect.gen(function* () {
+      Constants.expoConfig!.extra = { iosPersonalTeamBuild: true };
+      setAgentAwarenessRelayTokenProvider(() => Promise.resolve("clerk-token-user-a"));
+      yield* refreshActiveLiveActivityRemoteRegistration();
+      expect(widgetMocks.getInstances).not.toHaveBeenCalled();
+      expect(widgetMocks.start).not.toHaveBeenCalled();
+    }).pipe(Effect.provide(layerRelayTest)),
+  );
 
   it("disables push features in Personal Team relay registrations", () => {
     Constants.expoConfig!.extra = { iosPersonalTeamBuild: true };

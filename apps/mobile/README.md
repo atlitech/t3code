@@ -66,27 +66,9 @@ After changing a native dependency patch, rerun CocoaPods before rebuilding an e
 project. pnpm gives each patch hash a new package path; Pods can otherwise keep compiling the
 previous directory.
 
-If your Xcode account only has a Personal Team, use a bundle identifier you control and opt into the
-reduced-capability local build. Personal Team builds omit the widget and share extensions, push
-entitlement, and native Sign in with Apple entitlement; builds without this opt-in are unchanged.
-
-```bash
-T3CODE_IOS_PERSONAL_TEAM=1 \
-T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=com.example.t3code.dev \
-vp run ios:dev
-```
-
 Build and install a self-contained Release app that does not need Metro:
 
 ```bash
-vp run ios:release
-```
-
-The Personal Team equivalent also needs a unique bundle identifier:
-
-```bash
-T3CODE_IOS_PERSONAL_TEAM=1 \
-T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=com.example.t3code \
 vp run ios:release
 ```
 
@@ -118,6 +100,54 @@ node ../../scripts/mobile-native-static-check.ts
 ```
 
 The native lint task runs SwiftLint for Swift plus ktlint and detekt for Kotlin. Missing native tools are reported as warnings and skipped locally. CI installs the default toolset from `apps/mobile/Brewfile` before running the native checks.
+
+## Install a personal build on your iPhone
+
+You need a Mac with full Xcode and its iOS SDK installed, CocoaPods (`brew install cocoapods`),
+the repository's Node version and Vite+, and an iPhone running iOS 18 or newer. A free Apple
+account works; no Expo account or paid Apple Developer membership is required.
+
+1. Clone the repository and run `vp i` from its root.
+2. Open Xcode once to finish installing its components. In **Xcode > Settings > Accounts**, add
+   your Apple account. Select your Personal Team, open **Manage Certificates**, and create an
+   **Apple Development** certificate if you do not have one.
+3. Connect and unlock your iPhone by USB. Accept the trust prompts on both devices. Enable
+   **Settings > Privacy & Security > Developer Mode** on the iPhone and restart it if requested.
+4. From the repository root, run:
+
+   ```bash
+   vp run ios:personal --bundle-id com.yourname.t3code
+   ```
+
+Choose your own unique identifier, then choose your physical iPhone and Personal Team when
+prompted. With several devices, pass `--device "Your iPhone"` or its UDID. If iOS requests trust
+for the developer, enable it under **Settings > General > VPN & Device Management**.
+
+To prepare the native workspace before connecting a phone, add `--prepare-only`. It generates
+the project and installs Pods without requiring a signing certificate or device. The command
+regenerates `apps/mobile/ios`; put persistent native changes in Expo config/plugins. If signing
+needs manual attention, open the generated `.xcworkspace` in Xcode, choose your Personal Team
+under Signing & Capabilities, select the phone, and set the scheme's Run configuration to Release.
+
+The installed **T3 Code Personal** app includes its JavaScript and works without Metro. It still
+needs a running T3 server: pair it using the server's connection URL or QR code over your LAN or
+Tailscale. `localhost` on the phone refers to the phone, not your Mac. T3 Connect is optional and
+requires separate configuration; it is not required for direct connections.
+
+Personal builds omit push notifications, widgets/Live Activities, the incoming share extension,
+and native Sign in with Apple. They use a separate app identity and do not receive official OTA
+updates. Install source updates by pulling the repository, running `vp i`, and rerunning the command.
+
+Free Personal Team provisioning expires after **seven days**. Rerun the install command with the
+**same bundle identifier and Apple team**, without deleting the app, to renew it and preserve local
+settings. Keep the identifier in the root's gitignored `.env.local` if you prefer a shorter command:
+
+```dotenv
+T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=com.yourname.t3code
+```
+
+Then use `vp run ios:personal` for subsequent installs. If Apple reports the identifier is unavailable,
+choose another identifier for the first installation. See [Apple's Personal Team limits](https://developer.apple.com/help/account/basics/about-your-developer-account/).
 
 ## EAS Builds
 
