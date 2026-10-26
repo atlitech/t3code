@@ -102,7 +102,7 @@ it("does not visit a covered thread and cancels its queued watermark", async () 
   expect(visitedThreadIds()).toEqual(["covered"]);
   await act(() => setShell(ref, "2026-01-03T00:00:00.000Z"));
   await screen.rerender(view(true));
-  await act(() => vi.advanceTimersByTime(10_000));
+  await act(() => vi.advanceTimersByTimeAsync(10_000));
   expect(mocks.visitRun).toHaveBeenCalledOnce();
   await screen.rerender(view(false));
   expect(mocks.visitRun).toHaveBeenCalledTimes(2);
