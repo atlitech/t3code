@@ -42,7 +42,6 @@ export type ServicePreflightResult =
 export const SERVICE_PREFLIGHT_UNSUPPORTED_STEP =
   "running the staged service preflight (the runtime has no such command)";
 
-// eslint-disable-next-line no-control-regex -- matches the ANSI colour codes a CLI may print.
 const ANSI_ESCAPE = /\u001b\[[0-9;]*m/g;
 
 /**
