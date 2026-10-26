@@ -16,6 +16,7 @@ import { useThreadActions } from "../../hooks/useThreadActions";
 import { readLocalApi } from "../../localApi";
 import { deleteSelectedThreadEntries } from "../Sidebar.logic";
 import { useArchivedThreadSnapshots } from "../../lib/archivedThreadsState";
+import { readThreadShell } from "../../state/entities";
 import { RelativeTime } from "../RelativeTime";
 import { Button } from "../ui/button";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -198,8 +199,11 @@ export function ArchivedThreadsPanel() {
           const threadRef = scopeThreadRef(thread.environmentId, thread.id);
           return { threadRef, threadKey: scopedThreadKey(threadRef) };
         }),
-        delete: ({ threadRef }, deletedThreadKeys) =>
-          deleteThread(threadRef, { deletedThreadKeys }),
+        // A thread unarchived mid-batch, from any client, is back in the live shell; keep it.
+        delete: async ({ threadRef }, deletedThreadKeys) =>
+          readThreadShell(threadRef)?.archivedAt === null
+            ? null
+            : deleteThread(threadRef, { deletedThreadKeys }),
       }),
     );
     setDeletingGroupKey(null);
@@ -277,6 +281,7 @@ export function ArchivedThreadsPanel() {
                   key={`${thread.environmentId}:${thread.id}`}
                   onContextMenu={(event) => {
                     event.preventDefault();
+                    if (deletingGroupKey !== null) return;
                     void (async () => {
                       const result = await settlePromise(() =>
                         handleArchivedThreadContextMenu(
@@ -315,6 +320,7 @@ export function ArchivedThreadsPanel() {
                       variant="outline"
                       size="sm"
                       className="shrink-0"
+                      disabled={deletingGroupKey !== null}
                       onClick={() => {
                         void (async () => {
                           const result = await unarchiveThread(
