@@ -1833,12 +1833,14 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
   archive.file("word/media/image.png", new Uint8Array(2_500_000));
   const file = await archive.generateAsync({ type: "blob", compression: "DEFLATE" });
   await using screen = await render(
-    <AttachmentFilePreview
-      name="report.docx"
-      mimeType="application/octet-stream"
-      file={file}
-      sizeBytes={file.size}
-    />,
+    <div style={{ display: "flex", height: 1000, width: 600 }}>
+      <AttachmentFilePreview
+        name="report.docx"
+        mimeType="application/octet-stream"
+        file={file}
+        sizeBytes={file.size}
+      />
+    </div>,
   );
   await vi.waitFor(() => expect(screen.container.textContent).toMatch(/\d+ pages/), {
     timeout: 30_000,
@@ -1846,10 +1848,15 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
   expect(screen.container.textContent).not.toContain("Preview limited");
   expect(screen.container.querySelector('[role="alert"]')).toBeNull();
   const scroll = screen.container.querySelector<HTMLElement>("[data-office-pages]")!;
-  await act(() => scroll.scrollTo({ top: scroll.scrollHeight }));
-  await vi.waitFor(() => expect(screen.container.textContent).toContain("page " + pages), {
-    timeout: 30_000,
+  await vi.waitFor(() => {
+    const count = Number(screen.container.textContent?.match(/(\d+) pages/)?.[1]);
+    const renderedPages = scroll.querySelectorAll('[role="group"]');
+    expect(renderedPages.length).toBe(count);
+    expect(renderedPages[count - 1]!.getBoundingClientRect().height).toBeGreaterThan(0);
+    expect(scroll.scrollHeight).toBeGreaterThan(scroll.clientHeight);
   });
+  await act(() => scroll.scrollTo({ top: scroll.scrollHeight }));
+  await expect.element(screen.getByText("page " + pages, { exact: true })).toBeInTheDocument();
 });
 
 describe("standalone Mermaid previews", () => {
@@ -2462,6 +2469,9 @@ it("mounts a bounded set of saved notebook outputs as the reader scrolls", async
       />
     </div>,
   );
+  await expect
+    .element(screen.getByText("Saved outputs only. Code is never executed."))
+    .toBeVisible();
   await vi.waitFor(() =>
     expect(screen.container.querySelectorAll("iframe").length).toBeGreaterThan(0),
   );
