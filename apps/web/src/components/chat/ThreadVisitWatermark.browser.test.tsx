@@ -1,104 +1,113 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { claimThreadOpen } from "@t3tools/client-runtime/state/thread-search";
+import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contracts";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
+
 import { act, fakeTimers, render } from "../../../test/render";
-import { makeThreadFixture } from "../../test-fixtures";
-import { useUiStateStore } from "../../uiStateStore";
-import { BackgroundThreadContext } from "./backgroundThread";
+import { AppAtomRegistryProvider, appAtomRegistry } from "../../rpc/atomRegistry";
+
+const mocks = vi.hoisted(() => ({
+  visitRun: vi.fn(),
+}));
+
+const shellKey = (ref: ScopedThreadRef) => `${ref.environmentId}:${ref.threadId}`;
+
+vi.mock(import("../../state/threads"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    environmentThreadShells: {
+      ...actual.environmentThreadShells,
+      threadShellAtom: ((ref: ScopedThreadRef) => shellAtom(shellKey(ref))) as never,
+    },
+    threadEnvironment: {
+      ...actual.threadEnvironment,
+      visit: { label: "visit", run: mocks.visitRun } as never,
+    },
+  };
+});
+
 import { ThreadVisitWatermark } from "./ThreadVisitWatermark";
+import { BackgroundThreadContext } from "./backgroundThread";
 
-const state = vi.hoisted(() => ({
-  updatedAt: "2026-10-25T00:00:01.000Z",
-  supportsVisits: true,
-  visit: vi.fn(),
-  claimOpen: vi.fn(() => true),
-}));
-const threadRef = { environmentId: EnvironmentId.make("remote"), threadId: ThreadId.make("visit") };
-vi.mock(import("../../state/entities"), async (original) => ({
-  ...(await original()),
-  useThreadShell: (() => ({
-    ...makeThreadFixture(),
-    id: threadRef.threadId,
-    environmentId: threadRef.environmentId,
-    updatedAt: state.updatedAt,
-    lastVisitedAt: state.supportsVisits ? null : undefined,
+// Kept alive so a shell set before its tracker mounts is still there when it does.
+const shellAtom = Atom.family((_key: string) => Atom.make<unknown>(null).pipe(Atom.keepAlive));
+
+const NOW = Date.parse("2026-01-04T00:00:00.000Z");
+const ENVIRONMENT = EnvironmentId.make("environment-visit-watermark");
+const threadA: ScopedThreadRef = { environmentId: ENVIRONMENT, threadId: ThreadId.make("a") };
+const threadB: ScopedThreadRef = { environmentId: ENVIRONMENT, threadId: ThreadId.make("b") };
+
+function setShell(ref: ScopedThreadRef, updatedAt: string) {
+  appAtomRegistry.set(shellAtom(shellKey(ref)), {
+    environmentId: ref.environmentId,
+    id: ref.threadId,
+    updatedAt,
+    lastVisitedAt: "2026-01-01T00:00:00.000Z",
     latestRun: null,
-  })) as never,
-}));
-vi.mock(import("../../state/use-atom-command"), async (original) => ({
-  ...(await original()),
-  useAtomCommand: (() => state.visit) as never,
-}));
-vi.mock(import("@t3tools/client-runtime/state/thread-search"), async (original) => ({
-  ...(await original()),
-  claimThreadOpen: state.claimOpen,
-}));
+  });
+}
 
-function view(background: boolean) {
-  return (
-    <BackgroundThreadContext value={background}>
-      <ThreadVisitWatermark threadRef={threadRef} />
-    </BackgroundThreadContext>
+function visitedThreadIds() {
+  return mocks.visitRun.mock.calls.map(
+    ([, input]) => (input as { input: { threadId: string } }).input.threadId,
   );
 }
-function reset() {
-  state.updatedAt = "2026-10-25T00:00:01.000Z";
-  state.visit.mockReset();
-  state.claimOpen.mockClear();
-  const previous = useUiStateStore.getState().threadLastVisitedAtById;
-  useUiStateStore.setState({ threadLastVisitedAtById: {} });
-  return {
-    [Symbol.dispose]: () => useUiStateStore.setState({ threadLastVisitedAtById: previous }),
-  };
-}
 
-it.each([true, false])(
-  "does not record a covered thread (server visits: %s)",
-  async (supported) => {
-    using _state = reset();
-    state.supportsVisits = supported;
-    await using screen = await render(view(true), { router: false });
-    state.updatedAt = "2026-10-25T00:00:02.000Z";
-    await screen.rerender(view(true));
-    expect(state.visit).not.toHaveBeenCalled();
-    expect(state.claimOpen).not.toHaveBeenCalled();
-    expect(
-      useUiStateStore.getState().threadLastVisitedAtById[scopedThreadKey(threadRef)],
-    ).toBeUndefined();
-
-    await screen.rerender(view(false));
-    if (supported) {
-      expect(state.visit).toHaveBeenCalledWith({
-        environmentId: threadRef.environmentId,
-        input: { threadId: threadRef.threadId, visitedAt: state.updatedAt, opened: true },
-      });
-    } else {
-      expect(useUiStateStore.getState().threadLastVisitedAtById[scopedThreadKey(threadRef)]).toBe(
-        state.updatedAt,
-      );
-    }
-  },
-);
-
-it("cancels a queued visit under the modal and resumes without counting another open", async () => {
-  using _state = reset();
-  state.supportsVisits = true;
+it("records the visit of the next thread at once after switching threads", async () => {
+  mocks.visitRun.mockReset();
+  mocks.visitRun.mockResolvedValue(AsyncResult.success(undefined));
+  setShell(threadA, "2026-01-02T00:00:00.000Z");
+  setShell(threadB, "2026-01-03T00:00:00.000Z");
   using _timers = fakeTimers();
-  vi.setSystemTime(new Date("2026-10-25T00:00:10.000Z"));
-  await using screen = await render(view(false), { router: false });
-  expect(state.visit).toHaveBeenCalledOnce();
-  state.visit.mockClear();
+  vi.setSystemTime(NOW);
+  // A palette pick already sent B's open with its query, so B's visit is a plain watermark advance.
+  claimThreadOpen(threadB.environmentId, threadB.threadId, NOW);
 
-  state.updatedAt = "2026-10-25T00:00:02.000Z";
+  await using screen = await render(
+    <AppAtomRegistryProvider>
+      <ThreadVisitWatermark threadRef={threadA} />
+    </AppAtomRegistryProvider>,
+  );
+  expect(visitedThreadIds()).toEqual(["a"]);
+
+  await screen.rerender(
+    <AppAtomRegistryProvider>
+      <ThreadVisitWatermark threadRef={threadB} />
+    </AppAtomRegistryProvider>,
+  );
+
+  // Thread A's throttle must not hold back B's first watermark: leaving B
+  // within the throttle window would otherwise keep it unread.
+  expect(visitedThreadIds()).toEqual(["a", "b"]);
+});
+
+it("does not visit a covered thread and cancels its queued watermark", async () => {
+  mocks.visitRun.mockReset();
+  mocks.visitRun.mockResolvedValue(AsyncResult.success(undefined));
+  const ref = { environmentId: ENVIRONMENT, threadId: ThreadId.make("covered") };
+  setShell(ref, "2026-01-02T00:00:00.000Z");
+  using _timers = fakeTimers();
+  vi.setSystemTime(NOW);
+  const view = (background: boolean) => (
+    <AppAtomRegistryProvider>
+      <BackgroundThreadContext value={background}>
+        <ThreadVisitWatermark threadRef={ref} />
+      </BackgroundThreadContext>
+    </AppAtomRegistryProvider>
+  );
+  await using screen = await render(view(true));
+  expect(mocks.visitRun).not.toHaveBeenCalled();
   await screen.rerender(view(false));
+  expect(visitedThreadIds()).toEqual(["covered"]);
+  await act(() => setShell(ref, "2026-01-03T00:00:00.000Z"));
   await screen.rerender(view(true));
   await act(() => vi.advanceTimersByTime(10_000));
-  expect(state.visit).not.toHaveBeenCalled();
-
+  expect(mocks.visitRun).toHaveBeenCalledOnce();
   await screen.rerender(view(false));
-  expect(state.visit).toHaveBeenCalledExactlyOnceWith({
-    environmentId: threadRef.environmentId,
-    input: { threadId: threadRef.threadId, visitedAt: state.updatedAt },
+  expect(mocks.visitRun).toHaveBeenCalledTimes(2);
+  expect(mocks.visitRun.mock.calls[1]?.[1]).toEqual({
+    environmentId: ref.environmentId,
+    input: { threadId: ref.threadId, visitedAt: "2026-01-03T00:00:00.000Z" },
   });
-  expect(state.claimOpen).toHaveBeenCalledOnce();
 });

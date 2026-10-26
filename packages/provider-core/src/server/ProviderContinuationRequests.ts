@@ -67,11 +67,16 @@ const layerCleanup = Layer.effect(
         return [clear, next] as const;
       });
     return {
-      register: (messageId: MessageId, clear: Effect.Effect<void>) =>
-        Ref.update(callbacks, (current) => new Map(current).set(messageId, clear)),
-      discard: (messageId: MessageId) =>
+      register: Effect.fn("ProviderContinuationCleanup.register")(
+        (messageId: MessageId, clear: Effect.Effect<void>) =>
+          Ref.update(callbacks, (current) => new Map(current).set(messageId, clear)),
+      ),
+      discard: Effect.fn("ProviderContinuationCleanup.discard")((messageId: MessageId) =>
         take(messageId).pipe(Effect.flatMap((clear) => clear ?? Effect.void)),
-      release: (messageId: MessageId) => take(messageId).pipe(Effect.asVoid),
+      ),
+      release: Effect.fn("ProviderContinuationCleanup.release")((messageId: MessageId) =>
+        take(messageId).pipe(Effect.asVoid),
+      ),
     };
   }),
 );
@@ -81,8 +86,11 @@ const layerRequests = Layer.effect(
   Effect.gen(function* () {
     const queue = yield* Queue.unbounded<ProviderContinuationRequest>();
     return {
-      offer: (request: ProviderContinuationRequest) =>
-        Queue.offer(queue, request).pipe(Effect.asVoid),
+      offer: Effect.fn("ProviderContinuationRequests.offer")(function (
+        request: ProviderContinuationRequest,
+      ) {
+        return Queue.offer(queue, request).pipe(Effect.asVoid);
+      }),
       take: Queue.take(queue),
     };
   }),

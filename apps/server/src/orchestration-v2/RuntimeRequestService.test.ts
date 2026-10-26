@@ -10,7 +10,6 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -74,11 +73,9 @@ it.effect.each(["expired", "resolved"] as const)(
       (_input: ProviderAdapter.ProviderAdapterV2RuntimeRequestResponseInput) => Effect.void,
     );
     const getSession = vi.fn(() =>
-      Effect.succeed(
-        Option.some({
-          respondToRuntimeRequest,
-        } as never),
-      ),
+      Effect.succeedSome({
+        respondToRuntimeRequest,
+      } as never),
     );
     const projection = {
       runtimeRequests: [
@@ -154,7 +151,7 @@ it.effect("completes queued responses when the MCP provider already cancelled th
   const threadId = ThreadId.make("thread-cancelled-elicitation");
   const providerSessionId = ProviderSessionId.make("session-cancelled-elicitation");
   const requestId = RuntimeRequestId.make("request-cancelled-elicitation");
-  const getSession = vi.fn(() => Effect.succeed(Option.none()));
+  const getSession = vi.fn(() => Effect.succeedNone);
   const layerTest = layerRuntimeRequestTest(
     projectionWithRuntimeRequest({
       ...resolvedRuntimeRequest(requestId, providerSessionId),
@@ -195,7 +192,7 @@ it.effect.each([
     const threadId = ThreadId.make("thread-invalid-elicitation");
     const providerSessionId = ProviderSessionId.make("session-invalid-elicitation");
     const requestId = RuntimeRequestId.make("request-invalid-elicitation");
-    const getSession = vi.fn(() => Effect.succeed(Option.none()));
+    const getSession = vi.fn(() => Effect.succeedNone);
     const layerTest = layerRuntimeRequestTest(
       projectionWithRuntimeRequest({
         ...resolvedRuntimeRequest(requestId, providerSessionId),

@@ -49,6 +49,7 @@ it.effect.each([
       const cwd = yield* checkpointWorkspace("claude-mcp-elicitation");
       const sdkMessages = yield* Queue.unbounded<SDKMessage>();
       const callback = yield* Deferred.make<OnElicitation>();
+      // @effect-diagnostics-next-line abortControllerInEffect:off - The fixture drives SDK cancellation independently of the test fiber.
       const sdkAbort = new AbortController();
       const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
         instanceId: modelSelection.instanceId,
