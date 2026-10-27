@@ -163,6 +163,27 @@ describe("mcpElicitationForm", () => {
     expect(form?.content({ choice: "b" })).toEqual({ choice: "c" });
   });
 
+  it("keeps empty selections, unwraps lone array answers, and leaves choices unconstrained", () => {
+    const form = mcpElicitationForm({
+      message: "Details",
+      requestedSchema: {
+        type: "object",
+        properties: {
+          tags: { type: "array", items: { enum: ["a", "b"] } },
+          count: { type: "integer" },
+          tier: { type: "string", oneOf: [{ const: "p", title: "Premium" }], maxLength: 1 },
+        },
+        required: ["tags", "count", "tier"],
+      },
+    });
+    expect(form?.content({ tags: [], count: ["42"], tier: ["Premium"] })).toEqual({
+      tags: [],
+      count: 42,
+      tier: "p",
+    });
+    expect(form?.questions[2]?.constraints).toBeUndefined();
+  });
+
   it("rejects schemas outside the flat MCP form subset", () => {
     for (const schema of [
       undefined,

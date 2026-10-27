@@ -92,16 +92,18 @@ export function describeUserInputConstraints(
 export function userInputAnswerError(
   question: Pick<
     OrchestrationV2UserInputQuestion,
-    "header" | "options" | "allowCustomAnswer" | "required" | "constraints"
+    "header" | "options" | "allowCustomAnswer" | "multiSelect" | "required" | "constraints"
   >,
   answer: string | ReadonlyArray<string> | undefined,
 ): string | null {
-  const blank =
-    answer === undefined ||
-    (typeof answer === "string" ? answer.trim().length === 0 : answer.length === 0);
+  // An explicit empty selection is present; minItems decides whether it is enough.
+  const blank = answer === undefined || (typeof answer === "string" && answer.trim().length === 0);
   if (blank) return question.required === true ? `${question.header}: Enter an answer.` : null;
   const values = typeof answer === "string" ? [answer] : answer;
   if (question.allowCustomAnswer === false && question.options.length > 0) {
+    if (question.multiSelect !== true && values.length !== 1) {
+      return `${question.header}: Choose one option.`;
+    }
     const allowed = new Set(
       question.options.flatMap((option) => [option.label, option.value ?? option.label]),
     );

@@ -45,10 +45,14 @@ describe("userInputAnswerError", () => {
 
   it("requires explicitly required answers and leaves others optional", () => {
     expect(userInputAnswerError(question({ type: "number" }), "  ")).toBeNull();
-    expect(userInputAnswerError(question({ minItems: 1 }), [])).toBeNull();
+    expect(userInputAnswerError(question({ minItems: 1 }), undefined)).toBeNull();
     expect(userInputAnswerError(question(undefined), "anything")).toBeNull();
     expect(userInputAnswerError({ ...question(undefined), required: true }, " ")).toBe(
       "Field: Enter an answer.",
+    );
+    expect(userInputAnswerError({ ...question(undefined), required: true }, [])).toBeNull();
+    expect(userInputAnswerError({ ...question({ minItems: 1 }), required: true }, [])).toBe(
+      "Field: Choose at least 1 option.",
     );
   });
 
@@ -63,6 +67,7 @@ describe("userInputAnswerError", () => {
     expect(userInputAnswerError(choice, "enterprise")).toBe(
       "Plan: Choose one of the listed options.",
     );
+    expect(userInputAnswerError(choice, ["pro", "Pro"])).toBe("Plan: Choose one option.");
     expect(userInputAnswerError(question({ type: "integer" }), ["3"])).not.toBeNull();
   });
 });

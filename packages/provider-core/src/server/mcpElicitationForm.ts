@@ -89,6 +89,8 @@ function fieldOptions(field: Field) {
 }
 
 function fieldConstraints(field: Field): OrchestrationV2UserInputAnswerConstraints | undefined {
+  // Choice answers are labels; option membership already bounds them, not the constants' text rules.
+  if (field.type === "string" && fieldOptions(field) !== undefined) return undefined;
   const [min, max] =
     field.type === "string"
       ? [count(field.minLength), count(field.maxLength)]
@@ -119,10 +121,19 @@ function contentValue(field: Field, answer: unknown): McpElicitationContent[stri
       options?.find((option) => option.wire === value)
     )?.wire ?? value;
   if (field.type === "array") {
-    const values = (Array.isArray(answer) ? answer : [answer]).filter(
-      (value): value is string => typeof value === "string" && value.length > 0,
-    );
-    return values.length > 0 ? values.map((value) => String(wire(value))) : undefined;
+    // An explicit empty selection is an answer; only an absent or blank one is omitted.
+    if (answer === undefined || (typeof answer === "string" && answer.trim().length === 0)) {
+      return undefined;
+    }
+    const values = Array.isArray(answer) ? answer : [answer];
+    return values
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => String(wire(value)));
+  }
+  if (Array.isArray(answer)) {
+    // Unwrap a lone answer; anything else goes through for the MCP server to reject.
+    if (answer.length !== 1) return answer.filter((value) => typeof value === "string");
+    return contentValue(field, answer[0]);
   }
   if (typeof answer !== "string" || answer.trim().length === 0) return undefined;
   switch (field.type) {
