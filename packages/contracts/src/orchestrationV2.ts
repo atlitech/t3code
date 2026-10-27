@@ -1123,6 +1123,8 @@ export const OrchestrationV2RuntimeRequest = Schema.Struct({
       type: Schema.Literal("live"),
       providerSessionId: ProviderSessionId,
       supportsFeedback: Schema.optional(Schema.Boolean),
+      /** The provider accepts a dismissal (MCP `cancel`) instead of answers. */
+      dismissible: Schema.optional(Schema.Boolean),
     }),
     Schema.Struct({ type: Schema.Literal("message") }),
     Schema.Struct({ type: Schema.Literal("not_resumable"), reason: Schema.String }),
@@ -1234,6 +1236,20 @@ export const OrchestrationV2PlanStep = Schema.Struct({
 });
 export type OrchestrationV2PlanStep = typeof OrchestrationV2PlanStep.Type;
 
+/** Answer rules the server checks before a response settles, so invalid answers stay editable. */
+export const OrchestrationV2UserInputAnswerConstraints = Schema.Struct({
+  type: Schema.optional(Schema.Literals(["number", "integer"])),
+  format: Schema.optional(Schema.Literals(["email", "uri", "date", "date-time"])),
+  minimum: Schema.optional(Schema.Finite),
+  maximum: Schema.optional(Schema.Finite),
+  minLength: Schema.optional(NonNegativeInt),
+  maxLength: Schema.optional(NonNegativeInt),
+  minItems: Schema.optional(NonNegativeInt),
+  maxItems: Schema.optional(NonNegativeInt),
+});
+export type OrchestrationV2UserInputAnswerConstraints =
+  typeof OrchestrationV2UserInputAnswerConstraints.Type;
+
 export const OrchestrationV2UserInputQuestion = Schema.Struct({
   id: TrimmedNonEmptyString,
   header: TrimmedNonEmptyString,
@@ -1250,6 +1266,7 @@ export const OrchestrationV2UserInputQuestion = Schema.Struct({
   allowCustomAnswer: Schema.optional(Schema.Boolean),
   initialAnswer: Schema.optional(Schema.String),
   required: Schema.optional(Schema.Boolean),
+  constraints: Schema.optional(OrchestrationV2UserInputAnswerConstraints),
 });
 export type OrchestrationV2UserInputQuestion = typeof OrchestrationV2UserInputQuestion.Type;
 

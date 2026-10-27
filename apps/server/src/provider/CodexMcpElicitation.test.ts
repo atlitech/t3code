@@ -3,7 +3,11 @@ import * as NodeAssert from "node:assert/strict";
 import { describe, it } from "vite-plus/test";
 import type * as EffectCodexSchema from "effect-codex-app-server/schema";
 
-import { describeMcpElicitation, toMcpElicitationResponse } from "./CodexMcpElicitation.ts";
+import {
+  describeMcpElicitation,
+  mcpElicitationNeedsForm,
+  toMcpElicitationResponse,
+} from "./CodexMcpElicitation.ts";
 
 describe("Codex MCP elicitation approvals", () => {
   const request = {
@@ -148,6 +152,46 @@ describe("Codex MCP elicitation approvals", () => {
     NodeAssert.deepStrictEqual(toMcpElicitationResponse(inputRequest, "accept"), {
       action: "decline",
     });
+  });
+
+  it("sends forms with real input fields to the form instead of an approval card", () => {
+    NodeAssert.equal(mcpElicitationNeedsForm(request), false);
+    const fields: ReadonlyArray<EffectCodexSchema.McpServerElicitationRequestParams__McpElicitationPrimitiveSchema> =
+      [
+        { type: "string", format: "email" },
+        { type: "integer", default: 3 },
+        { type: "string", enum: ["red", "blue"] },
+        { type: "string", enum: ["always", "never"] },
+      ];
+    for (const field of fields) {
+      NodeAssert.equal(
+        mcpElicitationNeedsForm({
+          ...request,
+          requestedSchema: {
+            type: "object",
+            properties: { approval: request.requestedSchema.properties.approval, field },
+          },
+        }),
+        true,
+      );
+    }
+  });
+
+  it("never mistakes a negative choice for approval", () => {
+    NodeAssert.deepStrictEqual(
+      toMcpElicitationResponse(
+        {
+          ...request,
+          requestedSchema: {
+            type: "object",
+            properties: { approval: { type: "string", enum: ["disallow", "allow_once"] } },
+            required: ["approval"],
+          },
+        },
+        "accept",
+      ),
+      { action: "accept", content: { approval: "allow_once" } },
+    );
   });
 
   it("does not approve URL elicitations without opening their requested URL", () => {

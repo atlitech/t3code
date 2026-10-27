@@ -300,21 +300,23 @@ describe("pending v2 questions", () => {
     ]);
   });
 
-  it("only marks asynchronous questions as dismissible", () => {
-    const live = {
+  it("marks asynchronous questions and provider-dismissible live questions as dismissible", () => {
+    const live = (dismissible?: boolean) => ({
       ...projection,
       runtimeRequests: projection.runtimeRequests.map((request) => ({
         ...request,
         responseCapability: {
           type: "live" as const,
           providerSessionId: ProviderSessionId.make("live-session"),
+          ...(dismissible === undefined ? {} : { dismissible }),
         },
       })),
       turnItems: projection.turnItems.map((item) =>
         item.type === "user_input_request" ? { ...item, responseMode: undefined } : item,
       ),
-    };
-    expect(derivePendingThreadRequests(live).userInputs[0]?.dismissible).toBe(false);
+    });
+    expect(derivePendingThreadRequests(live()).userInputs[0]?.dismissible).toBe(false);
+    expect(derivePendingThreadRequests(live(true)).userInputs[0]?.dismissible).toBe(true);
   });
 });
 

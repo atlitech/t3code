@@ -1719,6 +1719,106 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect("collects Codex MCP forms as distinct dismissible questions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const nativeThreadId = "mcp-form-thread";
+        const nativeTurnId = "mcp-form-turn";
+        const form = (id: number): CodexReplay.CodexAppServerReplayEntry => ({
+          type: "emit_inbound",
+          label: `form ${id}`,
+          frame: {
+            id,
+            method: "mcpServer/elicitation/request",
+            params: {
+              threadId: nativeThreadId,
+              turnId: nativeTurnId,
+              serverName: "skald",
+              mode: "form",
+              message: "Create a profile",
+              requestedSchema: {
+                type: "object",
+                properties: { age: { type: "integer", title: "Age" } },
+                required: ["age"],
+              },
+            },
+          },
+        });
+        const transcript = makeCodexReplayTranscript({
+          scenario: "mcp-elicitation-forms",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt: "Make profiles." }),
+            form(100),
+            {
+              type: "expect_outbound",
+              label: "form 100 answer",
+              frame: { id: 100, result: { action: "accept", content: { age: 42 } } },
+            },
+            form(101),
+            {
+              type: "expect_outbound",
+              label: "form 101 dismissal",
+              frame: { id: 101, result: { action: "cancel" } },
+            },
+            {
+              type: "emit_inbound",
+              label: "complete",
+              frame: {
+                method: "turn/completed",
+                params: {
+                  threadId: nativeThreadId,
+                  turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                },
+              },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+        const requests = () => [
+          ...new Map(
+            harness.events.flatMap((event) =>
+              event.type === "runtime_request.updated"
+                ? [[event.runtimeRequest.id, event.runtimeRequest] as const]
+                : [],
+            ),
+          ).values(),
+        ];
+        yield* harness.runtime.startTurn(
+          makeCodexTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make("mcp-form-attempt"),
+            text: "Make profiles.",
+          }),
+        );
+        yield* harness.until(() => requests().length === 1);
+        const first = requests()[0]!;
+        assert.equal(first.kind, "user_input");
+        assert.equal(
+          first.responseCapability.type === "live" && first.responseCapability.dismissible,
+          true,
+        );
+        yield* harness.runtime.respondToRuntimeRequest({
+          requestId: first.id,
+          answers: { age: "42" },
+        });
+        yield* harness.until(() => requests().length === 2);
+        const second = requests()[1]!;
+        assert.notEqual(second.nodeId, first.nodeId);
+        yield* harness.runtime.respondToRuntimeRequest({
+          requestId: second.id,
+          decision: "cancel",
+        });
+        yield* harness.firstTerminal;
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.effect("preserves T3 context on the wire and restores it after compaction", () =>
     Effect.scoped(
       Effect.gen(function* () {

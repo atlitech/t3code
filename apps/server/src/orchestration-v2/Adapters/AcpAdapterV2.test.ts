@@ -618,9 +618,50 @@ describe("AcpAdapterV2", () => {
     {
       scenario: "falls back for an unrelated form",
       schema: { type: "object", properties: { name: { type: "string" } } },
-      questions: [{ id: "name", header: "Question 1", question: "Your answer?", options: [] }],
+      questions: [
+        {
+          id: "name",
+          header: "name (optional)",
+          question: "Your answer?",
+          options: [],
+          required: false,
+        },
+      ],
       answers: { name: "Ada" },
       result: { action: "accept", content: { name: "Ada" } },
+    },
+    {
+      scenario: "returns typed content for a generic MCP form",
+      schema: {
+        type: "object",
+        properties: {
+          count: { type: "integer", title: "Count" },
+          plan: { type: "string", title: "Plan", oneOf: [{ const: "pro", title: "Pro" }] },
+          note: { type: "string", title: "Note" },
+        },
+        required: ["count", "plan"],
+      },
+      questions: [
+        {
+          id: "count",
+          header: "Count",
+          question: "Your answer?\n\nEnter a whole number.",
+          options: [],
+          required: true,
+          constraints: { type: "integer" as const },
+        },
+        {
+          id: "plan",
+          header: "Plan",
+          question: "Plan",
+          options: [{ label: "Pro", description: "Pro" }],
+          allowCustomAnswer: false,
+          required: true,
+        },
+        { id: "note", header: "Note (optional)", question: "Note", options: [], required: false },
+      ],
+      answers: { count: "3", plan: "Pro" },
+      result: { action: "accept", content: { count: 3, plan: "pro" } },
     },
   ])("Droid elicitation $scenario", ({ schema, questions, answers, result, withAttachments }) =>
     Effect.gen(function* () {

@@ -302,3 +302,187 @@ it.effect.each([
     ),
   ),
 );
+
+it.effect.each(["answer", "dismiss"] as const)(
+  "collects a Claude MCP form as a question and returns typed content after %s",
+  (resolution) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const cwd = yield* checkpointWorkspace("claude-mcp-elicitation-form");
+        const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+        const callback = yield* Deferred.make<OnElicitation>();
+        // @effect-diagnostics-next-line abortControllerInEffect:off - The fixture owns the SDK signal.
+        const sdkAbort = new AbortController();
+        const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+          instanceId: modelSelection.instanceId,
+          settings,
+          environment: {},
+          attachmentsDir: cwd,
+          fileSystem: yield* FileSystem.FileSystem,
+          path: yield* Path.Path,
+          crypto: yield* Crypto.Crypto,
+          idAllocator: yield* IdAllocator.IdAllocatorV2,
+          queryRunner: {
+            allocateSessionId: Effect.succeed("elicitation-form-session"),
+            open: ({ options }) =>
+              Effect.gen(function* () {
+                if (options.onElicitation === undefined) {
+                  return yield* Effect.die("Claude must install onElicitation in full access");
+                }
+                yield* Deferred.succeed(callback, options.onElicitation);
+                return {
+                  messages: Stream.fromQueue(sdkMessages),
+                  offer: () => Effect.void,
+                  setModel: () => Effect.void,
+                  applyFlagSettings: () => Effect.void,
+                  setPermissionMode: () => Effect.void,
+                  backgroundTasks: () => Effect.succeed(false),
+                  stopTask: () => Effect.void,
+                  interrupt: Effect.void,
+                  close: Queue.shutdown(sdkMessages),
+                };
+              }),
+            forkSession: () => Effect.die("unused"),
+            subagentLaunchToolUseId: () => Effect.succeed(null),
+            assertComplete: Effect.void,
+          },
+        });
+
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const threadId = ThreadId.make("thread:claude-mcp-elicitation-form");
+          const watch = (predicate: (event: OrchestrationV2DomainEvent) => boolean) =>
+            orchestrator.streamStoredEventsFrom({ threadId, afterSequence: 0 }).pipe(
+              Stream.map(({ event }) => event),
+              Stream.filter(predicate),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make("create"),
+            threadId,
+            projectId: ProjectId.make("project:claude-mcp-elicitation-form"),
+            title: "MCP form",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+            createdBy: "user",
+            creationSource: "web",
+          });
+          const running = yield* watch(
+            (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
+          );
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make("start"),
+            threadId,
+            messageId: MessageId.make("start"),
+            text: "Create my profile.",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+          yield* worker.drain();
+          yield* Fiber.join(running);
+          const onElicitation = yield* Deferred.await(callback);
+          const pending = yield* watch(
+            (event) =>
+              event.type === "turn-item.updated" &&
+              event.payload.type === "user_input_request" &&
+              event.payload.status === "waiting",
+          );
+          const response = yield* Effect.promise(() =>
+            onElicitation(
+              {
+                serverName: "skald",
+                message: "Create a profile",
+                requestedSchema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string", title: "Name" },
+                    age: { type: "integer", title: "Age", minimum: 1 },
+                  },
+                  required: ["name", "age"],
+                },
+              },
+              { requestId: "elicitation-form-1", signal: sdkAbort.signal },
+            ),
+          ).pipe(Effect.forkScoped);
+          yield* Fiber.join(pending);
+          const before = yield* orchestrator.getThreadProjection(threadId);
+          const request = before.runtimeRequests[0]!;
+          const item = before.turnItems.find((item) => item.type === "user_input_request");
+          assert.equal(request.kind, "user_input");
+          assert.deepEqual(request.responseCapability, {
+            type: "live",
+            providerSessionId: before.providerSessions[0]!.id,
+            dismissible: true,
+          });
+          assert.deepEqual(
+            item?.type === "user_input_request" ? item.questions.map((q) => q.question) : [],
+            ["skald asks: Create a profile", "Enter a whole number of at least 1."],
+          );
+
+          if (resolution === "answer") {
+            const invalid = yield* orchestrator
+              .dispatch({
+                type: "runtime-request.respond",
+                commandId: CommandId.make("respond-invalid"),
+                threadId,
+                requestId: request.id,
+                answers: { name: "Ada", age: "forty" },
+              })
+              .pipe(Effect.flip);
+            assert.equal(invalid._tag, "OrchestratorDispatchError");
+            assert.equal(
+              (yield* orchestrator.getThreadProjection(threadId)).runtimeRequests[0]?.status,
+              "pending",
+            );
+            yield* orchestrator.dispatch({
+              type: "runtime-request.respond",
+              commandId: CommandId.make("respond"),
+              threadId,
+              requestId: request.id,
+              answers: { name: "Ada", age: "42" },
+            });
+          } else {
+            yield* orchestrator.dispatch({
+              type: "thread.user-input.dismiss",
+              commandId: CommandId.make("dismiss"),
+              threadId,
+              requestId: request.id,
+            });
+          }
+          yield* worker.drain();
+          assert.deepEqual(
+            yield* Fiber.join(response),
+            resolution === "answer"
+              ? { action: "accept", content: { name: "Ada", age: 42 } }
+              : { action: "cancel" },
+          );
+          const after = yield* orchestrator.getThreadProjection(threadId);
+          assert.isEmpty(
+            after.runtimeRequests.filter((candidate) => candidate.status === "pending"),
+          );
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              { name: "claude-mcp-elicitation-form" },
+              ProviderAdapterRegistry.layerSingle(adapter),
+              { runEffectWorker: false },
+            ),
+          ),
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    ),
+);

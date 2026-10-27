@@ -247,6 +247,25 @@ describe("pending user input question progress", () => {
   });
 });
 
+it("lets optional questions stay blank without skipping required ones", () => {
+  const questions = [
+    { ...singleSelectQuestion, required: false },
+    { id: "name", header: "Name", question: "Your name?", options: [], multiSelect: false },
+  ];
+  const progress = derivePendingUserInputProgress(questions, {}, 0);
+  expect(progress).toMatchObject({ canAdvance: true, isComplete: false });
+  expect(findFirstUnansweredPendingUserInputQuestionIndex(questions, {})).toBe(1);
+  expect(buildPendingUserInputAnswers(questions, { name: { customAnswer: "Ada" } })).toEqual({
+    name: "Ada",
+  });
+  expect(
+    buildPendingUserInputAnswers(questions, {
+      scope: { attachmentCount: 1, attachmentsBlocked: true },
+      name: { customAnswer: "Ada" },
+    }),
+  ).toBeNull();
+});
+
 it("accepts attachment-only answers after every upload finishes", () => {
   const questions = [
     { id: "spec", header: "Spec", question: "Provide a spec", options: [], multiSelect: false },

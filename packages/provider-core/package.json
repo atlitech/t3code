@@ -71,6 +71,10 @@
       "types": "./src/server/mcpSession.ts",
       "import": "./src/server/mcpSession.ts"
     },
+    "./server/mcpElicitationForm": {
+      "types": "./src/server/mcpElicitationForm.ts",
+      "import": "./src/server/mcpElicitationForm.ts"
+    },
     "./server/mcpToolPresentation": {
       "types": "./src/server/mcpToolPresentation.ts",
       "import": "./src/server/mcpToolPresentation.ts"

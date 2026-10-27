@@ -55,6 +55,9 @@ const McpElicitationForm = Schema.Struct({
 const isMcpElicitationMetadata = Schema.is(McpElicitationMetadata);
 const isMcpElicitationForm = Schema.is(McpElicitationForm);
 
+// Match complete wire values, never substrings such as "disallow".
+const acceptChoice = /^(?:once|(?:allow|accept|approve)(?:[ _-]?once)?)$/i;
+
 type McpElicitationPersistenceDecision = Extract<
   ProviderApprovalDecision,
   "acceptForSession" | "acceptAlways"
@@ -102,6 +105,19 @@ function isMcpElicitationPersistenceField(
     key.toLowerCase() === "persist" ||
     mcpElicitationPersistenceDecision(field.title ?? "") !== null ||
     mcpElicitationPersistenceDecision(field.description ?? "") !== null
+  );
+}
+
+/** Fields other than approval choices and persistence switches are real input for a form. */
+export function mcpElicitationNeedsForm(
+  payload: EffectCodexSchema.McpServerElicitationRequestParams,
+): boolean {
+  if (payload.mode !== "form") return false;
+  return Object.entries(mcpElicitationFormFields(payload)?.properties ?? {}).some(
+    ([key, field]) =>
+      // Persistence values alone, such as ["always", "never"], are ordinary choices.
+      !mcpElicitationFieldOptions(field).some((option) => acceptChoice.test(option.value)) &&
+      !(field.type === "boolean" && isMcpElicitationPersistenceField(key, field)),
   );
 }
 
@@ -196,8 +212,7 @@ export function toMcpElicitationResponse(
     const chosenOption = options.find((option) =>
       persist
         ? mcpElicitationPersistenceDecision(option.value) === decision
-        : /once|accept|approve|allow/i.test(option.value) &&
-          mcpElicitationPersistenceDecision(option.value) === null,
+        : acceptChoice.test(option.value),
     );
     if (chosenOption) {
       content[key] = chosenOption.value;

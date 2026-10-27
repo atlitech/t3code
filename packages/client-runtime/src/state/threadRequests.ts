@@ -244,7 +244,11 @@ export function derivePendingThreadRequests(
           multiSelect: question.multiSelect ?? false,
         })),
         responseCapability,
-        dismissible: item.responseMode === "message" || responseCapability === "message",
+        dismissible:
+          item.responseMode === "message" ||
+          responseCapability === "message" ||
+          (request.responseCapability.type === "live" &&
+            request.responseCapability.dismissible === true),
         ...(item.responseMode === "message" || responseCapability === "message"
           ? { responseMode: "message" as const }
           : {}),

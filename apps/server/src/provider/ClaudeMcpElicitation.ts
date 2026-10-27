@@ -89,11 +89,9 @@ export function resolveClaudeElicitationAcceptance(
       value = false;
     }
 
-    if (value !== undefined) {
-      entries.push([key, value]);
-    } else if (form.required?.includes(key)) {
-      return null;
-    }
+    // Any other field is real input, which belongs in the form rather than an approval card.
+    if (value === undefined) return null;
+    entries.push([key, value]);
   }
 
   const content = Object.fromEntries(entries);
