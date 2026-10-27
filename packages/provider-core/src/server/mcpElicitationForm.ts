@@ -4,9 +4,9 @@ import type {
   ProviderUserInputAnswers,
 } from "@t3tools/contracts";
 import {
+  breaksTextConstraints,
   describeUserInputConstraints,
   parseUserInputNumber,
-  userInputAnswerError,
 } from "@t3tools/shared/userInputConstraints";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -84,11 +84,7 @@ function fieldOptions(field: Field) {
   const valid =
     rules === undefined
       ? choices
-      : choices.filter(
-          (choice) =>
-            userInputAnswerError({ header: "", options: [], constraints: rules }, choice.wire) ===
-            null,
-        );
+      : choices.filter((choice) => !breaksTextConstraints(rules, choice.wire));
   const labels = valid.map(
     (choice, index) => text(choice.title) ?? text(choice.wire) ?? `Option ${index + 1}`,
   );
@@ -194,8 +190,10 @@ export function mcpElicitationForm(input: {
   const questions: Array<OrchestrationV2UserInputQuestion> = [];
   for (const [index, [key, field]] of fields.entries()) {
     const options = fieldOptions(field);
+    // Clients key answers by plain assignment, which cannot carry a "__proto__" field.
     if (
       text(key) !== key ||
+      key === "__proto__" ||
       (field.type === "array" && options === undefined) ||
       options?.length === 0
     ) {
@@ -238,7 +236,7 @@ export function mcpElicitationForm(input: {
   }
   return {
     questions,
-    // Own properties only, so a field named "__proto__" is read and written as data.
+    // Read own answers only, so a key like "constructor" never resolves to an inherited value.
     content: (answers) =>
       Object.fromEntries(
         fields.flatMap(([key, field]) => {

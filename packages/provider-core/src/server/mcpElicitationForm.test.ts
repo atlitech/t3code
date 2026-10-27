@@ -204,6 +204,14 @@ describe("mcpElicitationForm", () => {
     expect(
       mcpElicitationForm({ message: "Code", requestedSchema: schema(["toolong"]) }),
     ).toBeNull();
+    const blank = mcpElicitationForm({
+      message: "Code",
+      requestedSchema: {
+        type: "object",
+        properties: { code: { type: "string", enum: ["", "ab"], minLength: 1 } },
+      },
+    });
+    expect(blank?.questions[0]?.options.map((option) => option.label)).toEqual(["ab"]);
   });
 
   it("turns a form without fields into a confirmation that keeps the message", () => {
@@ -225,19 +233,6 @@ describe("mcpElicitationForm", () => {
     expect(form?.content({ confirm: "Continue" })).toEqual({});
   });
 
-  it("keeps a field named __proto__ as ordinary content", () => {
-    const form = mcpElicitationForm({
-      message: "Name",
-      requestedSchema: JSON.parse(
-        '{"type":"object","properties":{"__proto__":{"type":"string"}},"required":["__proto__"]}',
-      ),
-    });
-    const content = form?.content(JSON.parse('{"__proto__":"value"}'));
-    expect(content && Object.hasOwn(content, "__proto__")).toBe(true);
-    expect(content && Object.getPrototypeOf(content)).toBe(Object.prototype);
-    expect(JSON.stringify(content)).toBe('{"__proto__":"value"}');
-  });
-
   it("rejects schemas outside the flat MCP form subset", () => {
     for (const schema of [
       undefined,
@@ -245,6 +240,7 @@ describe("mcpElicitationForm", () => {
       { type: "object", properties: { nested: { type: "object" } } },
       { type: "object", properties: { list: { type: "array", items: { type: "string" } } } },
       { type: "object", properties: { " padded": { type: "string" } } },
+      JSON.parse('{"type":"object","properties":{"__proto__":{"type":"string"}}}'),
     ]) {
       expect(
         mcpElicitationForm({ requester: "Skald", message: "Hi", requestedSchema: schema }),

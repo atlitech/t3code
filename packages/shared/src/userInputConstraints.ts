@@ -134,12 +134,24 @@ export function userInputAnswerError(
       ? invalid
       : null;
   }
-  const value = constraints.format === undefined ? answer : answer.trim();
-  // JSON Schema counts string length in code points.
-  const length = [...value].length;
-  return (constraints.format !== undefined && !isValidFormat(constraints.format, value)) ||
-    (constraints.minLength !== undefined && length < constraints.minLength) ||
-    (constraints.maxLength !== undefined && length > constraints.maxLength)
+  return breaksTextConstraints(
+    constraints,
+    constraints.format === undefined ? answer : answer.trim(),
+  )
     ? invalid
     : null;
+}
+
+/** Checks a string exactly as given against format and length rules, blank values included. */
+export function breaksTextConstraints(
+  constraints: NonNullable<OrchestrationV2UserInputQuestion["constraints"]>,
+  value: string,
+): boolean {
+  // JSON Schema counts string length in code points.
+  const length = [...value].length;
+  return (
+    (constraints.format !== undefined && !isValidFormat(constraints.format, value)) ||
+    (constraints.minLength !== undefined && length < constraints.minLength) ||
+    (constraints.maxLength !== undefined && length > constraints.maxLength)
+  );
 }
