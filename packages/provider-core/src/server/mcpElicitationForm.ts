@@ -6,6 +6,7 @@ import type {
 import {
   describeUserInputConstraints,
   parseUserInputNumber,
+  userInputAnswerError,
 } from "@t3tools/shared/userInputConstraints";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -78,19 +79,33 @@ function fieldOptions(field: Field) {
     titled?.map((choice) => ({ wire: choice.const, title: choice.title })) ??
     values?.map((value, index) => ({ wire: value, title: field.enumNames?.[index] }));
   if (choices == null) return undefined;
-  const labels = choices.map(
+  // Offer only constants the field's own text rules accept.
+  const rules = field.type === "string" ? schemaConstraints(field) : undefined;
+  const valid =
+    rules === undefined
+      ? choices
+      : choices.filter(
+          (choice) =>
+            userInputAnswerError({ header: "", options: [], constraints: rules }, choice.wire) ===
+            null,
+        );
+  const labels = valid.map(
     (choice, index) => text(choice.title) ?? text(choice.wire) ?? `Option ${index + 1}`,
   );
   const unique = new Set(labels).size === labels.length;
-  return choices.map((choice, index) => ({
+  return valid.map((choice, index) => ({
     label: unique ? labels[index]! : `${labels[index]} (${choice.wire})`,
     wire: choice.wire,
   }));
 }
 
 function fieldConstraints(field: Field): OrchestrationV2UserInputAnswerConstraints | undefined {
-  // Choice answers are labels; option membership already bounds them, not the constants' text rules.
+  // Choice answers are labels, and the offered constants already satisfy these rules.
   if (field.type === "string" && fieldOptions(field) !== undefined) return undefined;
+  return schemaConstraints(field);
+}
+
+function schemaConstraints(field: Field): OrchestrationV2UserInputAnswerConstraints | undefined {
   const [min, max] =
     field.type === "string"
       ? [count(field.minLength), count(field.maxLength)]
@@ -179,7 +194,13 @@ export function mcpElicitationForm(input: {
   const questions: Array<OrchestrationV2UserInputQuestion> = [];
   for (const [index, [key, field]] of fields.entries()) {
     const options = fieldOptions(field);
-    if (text(key) !== key || (field.type === "array" && options === undefined)) return null;
+    if (
+      text(key) !== key ||
+      (field.type === "array" && options === undefined) ||
+      options?.length === 0
+    ) {
+      return null;
+    }
     const required = requiredKeys.has(key) && !acceptsEmptyList(key, field);
     const header = text(field.title) ?? key;
     const constraints = fieldConstraints(field);
@@ -202,6 +223,17 @@ export function mcpElicitationForm(input: {
       ...(initialAnswer === undefined ? {} : { initialAnswer }),
       required,
       ...(constraints === undefined ? {} : { constraints }),
+    });
+  }
+  if (fields.length === 0) {
+    // A form without fields is a confirmation; dismissing it sends MCP cancel.
+    questions.push({
+      id: "confirm",
+      header: text(input.requester) ?? "Confirm",
+      question: lead || "Continue?",
+      options: [{ label: "Continue", description: "Continue" }],
+      allowCustomAnswer: false,
+      required: true,
     });
   }
   return {

@@ -5281,7 +5281,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 : undefined;
             if (
               form === null ||
-              form?.questions.length === 0 ||
               (form === undefined &&
                 toMcpElicitationResponse(payload, "accept").action !== "accept")
             ) {

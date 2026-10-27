@@ -9412,7 +9412,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const accept =
             acceptance !== null
               ? () => acceptance
-              : form !== null && form.questions.length > 0
+              : form !== null
                 ? (answers: ProviderUserInputAnswers): ElicitationResult => ({
                     action: "accept",
                     content: form.content(answers),

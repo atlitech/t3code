@@ -191,6 +191,40 @@ describe("mcpElicitationForm", () => {
     });
   });
 
+  it("offers only constants that satisfy the field's own text rules", () => {
+    const schema = (enumValues: Array<string>) => ({
+      type: "object",
+      properties: { code: { type: "string", enum: enumValues, maxLength: 2 } },
+    });
+    const form = mcpElicitationForm({
+      message: "Code",
+      requestedSchema: schema(["ab", "toolong"]),
+    });
+    expect(form?.questions[0]?.options.map((option) => option.label)).toEqual(["ab"]);
+    expect(
+      mcpElicitationForm({ message: "Code", requestedSchema: schema(["toolong"]) }),
+    ).toBeNull();
+  });
+
+  it("turns a form without fields into a confirmation that keeps the message", () => {
+    const form = mcpElicitationForm({
+      requester: "Skald",
+      message: "Publish the review?",
+      requestedSchema: { type: "object" },
+    });
+    expect(form?.questions).toEqual([
+      {
+        id: "confirm",
+        header: "Skald",
+        question: "Skald asks: Publish the review?",
+        options: [{ label: "Continue", description: "Continue" }],
+        allowCustomAnswer: false,
+        required: true,
+      },
+    ]);
+    expect(form?.content({ confirm: "Continue" })).toEqual({});
+  });
+
   it("rejects schemas outside the flat MCP form subset", () => {
     for (const schema of [
       undefined,
