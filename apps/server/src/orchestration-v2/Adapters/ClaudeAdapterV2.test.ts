@@ -3174,10 +3174,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             { ...mcpApproval, mode: "url" as const, url: "https://example.com/authorize" },
             {
               ...mcpApproval,
+              // Nested objects are outside the flat form schemas MCP allows.
               requestedSchema: {
                 type: "object",
-                properties: { name: { type: "string" } },
-                required: ["name"],
+                properties: { profile: { type: "object" } },
+                required: ["profile"],
               },
             },
           ]) {

@@ -98,23 +98,17 @@ describe("Claude MCP approval-only forms", () => {
     }
   });
 
-  it("omits optional input and defaults but declines required input it cannot collect", () => {
-    NodeAssert.deepStrictEqual(acceptField({ type: "string", format: "email" }, false), {
-      action: "accept",
-      content: {},
-    });
+  it("leaves required and optional input fields to the form", () => {
     for (const field of [
       { type: "string", format: "email" },
       { type: "number", default: 42 },
       { type: "boolean", default: true },
+      { type: "string", default: "always" },
+      { type: "string", default: "once" },
     ]) {
       NodeAssert.equal(acceptField(field), null);
+      NodeAssert.equal(acceptField(field, false), null);
     }
-    NodeAssert.deepStrictEqual(acceptField({ type: "string", default: "always" }, false), {
-      action: "accept",
-      content: {},
-    });
-    NodeAssert.equal(acceptField({ type: "string", default: "once" }), null);
   });
 
   it("opts out of explicit persistence switches but does not guess arbitrary boolean semantics", () => {

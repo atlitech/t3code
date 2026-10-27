@@ -64,6 +64,7 @@ import type {
   OrchestrationV2RuntimeRequest,
   OrchestrationV2Subagent,
   OrchestrationV2TurnItem,
+  OrchestrationV2UserInputQuestion,
   ProviderUserInputAnswers,
   ProviderApprovalDecision,
   ProviderApprovalOption,
@@ -104,8 +105,10 @@ import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import { buildCodexAdditionalContext } from "../../provider/CodexDeveloperInstructions.ts";
 import {
   describeMcpElicitation,
+  mcpElicitationNeedsForm,
   toMcpElicitationResponse,
 } from "../../provider/CodexMcpElicitation.ts";
+import { mcpElicitationForm } from "@t3tools/provider-core/server/mcpElicitationForm";
 import {
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
@@ -1247,7 +1250,28 @@ type PendingCodexRuntimeRequest =
       readonly type: "user_input";
       readonly requestId: RuntimeRequestId;
       readonly answers: Deferred.Deferred<ProviderUserInputAnswers, never>;
+    }
+  | {
+      readonly type: "elicitation_form";
+      readonly requestId: RuntimeRequestId;
+      // Null when the user dismisses the form.
+      readonly answers: Deferred.Deferred<ProviderUserInputAnswers | null, never>;
     };
+
+function codexUserInputQuestions(
+  questions: ReadonlyArray<CodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion>,
+): ReadonlyArray<OrchestrationV2UserInputQuestion> {
+  return questions.map((question, index) => ({
+    id: nonEmptyText(question.id, `question-${index + 1}`),
+    header: nonEmptyText(question.header, "Question"),
+    question: nonEmptyText(question.question, "Choose an answer."),
+    options:
+      question.options?.map((option, optionIndex) => ({
+        label: nonEmptyText(option.label, `Option ${optionIndex + 1}`),
+        description: nonEmptyText(option.description, option.label),
+      })) ?? [],
+  }));
+}
 
 type CodexWebSearchItem = {
   readonly id: string;
@@ -4078,8 +4102,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           readonly context: ActiveCodexTurnContext;
           readonly nativeItemId: string;
           readonly nativeRequestId: string;
-          readonly questions: ReadonlyArray<CodexSchema.ToolRequestUserInputParams__ToolRequestUserInputQuestion>;
+          readonly questions: ReadonlyArray<OrchestrationV2UserInputQuestion>;
           readonly responseMode?: "message";
+          readonly dismissible?: boolean;
         }) {
           const createdAt = yield* DateTime.now;
           const requestId = yield* idAllocator.allocate.runtimeRequest({
@@ -4093,16 +4118,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               `Provider thread ${input.context.providerThread.id} is missing a provider session id.`,
             );
           }
-          const questions = input.questions.map((question, index) => ({
-            id: nonEmptyText(question.id, `question-${index + 1}`),
-            header: nonEmptyText(question.header, "Question"),
-            question: nonEmptyText(question.question, "Choose an answer."),
-            options:
-              question.options?.map((option, optionIndex) => ({
-                label: nonEmptyText(option.label, `Option ${optionIndex + 1}`),
-                description: nonEmptyText(option.description, option.label),
-              })) ?? [],
-          }));
           const nodeId = idAllocator.derive.nodeFromProviderItem({
             driver: CODEX_PROVIDER,
             nativeItemId: input.nativeItemId,
@@ -4143,7 +4158,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             responseCapability:
               input.responseMode === "message"
                 ? { type: "message" }
-                : { type: "live", providerSessionId },
+                : {
+                    type: "live",
+                    providerSessionId,
+                    ...(input.dismissible ? { dismissible: true } : {}),
+                  },
             createdAt,
             resolvedAt: null,
           };
@@ -4164,7 +4183,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             updatedAt: createdAt,
             type: "user_input_request",
             requestId,
-            questions,
+            questions: [...input.questions],
             ...(input.responseMode === undefined ? {} : { responseMode: input.responseMode }),
           };
           return { node, request, turnItem };
@@ -4958,12 +4977,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 nativeItemId: payload.item.id,
                 nativeRequestId: `async:${payload.item.id}`,
                 responseMode: "message",
-                questions: payload.item.questions.map((question, index) => ({
-                  id: String(index),
-                  header: "Question",
-                  question: question.title,
-                  options: (question.options ?? []).map((label) => ({ label, description: "" })),
-                })),
+                questions: codexUserInputQuestions(
+                  payload.item.questions.map((question, index) => ({
+                    id: String(index),
+                    header: "Question",
+                    question: question.title,
+                    options: (question.options ?? []).map((label) => ({ label, description: "" })),
+                  })),
+                ),
               });
               yield* emitProviderEvent({
                 type: "node.updated",
@@ -5250,7 +5271,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
 
         yield* client.handleServerRequest("mcpServer/elicitation/request", (payload) =>
           Effect.gen(function* () {
-            if (toMcpElicitationResponse(payload, "accept").action !== "accept") {
+            const form =
+              payload.mode === "form" && mcpElicitationNeedsForm(payload)
+                ? mcpElicitationForm({
+                    requester: describeMcpElicitation(payload).appName,
+                    message: payload.message,
+                    requestedSchema: payload.requestedSchema,
+                  })
+                : undefined;
+            if (
+              form === null ||
+              (form === undefined &&
+                toMcpElicitationResponse(payload, "accept").action !== "accept")
+            ) {
               yield* Effect.logWarning("Declined an unsupported MCP elicitation.", {
                 serverName: payload.serverName,
                 mode: payload.mode,
@@ -5271,6 +5304,56 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               return {
                 action: "decline",
               } satisfies CodexSchema.McpServerElicitationRequestResponse;
+            }
+
+            if (form !== undefined) {
+              const nativeRequestId = `mcp-elicitation:${payload.serverName}:${yield* crypto.randomUUIDv4()}`;
+              const artifacts = yield* buildUserInputRequestArtifacts({
+                context,
+                nativeItemId: nativeRequestId,
+                nativeRequestId,
+                questions: form.questions,
+                dismissible: true,
+              });
+              const answers = yield* Deferred.make<ProviderUserInputAnswers | null, never>();
+              yield* Ref.update(pendingRuntimeRequests, (current) =>
+                new Map(current).set(String(artifacts.request.id), {
+                  type: "elicitation_form",
+                  requestId: artifacts.request.id,
+                  answers,
+                }),
+              );
+              yield* emitProviderEvent({
+                type: "node.updated",
+                driver: CODEX_PROVIDER,
+                node: artifacts.node,
+              });
+              yield* emitProviderEvent({
+                type: "turn_item.updated",
+                driver: CODEX_PROVIDER,
+                turnItem: artifacts.turnItem,
+              });
+              yield* emitProviderEvent({
+                type: "runtime_request.updated",
+                driver: CODEX_PROVIDER,
+                threadId: artifacts.node.threadId,
+                runtimeRequest: artifacts.request,
+              });
+              const resolved = yield* Deferred.await(answers).pipe(
+                Effect.ensuring(
+                  Ref.update(pendingRuntimeRequests, (current) => {
+                    const updated = new Map(current);
+                    updated.delete(String(artifacts.request.id));
+                    return updated;
+                  }),
+                ),
+              );
+              return resolved === null
+                ? ({ action: "cancel" } satisfies CodexSchema.McpServerElicitationRequestResponse)
+                : ({
+                    action: "accept",
+                    content: form.content(resolved),
+                  } satisfies CodexSchema.McpServerElicitationRequestResponse);
             }
 
             const nativeRequestId =
@@ -5481,7 +5564,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               context,
               nativeItemId: payload.itemId,
               nativeRequestId: payload.itemId,
-              questions: payload.questions,
+              questions: codexUserInputQuestions(payload.questions),
             });
             const answers = yield* Deferred.make<ProviderUserInputAnswers, never>();
             yield* Ref.update(pendingRuntimeRequests, (current) => {
@@ -7236,6 +7319,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   });
                 }
                 yield* Deferred.succeed(pending.answers, requestInput.answers);
+                return;
+              }
+              if (pending.type === "elicitation_form") {
+                yield* Deferred.succeed(pending.answers, requestInput.answers ?? null);
                 return;
               }
               if (requestInput.decision === undefined) {

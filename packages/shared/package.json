@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./userInputConstraints": {
+      "types": "./src/userInputConstraints.ts",
+      "import": "./src/userInputConstraints.ts"
+    },
     "./changedFileKind": {
       "types": "./src/changedFileKind.ts",
       "import": "./src/changedFileKind.ts"

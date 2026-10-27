@@ -1369,6 +1369,21 @@ describe("subagent continued by a later turn", () => {
 });
 
 describe("pending user input answers", () => {
+  it("lets optional questions stay blank without skipping required ones", () => {
+    const optional = { ...singleSelectQuestion, id: "optional", required: false };
+    expect(buildPendingUserInputAnswers([optional, singleSelectQuestion], {})).toBeNull();
+    expect(
+      buildPendingUserInputAnswers([optional, singleSelectQuestion], {
+        runtime: { customAnswer: "Go" },
+      }),
+    ).toEqual({ runtime: "Go" });
+    expect(
+      buildPendingUserInputAnswers([optional], {
+        optional: { attachmentCount: 1, attachmentsBlocked: true },
+      }),
+    ).toBeNull();
+  });
+
   it("preserves exact editor text, including a deliberately cleared answer", () => {
     const question = { ...singleSelectQuestion, initialAnswer: "  Proposed message\n" };
     expect(

@@ -343,7 +343,7 @@ it.effect(
           lastError: null,
         },
       });
-      for (const mode of ["live", "message"] as const) {
+      for (const [index, mode] of (["live", "dismissible", "message"] as const).entries()) {
         const requestId = RuntimeRequestId.make(`request:${mode}`);
         yield* projections.apply({
           id: EventId.make(`request:${mode}`),
@@ -358,9 +358,13 @@ it.effect(
             kind: "user_input",
             status: "pending",
             responseCapability:
-              mode === "live"
-                ? { type: "live", providerSessionId: sessionId }
-                : { type: "message" },
+              mode === "message"
+                ? { type: "message" }
+                : {
+                    type: "live",
+                    providerSessionId: sessionId,
+                    ...(mode === "dismissible" ? { dismissible: true } : {}),
+                  },
             createdAt: now,
             resolvedAt: null,
           },
@@ -403,7 +407,7 @@ it.effect(
             providerTurnId: null,
             nativeItemRef: null,
             parentItemId: null,
-            ordinal: mode === "live" ? 1 : 2,
+            ordinal: index + 1,
             status: "waiting",
             title: null,
             startedAt: now,
@@ -444,6 +448,17 @@ it.effect(
             assert.equal(yield* orchestrator.getThreadEventSequence(threadId), sequence);
             assert.deepEqual(yield* outbox.listByCommandId(commandId), []);
           }
+          const dismissal = yield* orchestrator
+            .dispatch({
+              type: "thread.user-input.dismiss",
+              commandId: CommandId.make("dismiss-live"),
+              threadId,
+              requestId,
+            })
+            .pipe(Effect.result);
+          assert.isTrue(Result.isFailure(dismissal));
+          assert.equal(yield* orchestrator.getThreadEventSequence(threadId), sequence);
+          assert.deepEqual(yield* outbox.listByCommandId(CommandId.make("dismiss-live")), []);
         }
         yield* orchestrator.dispatch(
           mode === "live"
@@ -483,6 +498,20 @@ it.effect(
                 providerSessionId: sessionId,
                 requestId,
                 answers: normalizedAnswers,
+              },
+            ],
+          );
+        }
+        if (mode === "dismissible") {
+          const effects = yield* outbox.listByCommandId(CommandId.make(`respond:${mode}`));
+          assert.deepEqual(
+            effects.map((effect) => effect.request),
+            [
+              {
+                type: "runtime-request.respond",
+                providerSessionId: sessionId,
+                requestId,
+                decision: "cancel",
               },
             ],
           );

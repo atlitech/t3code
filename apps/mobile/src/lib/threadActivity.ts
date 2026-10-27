@@ -2019,11 +2019,14 @@ export function buildPendingUserInputAnswers(
   const answers: Record<string, string | ReadonlyArray<string>> = {};
 
   for (const question of questions) {
-    const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
-    if (answer === null) {
+    const draft = draftAnswers[question.id];
+    const answer = resolvePendingUserInputAnswer(question, draft);
+    if (answer !== null) {
+      answers[question.id] = answer;
+    } else if (question.required !== false || draft?.attachmentsBlocked) {
+      // Optional questions may stay blank, unless an attachment upload still blocks them.
       return null;
     }
-    answers[question.id] = answer;
   }
 
   return answers;

@@ -21,9 +21,11 @@ import {
 
 import { isWorkspaceImagePreviewPath } from "@t3tools/shared/filePreview";
 import { resolveClaudeElicitationAcceptance } from "../../provider/ClaudeMcpElicitation.ts";
+import { mcpElicitationForm } from "@t3tools/provider-core/server/mcpElicitationForm";
 import { normalizeClaudeTurnTokenUsage } from "../../provider/ClaudeTurnTokenUsage.ts";
 import {
   type CanUseTool,
+  type ElicitationResult,
   type OnElicitation,
   forkSession as forkClaudeSession,
   type EffortLevel,
@@ -3968,6 +3970,7 @@ function rememberClaudeSubagentLaunch(
 type ClaudeApprovalResponse = {
   readonly decision: ProviderApprovalDecision;
   readonly feedback?: string;
+  readonly answers?: ProviderUserInputAnswers;
 };
 
 type PendingClaudeRuntimeRequest =
@@ -6852,6 +6855,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           readonly parentNodeId?: OrchestrationV2ExecutionNode["id"];
           readonly appName?: string;
           readonly options?: ReadonlyArray<ProviderApprovalOption>;
+          readonly dismissible?: boolean;
         }) {
           const createdAt = yield* DateTime.now;
           const requestId = yield* idAllocator.allocate.runtimeRequest({
@@ -6913,6 +6917,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               type: "live",
               providerSessionId,
               ...(input.questions === undefined ? { supportsFeedback: true } : {}),
+              ...(input.dismissible ? { dismissible: true } : {}),
             },
             createdAt,
             resolvedAt: null,
@@ -6953,7 +6958,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const settleElicitation = Effect.fnUntraced(function* (
           requestId: OrchestrationV2RuntimeRequest["id"],
-          decision: ProviderApprovalDecision,
+          response: ClaudeApprovalResponse,
           publishCancellation = true,
         ) {
           const pending = yield* Ref.modify(pendingRuntimeRequests, (current) => {
@@ -6981,7 +6986,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               runtimeRequest: {
                 ...pending.request,
                 status: "cancelled",
-                decision,
+                decision: response.decision,
                 resolvedAt: completedAt,
               },
             });
@@ -6991,7 +6996,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               turnItem: { ...pending.turnItem, status, completedAt, updatedAt: completedAt },
             });
           }
-          yield* Deferred.succeed(pending.decision, { decision });
+          yield* Deferred.succeed(pending.decision, response);
         }, elicitationPermit.withPermit);
 
         const cancelElicitations = Effect.fnUntraced(function* (
@@ -7013,7 +7018,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               pending.type === "elicitation" &&
               (providerTurnId === undefined || pending.request.providerTurnId === providerTurnId)
             ) {
-              yield* settleElicitation(pending.requestId, "cancel");
+              yield* settleElicitation(pending.requestId, { decision: "cancel" });
             }
           }
         });
@@ -9393,8 +9398,27 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           request: Parameters<OnElicitation>[0],
           callbackOptions: Parameters<OnElicitation>[1],
         ) {
+          const appName =
+            request.displayName?.trim() || request.title?.trim() || request.serverName;
           const acceptance = resolveClaudeElicitationAcceptance(request);
-          if (acceptance === null) return { action: "decline" as const };
+          const form =
+            acceptance === null && request.mode !== "url" && request.url === undefined
+              ? mcpElicitationForm({
+                  requester: appName,
+                  message: request.message,
+                  requestedSchema: request.requestedSchema,
+                })
+              : null;
+          const accept =
+            acceptance !== null
+              ? () => acceptance
+              : form !== null
+                ? (answers: ProviderUserInputAnswers): ElicitationResult => ({
+                    action: "accept",
+                    content: form.content(answers),
+                  })
+                : null;
+          if (accept === null) return { action: "decline" as const };
           const context = yield* Ref.get(activeTurn);
           if (context === null) return { action: "decline" as const };
           if (callbackOptions.signal.aborted) return { action: "cancel" as const };
@@ -9415,14 +9439,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               nativeItemId: nativeRequestId,
               nativeRequestId,
               parentNodeId: context.input.rootNodeId,
-              requestKind: "mcp-elicitation",
-              prompt: request.message,
-              appName: request.displayName?.trim() || request.title?.trim() || request.serverName,
-              options: [
-                { decision: "accept", label: "Approve once" },
-                { decision: "decline", label: "Decline" },
-                { decision: "cancel", label: "Cancel" },
-              ],
+              ...(acceptance === null && form !== null
+                ? { requestKind: "user_input", questions: form.questions, dismissible: true }
+                : {
+                    requestKind: "mcp-elicitation",
+                    prompt: request.message,
+                    appName,
+                    options: [
+                      { decision: "accept", label: "Approve once" },
+                      { decision: "decline", label: "Decline" },
+                      { decision: "cancel", label: "Cancel" },
+                    ],
+                  }),
             });
             const decision = yield* Deferred.make<ClaudeApprovalResponse>();
             if (
@@ -9463,15 +9491,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (pending === null) return { action: "cancel" as const };
           const { artifacts, decision } = pending;
           return yield* Effect.gen(function* () {
-            const { decision: resolved } = yield* awaitClaudeApprovalDecision(
-              decision,
-              callbackOptions.signal,
-            );
-            yield* settleElicitation(artifacts.request.id, resolved);
-            return resolved === "accept"
-              ? acceptance
-              : { action: resolved === "decline" ? ("decline" as const) : ("cancel" as const) };
-          }).pipe(Effect.ensuring(settleElicitation(artifacts.request.id, "cancel")));
+            const response = yield* awaitClaudeApprovalDecision(decision, callbackOptions.signal);
+            yield* settleElicitation(artifacts.request.id, response);
+            return response.decision === "accept"
+              ? accept(response.answers ?? {})
+              : {
+                  action:
+                    response.decision === "decline" ? ("decline" as const) : ("cancel" as const),
+                };
+          }).pipe(Effect.ensuring(settleElicitation(artifacts.request.id, { decision: "cancel" })));
         });
         const onElicitation: OnElicitation = (request, callbackOptions) =>
           runPromise(onElicitationEffect(request, callbackOptions));
@@ -11016,7 +11044,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 return;
               }
               if (pending.type === "elicitation") {
-                const decision = requestInput.decision;
+                // Form answers arrive without a decision; supplying them accepts the form.
+                const decision =
+                  requestInput.decision ??
+                  (requestInput.answers === undefined ? undefined : "accept");
                 if (decision !== "accept" && decision !== "decline" && decision !== "cancel") {
                   return yield* new ProviderAdapter.ProviderAdapterRuntimeRequestResponseError({
                     driver: CLAUDE_PROVIDER,
@@ -11027,7 +11058,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     }),
                   });
                 }
-                yield* settleElicitation(pending.requestId, decision, false);
+                yield* settleElicitation(
+                  pending.requestId,
+                  {
+                    decision,
+                    ...(requestInput.answers === undefined
+                      ? {}
+                      : { answers: requestInput.answers }),
+                  },
+                  false,
+                );
                 return;
               }
               if (requestInput.decision === undefined) {

@@ -69,6 +69,7 @@ import {
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
+import { userInputAnswerError } from "@t3tools/shared/userInputConstraints";
 import {
   derivePendingBackgroundWork,
   pendingBackgroundTurnItems,
@@ -8203,12 +8204,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       let answers = command.answers;
       if (runtimeRequest.kind === "user_input" && answers !== undefined) {
         const decoded = yield* decodeUserInputAnswers(answers).pipe(mapDispatchError(command));
-        answers = Object.fromEntries(
+        const normalized = Object.fromEntries(
           Object.entries(decoded).map(([questionId, answer]) => [
             questionId,
             typeof answer === "object" && "answers" in answer ? answer.answers : answer,
           ]),
         );
+        const questions = context.item?.type === "user_input_request" ? context.item.questions : [];
+        for (const question of questions) {
+          const error = userInputAnswerError(question, normalized[question.id]);
+          if (error !== null) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: error,
+            });
+          }
+        }
+        answers = normalized;
       }
 
       const now = yield* DateTime.now;
@@ -8535,7 +8548,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           cause: "This question has already been answered.",
         });
       }
-      if (request.kind !== "user_input" || request.responseCapability.type !== "message") {
+      const capability = request.responseCapability;
+      if (
+        request.kind !== "user_input" ||
+        (capability.type !== "message" && !(capability.type === "live" && capability.dismissible))
+      ) {
         return yield* new OrchestratorDispatchError({
           commandId: command.commandId,
           commandType: command.type,

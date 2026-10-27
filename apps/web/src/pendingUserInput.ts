@@ -153,18 +153,30 @@ export function togglePendingUserInputOptionSelection(
   };
 }
 
+type PendingUserInputQuestion = UserInputQuestion & { readonly required?: boolean | undefined };
+
+/** Optional questions may stay blank, unless an attachment upload is still blocking them. */
+function isPendingUserInputQuestionUnresolved(
+  question: PendingUserInputQuestion,
+  draft: PendingUserInputDraftAnswer | undefined,
+): boolean {
+  return (
+    resolvePendingUserInputAnswer(question, draft) === null &&
+    (question.required !== false || draft?.attachmentsBlocked === true)
+  );
+}
+
 export function buildPendingUserInputAnswers(
-  questions: ReadonlyArray<UserInputQuestion>,
+  questions: ReadonlyArray<PendingUserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
 ): Record<string, string | string[]> | null {
   const answers: Record<string, string | string[]> = {};
 
   for (const question of questions) {
-    const answer = resolvePendingUserInputAnswer(question, draftAnswers[question.id]);
-    if (answer === null) {
-      return null;
-    }
-    answers[question.id] = answer;
+    const draft = draftAnswers[question.id];
+    if (isPendingUserInputQuestionUnresolved(question, draft)) return null;
+    const answer = resolvePendingUserInputAnswer(question, draft);
+    if (answer !== null) answers[question.id] = answer;
   }
 
   return answers;
@@ -182,18 +194,18 @@ function countAnsweredPendingUserInputQuestions(
 }
 
 export function findFirstUnansweredPendingUserInputQuestionIndex(
-  questions: ReadonlyArray<UserInputQuestion>,
+  questions: ReadonlyArray<PendingUserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
 ): number {
-  const unansweredIndex = questions.findIndex(
-    (question) => resolvePendingUserInputAnswer(question, draftAnswers[question.id]) === null,
+  const unansweredIndex = questions.findIndex((question) =>
+    isPendingUserInputQuestionUnresolved(question, draftAnswers[question.id]),
   );
 
   return unansweredIndex === -1 ? Math.max(questions.length - 1, 0) : unansweredIndex;
 }
 
 export function derivePendingUserInputProgress(
-  questions: ReadonlyArray<UserInputQuestion>,
+  questions: ReadonlyArray<PendingUserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
   questionIndex: number,
 ): PendingUserInputProgress {
@@ -222,6 +234,7 @@ export function derivePendingUserInputProgress(
     answeredQuestionCount,
     isLastQuestion,
     isComplete: buildPendingUserInputAnswers(questions, draftAnswers) !== null,
-    canAdvance: resolvedAnswer !== null,
+    canAdvance:
+      activeQuestion !== null && !isPendingUserInputQuestionUnresolved(activeQuestion, activeDraft),
   };
 }

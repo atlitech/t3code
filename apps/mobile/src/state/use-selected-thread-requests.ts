@@ -16,6 +16,10 @@ import {
   composerAttachmentsStillUploading,
 } from "./composer-attachment-uploads";
 import { useAtomValue } from "@effect/atom-react";
+import {
+  isAtomCommandInterrupted,
+  squashAtomCommandFailure,
+} from "@t3tools/client-runtime/state/runtime";
 import { useCallback, useRef, useState } from "react";
 
 import {
@@ -396,6 +400,13 @@ export function useSelectedThreadRequests() {
         selectedThreadShell.environmentId,
         selectedThreadShell.id,
         activePendingUserInput.requestId,
+      );
+    } else if (!isAtomCommandInterrupted(result)) {
+      // The server rejects answers that break a question's constraints; drafts stay editable.
+      const error = squashAtomCommandFailure(result);
+      Dialog.alert(
+        "Could not send answer",
+        error instanceof Error ? error.message : "Check your answers and try again.",
       );
     }
     return result;
