@@ -50,10 +50,15 @@ describe("userInputAnswerError", () => {
     expect(userInputAnswerError({ ...question(undefined), required: true }, " ")).toBe(
       "Field: Enter an answer.",
     );
-    expect(userInputAnswerError({ ...question(undefined), required: true }, [])).toBeNull();
-    expect(userInputAnswerError({ ...question({ minItems: 1 }), required: true }, [])).toBe(
-      "Field: Choose at least 1 option.",
+    expect(userInputAnswerError({ ...question(undefined), required: true }, [])).toBe(
+      "Field: Enter an answer.",
     );
+    expect(
+      userInputAnswerError({ ...question(undefined), multiSelect: true, required: true }, []),
+    ).toBeNull();
+    expect(
+      userInputAnswerError({ ...question({ minItems: 1 }), multiSelect: true, required: true }, []),
+    ).toBe("Field: Choose at least 1 option.");
   });
 
   it("rejects answers outside the listed choices and lists for text fields", () => {

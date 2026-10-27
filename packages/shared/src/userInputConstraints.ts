@@ -97,7 +97,11 @@ export function userInputAnswerError(
   answer: string | ReadonlyArray<string> | undefined,
 ): string | null {
   // An explicit empty selection is present; minItems decides whether it is enough.
-  const blank = answer === undefined || (typeof answer === "string" && answer.trim().length === 0);
+  const blank =
+    answer === undefined ||
+    (typeof answer === "string"
+      ? answer.trim().length === 0
+      : answer.length === 0 && question.multiSelect !== true);
   if (blank) return question.required === true ? `${question.header}: Enter an answer.` : null;
   const values = typeof answer === "string" ? [answer] : answer;
   if (question.allowCustomAnswer === false && question.options.length > 0) {

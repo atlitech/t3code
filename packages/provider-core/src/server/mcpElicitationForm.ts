@@ -143,6 +143,7 @@ function contentValue(field: Field, answer: unknown): McpElicitationContent[stri
   }
   if (Array.isArray(answer)) {
     // Unwrap a lone answer; anything else goes through for the MCP server to reject.
+    if (answer.length === 0) return undefined;
     if (answer.length !== 1) return answer.filter((value) => typeof value === "string");
     return contentValue(field, answer[0]);
   }

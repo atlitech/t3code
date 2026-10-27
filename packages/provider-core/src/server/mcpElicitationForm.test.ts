@@ -176,6 +176,10 @@ describe("mcpElicitationForm", () => {
         required: ["tags", "count", "tier"],
       },
     });
+    expect(form?.content({ tags: [], count: [], tier: ["Premium"] })).toEqual({
+      tags: [],
+      tier: "p",
+    });
     expect(form?.content({ tags: [], count: ["42"], tier: ["Premium"] })).toEqual({
       tags: [],
       count: 42,
