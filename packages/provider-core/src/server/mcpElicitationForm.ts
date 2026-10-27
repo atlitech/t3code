@@ -238,14 +238,15 @@ export function mcpElicitationForm(input: {
   }
   return {
     questions,
-    content: (answers) => {
-      const content: McpElicitationContent = {};
-      for (const [key, field] of fields) {
-        const value =
-          contentValue(field, answers[key]) ?? (acceptsEmptyList(key, field) ? [] : undefined);
-        if (value !== undefined) content[key] = value;
-      }
-      return content;
-    },
+    // Own properties only, so a field named "__proto__" is read and written as data.
+    content: (answers) =>
+      Object.fromEntries(
+        fields.flatMap(([key, field]) => {
+          const answer = Object.hasOwn(answers, key) ? answers[key] : undefined;
+          const value =
+            contentValue(field, answer) ?? (acceptsEmptyList(key, field) ? [] : undefined);
+          return value === undefined ? [] : [[key, value] as const];
+        }),
+      ),
   };
 }
