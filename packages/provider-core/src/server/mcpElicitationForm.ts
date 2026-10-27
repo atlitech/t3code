@@ -165,6 +165,10 @@ export function mcpElicitationForm(input: {
   const form = Option.getOrUndefined(decodeForm(input.requestedSchema));
   if (form === undefined) return null;
   const fields = Object.entries(form.properties ?? {});
+  const requiredKeys = new Set(form.required ?? []);
+  // A required list without a minimum is satisfied by choosing nothing, which is sent as [].
+  const acceptsEmptyList = (key: string, field: Field) =>
+    requiredKeys.has(key) && field.type === "array" && (count(field.minItems) ?? 0) === 0;
   const message = text(input.message);
   const lead =
     input.requester === undefined
@@ -176,7 +180,7 @@ export function mcpElicitationForm(input: {
   for (const [index, [key, field]] of fields.entries()) {
     const options = fieldOptions(field);
     if (text(key) !== key || (field.type === "array" && options === undefined)) return null;
-    const required = form.required?.includes(key) ?? false;
+    const required = requiredKeys.has(key) && !acceptsEmptyList(key, field);
     const header = text(field.title) ?? key;
     const constraints = fieldConstraints(field);
     const hint = constraints && describeUserInputConstraints(constraints);
@@ -205,7 +209,8 @@ export function mcpElicitationForm(input: {
     content: (answers) => {
       const content: McpElicitationContent = {};
       for (const [key, field] of fields) {
-        const value = contentValue(field, answers[key]);
+        const value =
+          contentValue(field, answers[key]) ?? (acceptsEmptyList(key, field) ? [] : undefined);
         if (value !== undefined) content[key] = value;
       }
       return content;

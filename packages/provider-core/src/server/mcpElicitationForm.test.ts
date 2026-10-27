@@ -99,7 +99,7 @@ describe("mcpElicitationForm", () => {
       },
       {
         id: "tags",
-        header: "Tags",
+        header: "Tags (optional)",
         question: "Choose at most 1 option.",
         options: [
           { label: "Alpha", description: "Alpha" },
@@ -107,7 +107,7 @@ describe("mcpElicitationForm", () => {
         ],
         multiSelect: true,
         allowCustomAnswer: false,
-        required: true,
+        required: false,
         constraints: { maxItems: 1 },
       },
     ]);
@@ -182,6 +182,13 @@ describe("mcpElicitationForm", () => {
       tier: "p",
     });
     expect(form?.questions[2]?.constraints).toBeUndefined();
+    // Clients omit a blank optional question; a required list without minItems still sends [].
+    expect(form?.questions[0]?.required).toBe(false);
+    expect(form?.content({ count: "1", tier: "Premium" })).toEqual({
+      tags: [],
+      count: 1,
+      tier: "p",
+    });
   });
 
   it("rejects schemas outside the flat MCP form subset", () => {
