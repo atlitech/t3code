@@ -59,6 +59,13 @@ and restart `<n>` at 1.
   Google Android OAuth client ID. Only when it is set does the APK offer native
   Google sign-in.
 
+- Create a GitHub-hosted larger runner named `ubuntu-24.04-8core` in the
+  organization’s **Settings → Actions → Runners**, using Ubuntu 24.04 x64,
+  8 cores and 32 GB RAM. Grant `atlitech/t3code` access to its runner group
+  before dispatching a release; the Android job waits for this runner.
+  Larger runners are billed even for public repositories. Gradle caches are
+  saved from `atli`; the first build populates them for subsequent releases.
+
 - Disable every upstream workflow; the fork runs only its own `fork-*.yml`
   (see [Continuous integration](#continuous-integration)). This lists the
   active ones to disable:
