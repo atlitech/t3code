@@ -148,20 +148,52 @@ const upstreamBase = Effect.gen(function* () {
   return (yield* read("git", ["merge-base", "HEAD", "FETCH_HEAD"])).trim();
 });
 
-const upstreamCheckRuns = Effect.fn("upstreamCheckRuns")(function* (sha: string) {
-  const stdout = yield* read("gh", [
-    "api",
-    "--paginate",
-    `repos/${UPSTREAM_REPOSITORY}/commits/${sha}/check-runs?check_name=${REQUIRED_CHECK}&filter=all&per_page=100`,
-    "--jq",
-    ".check_runs[] | {name, status, conclusion, app: .app.slug}",
-  ]);
-  const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
-  return yield* Effect.forEach(lines, (line) =>
-    decodeCheckRunLine(line).pipe(
-      Effect.mapError((cause) => new ForkCheckError({ detail: "unreadable check run", cause })),
+const githubApi = (endpoint: string, jq: string) =>
+  read("gh", ["api", "--paginate", endpoint, "--jq", jq]);
+
+export const upstreamCheckRuns = Effect.fn("upstreamCheckRuns")(function* <R>(
+  sha: string,
+  api: (endpoint: string, jq: string) => Effect.Effect<string, ForkCheckError, R>,
+) {
+  // The commit endpoint only searches the newest 1,000 suites; busy upstream
+  // commits can lose their CI result behind unrelated automation runs.
+  const runs = yield* api(
+    `repos/${UPSTREAM_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${sha}&branch=main&event=push&per_page=100`,
+    ".workflow_runs[] | {head_sha, check_suite_id}",
+  );
+  const decodeRun = Schema.decodeEffect(
+    Schema.fromJsonString(
+      Schema.Struct({
+        head_sha: Schema.String,
+        check_suite_id: Schema.Number,
+      }),
     ),
   );
+  const suites = new Set<number>();
+  for (const line of runs.split("\n").filter((line) => line.trim().length > 0)) {
+    const run = yield* decodeRun(line).pipe(
+      Effect.mapError((cause) => new ForkCheckError({ detail: "unreadable workflow run", cause })),
+    );
+    if (run.head_sha === sha) suites.add(run.check_suite_id);
+  }
+  const checks = yield* Effect.forEach([...suites], (suite) =>
+    Effect.gen(function* () {
+      const stdout = yield* api(
+        `repos/${UPSTREAM_REPOSITORY}/check-suites/${suite}/check-runs?check_name=${REQUIRED_CHECK}&filter=all&per_page=100`,
+        ".check_runs[] | {name, status, conclusion, app: .app.slug}",
+      );
+      return yield* Effect.forEach(
+        stdout.split("\n").filter((line) => line.trim().length > 0),
+        (line) =>
+          decodeCheckRunLine(line).pipe(
+            Effect.mapError(
+              (cause) => new ForkCheckError({ detail: "unreadable check run", cause }),
+            ),
+          ),
+      );
+    }),
+  );
+  return checks.flat();
 });
 
 const PackageScripts = Schema.fromJsonString(
@@ -199,7 +231,7 @@ export const forkCheck = Effect.fn("forkCheck")(function* () {
   const base = yield* upstreamBase;
   yield* Effect.log(`Built on upstream ${UPSTREAM_REPOSITORY}@${base}.`);
 
-  if (!hasPassedCheck(yield* upstreamCheckRuns(base))) {
+  if (!hasPassedCheck(yield* upstreamCheckRuns(base, githubApi))) {
     return yield* new ForkCheckError({
       detail: `Upstream ${base} has no successful ${REQUIRED_CHECK} run. Merge an upstream commit whose CI passed.`,
     });
