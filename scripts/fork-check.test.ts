@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
 
-import { selectForkTests } from "./fork-check.ts";
+import * as Effect from "effect/Effect";
+import { hasPassedCheck } from "./fork-release-guard.ts";
+
+import { ForkCheckError, upstreamCheckRuns, selectForkTests } from "./fork-check.ts";
 
 const packageDirs = ["", "apps/server", "packages/shared", "scripts"];
 
@@ -78,3 +81,61 @@ describe("selectForkTests", () => {
     expect(selection.orphans).toEqual(["scripts-extra/thing.test.ts"]);
   });
 });
+
+it.effect("finds upstream Check when newer suites hide it from the commit endpoint", () =>
+  Effect.gen(function* () {
+    const checks = yield* upstreamCheckRuns("abc123", (endpoint) => {
+      if (endpoint.includes("/actions/workflows/ci.yml/runs?")) {
+        return Effect.succeed(JSON.stringify({ head_sha: "abc123", check_suite_id: 42 }));
+      }
+      if (endpoint.includes("/check-suites/42/check-runs?")) {
+        return Effect.succeed(
+          JSON.stringify({
+            name: "Check",
+            status: "completed",
+            conclusion: "success",
+            app: "github-actions",
+          }),
+        );
+      }
+      return Effect.succeed("");
+    });
+    expect(hasPassedCheck(checks)).toBe(true);
+  }),
+);
+
+it.effect("rejects a passing workflow on another commit", () =>
+  Effect.gen(function* () {
+    const checks = yield* upstreamCheckRuns("abc123", () =>
+      Effect.succeed(JSON.stringify({ head_sha: "different", check_suite_id: 42 })),
+    );
+    expect(hasPassedCheck(checks)).toBe(false);
+  }),
+);
+
+it.effect.each(["failure", "cancelled", null])("rejects a Check with conclusion %s", (conclusion) =>
+  Effect.gen(function* () {
+    const checks = yield* upstreamCheckRuns("abc123", (endpoint) =>
+      Effect.succeed(
+        JSON.stringify(
+          endpoint.includes("/actions/workflows/")
+            ? { head_sha: "abc123", check_suite_id: 42 }
+            : { name: "Check", status: "completed", conclusion, app: "github-actions" },
+        ),
+      ),
+    );
+    expect(hasPassedCheck(checks)).toBe(false);
+  }),
+);
+
+it.effect("rejects missing CI and propagates lookup failures", () =>
+  Effect.gen(function* () {
+    expect(hasPassedCheck(yield* upstreamCheckRuns("abc123", () => Effect.succeed("")))).toBe(
+      false,
+    );
+    const error = new ForkCheckError({ detail: "API unavailable" });
+    expect(yield* upstreamCheckRuns("abc123", () => Effect.fail(error)).pipe(Effect.flip)).toBe(
+      error,
+    );
+  }),
+);
