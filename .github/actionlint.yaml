@@ -1,4 +1,4 @@
-# actionlint uses this allowlist for custom GitHub-hosted larger runner names too.
+# Blacksmith provisions this runner label through its GitHub App.
 self-hosted-runner:
   labels:
-    - ubuntu-24.04-8core
+    - blacksmith-8vcpu-ubuntu-2404
