@@ -70,6 +70,11 @@ use that thread's current provider and model, including changes made while a
 scheduled prompt waits in its queue. Fixed-time schedules use that
 environment's time zone, which may differ from your phone's.
 
+If a task already has a queued message in its thread, automatic repeats are
+skipped until that message starts or is removed. Your queued messages keep their
+order, and missed repeats do not catch up in a burst. **Run now** still adds an
+explicit run; webhook deliveries follow their own deduplication settings.
+
 Deleting a thread also deletes tasks that post into that thread. Tasks that start
 a new thread on each run survive deletion of their previous threads.
 

@@ -505,6 +505,162 @@ it.effect("retains automation and sender attribution while a message waits in th
   }).pipe(Effect.provide(harness.layer));
 });
 
+it.effect("coalesces scheduled ticks without disturbing the thread's queued messages", () => {
+  const harness = makeHarness({ runSetup: () => Effect.never });
+  const workers = new Map<string, Effect.Effect<void>>();
+  const layerScheduledTasks = ScheduledTasks.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        harness.layer,
+        NodeCrypto.layer,
+        Layer.succeed(Scheduler.Scheduler, {
+          register: <E, R>(name: string, work: Effect.Effect<void, E, R>) =>
+            Effect.gen(function* () {
+              const context = yield* Effect.context<R>();
+              workers.set(name, work.pipe(Effect.provideContext(context), Effect.orDie));
+            }),
+        }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+      ),
+    ),
+  );
+  return Effect.gen(function* () {
+    const tasks = yield* ScheduledTasks.ScheduledTaskService;
+    const launches = yield* ThreadLaunch.ThreadLaunchService;
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const launched = yield* launches.launch(
+      launchInput({
+        command: "command:coalesced",
+        thread: "thread:coalesced",
+        message: "Initial work",
+        workspace: { type: "worktree", baseRef: "main" },
+      }),
+    );
+    const sendUserMessage = (text: string) =>
+      threads.sendToThread({
+        projectId,
+        commandId: CommandId.make(`command:${text}`),
+        threadId: launched.threadId,
+        messageId: MessageId.make(`message:${text}`),
+        text,
+        attachments: [],
+        mode: "queue",
+        createdBy: "user",
+        creationSource: "web",
+      });
+    const createTask = (name: string) =>
+      tasks.upsert({
+        id: ScheduledTaskId.make(`scheduled-task:${name}`),
+        title: name,
+        prompt: name,
+        enabled: true,
+        schedule: { type: "interval", everyMs: 60_000 },
+        projectId,
+        threadId: launched.threadId,
+        workspaceStrategy: { type: "root" },
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdBy: "user",
+        creationSource: "web",
+      });
+    const queuedTexts = (projection: ThreadManagement.ThreadManagementSendResult["projection"]) =>
+      projection.runs
+        .filter((run) => run.status === "queued")
+        .toSorted((a, b) => (a.queuePosition ?? a.ordinal) - (b.queuePosition ?? b.ordinal))
+        .map(
+          (run) => projection.messages.find((message) => message.id === run.userMessageId)?.text,
+        );
+    const tick = TestClock.adjust("1 minute").pipe(
+      Effect.andThen(Effect.suspend(() => workers.get("scheduled-tasks")!)),
+    );
+    yield* sendUserMessage("User A");
+    const first = yield* createTask("First schedule");
+    yield* tick;
+    yield* sendUserMessage("User B");
+    const before = yield* threads.getThreadProjection(launched.threadId);
+    assert.deepEqual(queuedTexts(before), ["User A", "First schedule", "User B"]);
+    for (let index = 0; index < 18; index++) yield* tick;
+    const after = yield* threads.getThreadProjection(launched.threadId);
+    assert.deepEqual(queuedTexts(after), ["User A", "First schedule", "User B"]);
+    assert.deepEqual(after.runs, before.runs);
+    assert.deepEqual(after.messages, before.messages);
+    const listed = (yield* tasks.list()).tasks.find((task) => task.id === first.task.id)!;
+    assert.equal(listed.runCount, 1);
+    const now = yield* DateTime.now;
+    assert.equal(listed.nextRunAt, DateTime.formatIso(DateTime.add(now, { minutes: 1 })));
+
+    yield* createTask("Second schedule");
+    yield* tick;
+    const distinct = yield* threads.getThreadProjection(launched.threadId);
+    assert.deepEqual(queuedTexts(distinct), [
+      "User A",
+      "First schedule",
+      "User B",
+      "Second schedule",
+    ]);
+    const pending = distinct.messages.find((message) => message.scheduledTaskId === first.task.id)!;
+    yield* threads.dispatch({
+      type: "queued-run.cancel",
+      commandId: CommandId.make("command:cancel-first-schedule"),
+      threadId: launched.threadId,
+      runId: pending.runId!,
+    });
+    yield* tick;
+    const resumed = yield* threads.getThreadProjection(launched.threadId);
+    assert.deepEqual(queuedTexts(resumed), [
+      "User A",
+      "User B",
+      "Second schedule",
+      "First schedule",
+    ]);
+    assert.equal(
+      (yield* tasks.list()).tasks.find((task) => task.id === first.task.id)?.runCount,
+      2,
+    );
+
+    yield* tasks.runNow({ id: first.task.id });
+    const manual = yield* threads.getThreadProjection(launched.threadId);
+    assert.deepEqual(queuedTexts(manual), [
+      "User A",
+      "User B",
+      "Second schedule",
+      "First schedule",
+      "First schedule",
+    ]);
+    yield* threads.dispatch({
+      type: "run.interrupt",
+      commandId: CommandId.make("command:hold-scheduled-queue"),
+      threadId: launched.threadId,
+      runId: launched.projection.runs[0]!.id,
+      holdQueue: true,
+    });
+    const held = yield* threads.getThreadProjection(launched.threadId);
+    const heldRuns = held.runs.filter((run) => run.status === "queued");
+    assert.lengthOf(heldRuns, 5);
+    assert.isTrue(heldRuns.every((run) => run.queueHeld === true));
+    yield* tick;
+    const afterHeldTick = yield* threads.getThreadProjection(launched.threadId);
+    assert.deepEqual(queuedTexts(afterHeldTick), queuedTexts(held));
+    assert.deepEqual(
+      afterHeldTick.runs.filter((run) => run.status === "queued"),
+      heldRuns,
+    );
+
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE scheduled_tasks SET thread_id = 'thread:missing' WHERE task_id = ${first.task.id}`;
+    yield* tick;
+    const failed = (yield* tasks.list()).tasks.find((task) => task.id === first.task.id)!;
+    assert.equal(failed.lastRunStatus, "failed");
+    assert.equal(failed.runCount, 4);
+    const failedAt = yield* DateTime.now;
+    assert.equal(failed.nextRunAt, DateTime.formatIso(DateTime.add(failedAt, { minutes: 1 })));
+    const afterFailure = yield* threads.getThreadProjection(launched.threadId);
+    assert.deepEqual(afterFailure.messages, afterHeldTick.messages);
+    assert.deepEqual(afterFailure.runs, afterHeldTick.runs);
+  }).pipe(Effect.provide(Layer.mergeAll(harness.layer, layerScheduledTasks)));
+});
+
 it.effect("provisions independent launches concurrently instead of behind a global semaphore", () =>
   Effect.gen(function* () {
     const setupCount = yield* Ref.make(0);
