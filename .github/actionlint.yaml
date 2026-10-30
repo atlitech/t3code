@@ -1,0 +1,4 @@
+# actionlint uses this allowlist for custom GitHub-hosted larger runner names too.
+self-hosted-runner:
+  labels:
+    - ubuntu-24.04-8core

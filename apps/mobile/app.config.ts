@@ -481,7 +481,11 @@ const config: ExpoConfig = {
     "./plugins/withAndroidPredictiveBackCompat.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
     ...(isPersonalBuild
-      ? ["./plugins/withPersonalAndroidProfileable.cjs", "./plugins/withPersonalAndroidSigning.cjs"]
+      ? [
+          "./plugins/withPersonalAndroidProfileable.cjs",
+          "./plugins/withPersonalAndroidSigning.cjs",
+          "./plugins/withoutPersonalAndroidObserve.cjs",
+        ]
       : []),
   ],
   extra: {
