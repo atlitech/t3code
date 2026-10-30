@@ -67,7 +67,7 @@ export function GitConfirmSheet(props: GitConfirmSheetProps) {
     [branchName, confirmAction, includesCommit, terminology],
   );
 
-  const continuePendingAction = useCallback(async () => {
+  const continuePendingAction = async () => {
     if (!canWriteSourceControl || !confirmAction) return;
     navigation.dispatch(
       selectWorkspaceDetail({ name: "Thread", params: { environmentId, threadId } }),
@@ -77,15 +77,7 @@ export function GitConfirmSheet(props: GitConfirmSheetProps) {
       ...(params.commitMessage ? { commitMessage: params.commitMessage } : {}),
       ...(params.filePaths ? { filePaths: params.filePaths.split(",") } : {}),
     });
-  }, [
-    canWriteSourceControl,
-    confirmAction,
-    environmentId,
-    gitActions,
-    params,
-    navigation,
-    threadId,
-  ]);
+  };
 
   const movePendingActionToFeatureBranch = useCallback(async () => {
     if (!canChangeThreadBranch || !confirmAction) return;

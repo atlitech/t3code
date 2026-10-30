@@ -17,6 +17,7 @@ import {
   type PinnedRuntimePaths,
   PinnedRuntimePreflightBlockedError,
 } from "./pinnedRuntime.ts";
+import { BUILD_MIGRATION_HEAD, recordedMigrations } from "../persistence/databaseMigrationHead.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
 // Long enough to copy and migrate a large database, short enough that a hung
@@ -132,6 +133,17 @@ export const runServicePreflight = Effect.fn("cloud.service_preflight.run")(func
       ].join(" "),
     };
     return blocked;
+  }
+  const recorded = recordedMigrations(input.databasePath);
+  if (recorded !== null) {
+    const newer = recorded.filter(({ id }) => id > BUILD_MIGRATION_HEAD);
+    if (newer.length > 0) {
+      return {
+        status: "blocked",
+        version,
+        reason: `This database has migrations that t3@${version} does not know: ${newer.map(({ id, name }) => `${id}_${name}`).join(", ")}. Stay on the newer release.`,
+      } satisfies ServicePreflightResult;
+    }
   }
   return yield* migrateDatabaseCopy(input.databasePath).pipe(
     Effect.as<ServicePreflightResult>({
