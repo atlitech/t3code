@@ -307,7 +307,7 @@ jobs:
     name: Build personal Android arm64-v8a APK
     needs: guard
     if: github.repository == 'atlitech/t3code' && github.ref == 'refs/heads/atli'
-    runs-on: ubuntu-24.04-8core
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     environment: personal-android-signing
     timeout-minutes: 60
     permissions:

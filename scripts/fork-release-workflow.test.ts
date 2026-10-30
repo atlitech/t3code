@@ -413,7 +413,7 @@ describe("fork server release workflow", () => {
     expect(ifOf(body)).toContain("github.ref == 'refs/heads/atli'");
     expect(ifOf(body)).toContain("github.repository == 'atlitech/t3code'");
     expect(body).toContain("    environment: personal-android-signing");
-    expect(runsOn(body)).toMatch(/^ubuntu-/);
+    expect(runsOn(body)).toBe("blacksmith-8vcpu-ubuntu-2404");
     expect(body.join("\n")).toMatch(/ref: \$\{\{ needs\.guard\.outputs\.sha \}\}/);
   });
 
