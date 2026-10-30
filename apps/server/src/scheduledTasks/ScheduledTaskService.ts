@@ -822,6 +822,44 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
+        // activeRuns serializes this check with dispatches for the same task.
+        const queued = yield* Effect.exit(
+          Effect.gen(function* () {
+            if (trigger !== "scheduled" || active.threadId === null) return false;
+            const { runs } = yield* threadManagement.getThreadRecords(active.threadId, ["runs"]);
+            const messageIds = runs
+              .filter((run) => run.status === "queued")
+              .map((run) => run.userMessageId);
+            if (messageIds.length === 0) return false;
+            const { messages } = yield* threadManagement.getThreadRecords(
+              active.threadId,
+              ["messages"],
+              { messageIds },
+            );
+            return messages.some((message) => message.scheduledTaskId === active.id);
+          }),
+        );
+        if (queued._tag === "Success" && queued.value) {
+          yield* sql`
+            UPDATE scheduled_tasks
+            SET next_run_at = ${nextRunAt(active, startedAt)}, updated_at = ${startedAtIso}
+            WHERE task_id = ${active.id} AND enabled = 1
+              AND updated_at = ${active.updatedAt}
+              AND next_run_at = ${active.nextRunAt}
+              AND thread_id = ${active.threadId}
+              AND created_at = ${active.createdAt}
+          `.pipe(
+            Effect.mapError((cause) =>
+              taskError("Could not skip queued schedule task run.", {
+                taskId: active.id,
+                cause,
+              }),
+            ),
+          );
+          yield* notifyChanged;
+          return { task: active, threadId: null };
+        }
+
         if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
         else
           yield* sql
@@ -887,35 +925,37 @@ export const layer = Layer.effect(
 
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
         const result =
-          active.threadId === null
-            ? yield* Effect.exit(
-                threadLaunch
-                  .launch({
-                    commandId,
-                    projectId: active.projectId,
-                    title: active.title,
-                    modelSelection: active.modelSelection,
-                    runtimeMode: active.runtimeMode,
-                    interactionMode: active.interactionMode,
-                    workspaceStrategy: active.workspaceStrategy,
-                    initialMessage: {
-                      messageId,
-                      scheduledTaskId: active.id,
-                      text: prompt,
-                      attachments: [],
-                    },
-                    createdBy: active.createdBy,
-                    creationSource: active.creationSource,
-                  })
-                  .pipe(Effect.map((launched) => launched.threadId)),
-              )
-            : yield* Effect.exit(
-                // The stored selection only seeds fresh threads. A bound run
-                // follows the thread's current provider, so it passes none.
-                sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
-                  Effect.as(ThreadId.make(active.threadId)),
-                ),
-              );
+          queued._tag === "Failure"
+            ? queued
+            : active.threadId === null
+              ? yield* Effect.exit(
+                  threadLaunch
+                    .launch({
+                      commandId,
+                      projectId: active.projectId,
+                      title: active.title,
+                      modelSelection: active.modelSelection,
+                      runtimeMode: active.runtimeMode,
+                      interactionMode: active.interactionMode,
+                      workspaceStrategy: active.workspaceStrategy,
+                      initialMessage: {
+                        messageId,
+                        scheduledTaskId: active.id,
+                        text: prompt,
+                        attachments: [],
+                      },
+                      createdBy: active.createdBy,
+                      creationSource: active.creationSource,
+                    })
+                    .pipe(Effect.map((launched) => launched.threadId)),
+                )
+              : yield* Effect.exit(
+                  // The stored selection only seeds fresh threads. A bound run
+                  // follows the thread's current provider, so it passes none.
+                  sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
+                    Effect.as(ThreadId.make(active.threadId)),
+                  ),
+                );
 
         const runSucceeded = result._tag === "Success";
         if (webhook !== undefined && runSucceeded) yield* Ref.set(webhook.dispatched, true);
