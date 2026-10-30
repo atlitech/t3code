@@ -2522,21 +2522,25 @@ describe("orchestration v2 provider switching", () => {
   );
 
   it.live.each([
-    "model-options",
-    "provider",
-    "account",
-    "limited-account",
-    "unavailable-account",
+    ["model-options", "automatic"],
+    ["provider", "automatic"],
+    ["account", "automatic"],
+    ["model-options", "queue.resume"],
+    ["provider", "queue.resume"],
+    ["account", "queue.resume"],
+    ["limited-account", "queue.resume"],
+    ["unavailable-account", "queue.resume"],
   ] as const)(
-    "delivers queued automation on the current %s and disposes only obsolete native wakes",
-    (scenario) => {
+    "delivers queued automation on the current %s through %s and disposes only obsolete native wakes",
+    ([scenario, delivery]) => {
+      const automatic = delivery === "automatic";
       const switchProvider = scenario !== "model-options";
       const accountSwitch = scenario.includes("account");
       const recoverLimit = scenario === "limited-account";
       const unavailableTarget = scenario === "unavailable-account";
       return Effect.scoped(
         Effect.gen(function* () {
-          const name = `queued-automation-selection-${scenario}`;
+          const name = `queued-automation-selection-${scenario}-${delivery}`;
           const cwd = yield* checkpointWorkspace(name);
           const capturedTurns = yield* Ref.make<ReadonlyArray<CapturedTurn>>([]);
           const started = yield* Deferred.make<void>();
@@ -2652,9 +2656,7 @@ describe("orchestration v2 provider switching", () => {
             });
             const queued = yield* orchestrator.getThreadProjection(queuedThreadId);
             const now = yield* DateTime.now;
-            // A stopped/held queue models the recovery boundary. A message can
-            // succeed on another selection before an explicit resume; it comes
-            // over MCP because a user's own message releases the hold.
+            // A completed seed run would release automation before the selection change; seed a stopped queue.
             yield* eventSink.write({
               events: queued.runs.map((run) => ({
                 id: EventId.make(`event:${name}:held:${run.ordinal}`),
@@ -2668,7 +2670,7 @@ describe("orchestration v2 provider switching", () => {
                     ? { ...run, queueHeld: true }
                     : {
                         ...run,
-                        status: recoverLimit ? ("failed" as const) : ("completed" as const),
+                        status: recoverLimit ? ("failed" as const) : ("interrupted" as const),
                         completedAt: now,
                       },
               })),
@@ -2709,6 +2711,8 @@ describe("orchestration v2 provider switching", () => {
                   },
                 ],
               });
+            }
+            if (!automatic) {
               yield* orchestrator.dispatch({
                 type: "thread.model-selection.set",
                 commandId: CommandId.make(`command:${name}:select`),
@@ -2735,8 +2739,8 @@ describe("orchestration v2 provider switching", () => {
             }
             const beforeResume = yield* orchestrator.getThreadProjection(queuedThreadId);
             assert.deepEqual(beforeResume.thread.modelSelection, targetSelection);
-            assert.isTrue(beforeResume.runs[1]?.queueHeld);
-            if (scenario === "account") {
+            if (!automatic) assert.isTrue(beforeResume.runs[1]?.queueHeld);
+            if (scenario === "account" && !automatic) {
               const legacyWake = queued.runs[2]!;
               // Restore the pre-upgrade persisted shape: an obsolete native
               // wake held across startup, before cancellation existed.
@@ -2776,11 +2780,13 @@ describe("orchestration v2 provider switching", () => {
               }
               yield* Ref.set(targetAvailable, true);
             }
-            yield* orchestrator.dispatch({
-              type: "queue.resume",
-              commandId: CommandId.make(`command:${name}:resume`),
-              threadId: queuedThreadId,
-            });
+            if (!automatic) {
+              yield* orchestrator.dispatch({
+                type: "queue.resume",
+                commandId: CommandId.make(`command:${name}:resume`),
+                threadId: queuedThreadId,
+              });
+            }
             yield* orchestrator.streamStoredEvents.pipe(
               Stream.filter(
                 (stored) =>
